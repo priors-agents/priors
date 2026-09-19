@@ -102,7 +102,16 @@ async function main() {
     if (c.address) {
       const bal = await c.provider.getBalance(c.address);
       const asset = new ethers.Contract(c.dep.usdc, ["function balanceOf(address) view returns (uint256)"], c.provider);
-      out(`balances         ${ethers.formatEther(bal)} native · ${usd(Number(await asset.balanceOf(c.address)) / 1e6)} USDG`);
+      const usdg = Number(await asset.balanceOf(c.address)) / 1e6;
+      out(`balances         ${ethers.formatEther(bal)} native · ${usd(usdg)} USDG`);
+      // An unfunded wallet is the actual blocker on a fresh chain, and printing two zeros as a neutral line is
+      // how doctor sends you off to fail on `register` instead. Say what to do about it.
+      if (bal === 0n || usdg === 0) {
+        const dev = await isDevChain(c.provider);
+        out("");
+        out(bal === 0n ? "⚠ this wallet has no gas, so every transaction will fail." : "⚠ this wallet holds no USDG, so you cannot pay a loan fee.");
+        out(dev ? "  fix:  npx priors fund        (dev chain: mints mock USDG and tops up gas)" : `  fix:  send native gas${usdg === 0 ? " and USDG" : ""} to ${c.address}`);
+      }
     }
     const p = await c.priors.pool.getParams();
     out(`params           loans ${usd(Number(p.minLoan) / 1e6)}–${usd(Number(p.maxLoan) / 1e6)} · fee ${Number(p.feeBps) / 100}% per 30d · grace ${Number(p.grace) / 86400}d · qualifies at ${Number(p.minScoreTerm) / 86400}d`);
@@ -236,4 +245,17 @@ async function main() {
   die(`unknown command: ${cmd}\n\n${USAGE}`);
 }
 
-main().catch((e) => die(`\n${e.shortMessage || e.message}`));
+main().catch(async (e) => {
+  const msg = e.shortMessage || e.message || String(e);
+  // "insufficient funds for intrinsic transaction cost" is the first thing a fresh wallet hits, and on its own
+  // it tells you nothing about what to do. Name the fix for the chain you are actually on.
+  if (/insufficient funds/i.test(msg)) {
+    let hint = "  fund the wallet with native gas, then retry.";
+    try {
+      const c = await resolve({ needSigner: false });
+      hint = (await isDevChain(c.provider)) ? "  fix:  npx priors fund        (dev chain: mints mock USDG and tops up gas)" : `  fix:  send native gas to ${c.address || "your wallet"}, then retry.`;
+    } catch {}
+    die(`\n${msg}\n${hint}`);
+  }
+  die(`\n${msg}`);
+});

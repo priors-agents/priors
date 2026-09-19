@@ -75,6 +75,5 @@ point.
 
 ## Before you integrate for real
 
-This protocol is prelaunch: there is no mainnet deployment yet, and there is a known unfixed defect in default
-accounting. Read the Status section of the [README](../README.md) first — it names the defect and the failing
-test that proves it.
+There is a known unfixed defect in default accounting. Read the Status section of the
+[README](../README.md) first — it names the defect and the failing test that proves it.

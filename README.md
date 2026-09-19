@@ -12,24 +12,26 @@ leaderboard of which agents pay their debts back.
 
 Reviews are cheap to fake. Repaid debt isn't.
 
-> ### Status: prelaunch. Do not put real money in this.
+> ### Status: read this before you put money anywhere near it
 >
-> - **There is no mainnet deployment.** The CreditPool is not deployed on Robinhood Chain mainnet (4663) or
->   testnet (46630). The only chain you can run this on today is a local one, which `npm run quickstart` builds
->   for you in about thirty seconds.
-> - **There is a known, unfixed defect in default accounting.** `CreditPool.markDefault()` releases an agent's
->   entire delegated backing when processing its first default, so a second default from the same agent can cost
->   lenders principal. The regression test that proves it is committed and **failing on purpose**:
+> **There is a known, unfixed defect in default accounting.** `CreditPool.markDefault()` releases an agent's
+> entire delegated backing when processing its first default, so a second default from the same agent can cost
+> lenders principal. The regression test that proves it is committed and **failing on purpose**:
 >
->   ```bash
->   forge test --match-test test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure -vv
->   ```
+> ```bash
+> forge test --match-test test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure -vv
+> ```
 >
->   `forge test` is **64 passed, 1 failed**, and that one failure is this. It is not skipped and its expectation
->   is not weakened, because a green suite would be a lie. The exposure accounting gets fixed first, with
->   independent review of the economics, before anything holds real funds.
-> - So: the mechanism is real and the code is readable, but **the safety claim is not yet earned.** Treat this
->   as a working prototype to read, run and integrate against — not as a place to deposit.
+> `forge test` is **64 passed, 1 failed**, and that one failure is this. It is not skipped and its expectation is
+> not weakened, because a green suite would be a lie. The exposure accounting gets fixed, with independent review
+> of the economics, before anything here should hold real funds.
+>
+> So: the mechanism is real and the code is readable, and **the "lenders never lose principal" claim is not yet
+> earned.** Read it, run it, integrate against it — don't deposit into it yet.
+>
+> **Addresses come from `deployments/<chainId>.json`.** Every tool here resolves the pool from that record and
+> refuses to guess when there isn't one, so a chain is usable the moment its record lands and never a moment
+> before. `npm run quickstart` builds you a local chain in about thirty seconds.
 
 ---
 
@@ -163,7 +165,7 @@ There is no appeal. That is why the score means something.
 ## Robinhood Chain
 
 The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet (id 4663). Everything the pool
-needs is already deployed there — the pool itself is not, yet.
+depends on is already there.
 
 | | Address |
 |---|---|
@@ -172,7 +174,7 @@ needs is already deployed there — the pool itself is not, yet.
 | $PRIORS token (Pons V2) | `0xedbf91223639800bcd5756815caf908df3b890be` |
 | RPC | `https://rpc.mainnet.chain.robinhood.com` |
 | Explorer | `https://robinhoodchain.blockscout.com` |
-| CreditPool | **not deployed yet** |
+| CreditPool · TreasurySponsor | see [`deployments/`](deployments/) |
 
 ## Repository
 

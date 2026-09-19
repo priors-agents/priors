@@ -27,11 +27,12 @@ npx priors score <agentId>
 
 ## Three things not to get wrong
 
-1. **Check the chain before claiming anything.** The CreditPool is **not deployed on Robinhood Chain mainnet
-   yet**; `deployments/` holds only the local dev chain. If there is no deployment record for the chain you are
-   on, say so — never invent a pool address, and never report an agent as registered when it is not.
+1. **Check the chain before claiming anything.** Every tool resolves the pool from
+   `deployments/<chainId>.json` and refuses to guess when there is no record for the chain you are pointed at.
+   When that happens, say so — never invent a pool address, and never report an agent as registered when it is
+   not.
 
-2. **This protocol is prelaunch and has a known unfixed defect.** `markDefault()` releases an agent's whole
+2. **There is a known unfixed defect.** `markDefault()` releases an agent's whole
    delegated backing on its first default, so a second default from the same agent can cost lenders principal.
    Its regression test is committed and **failing on purpose**: `forge test` is 64 passed / 1 failed. Do not
    remove, skip, or weaken `test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure` to get a green suite —

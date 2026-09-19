@@ -45,10 +45,15 @@ async function reachable(rpc) {
 }
 
 async function startAnvil() {
-  log("» starting anvil");
+  // Honour the port in RPC_URL. Spawning on anvil's default while polling a different port is a 20-second wait
+  // followed by a wrong diagnosis, and it makes two devnets on one machine impossible.
+  const { port, hostname } = new URL(RPC);
+  const args = ["--silent", "--port", port || "8545"];
+  if (hostname && hostname !== "127.0.0.1" && hostname !== "localhost") args.push("--host", hostname);
+  log(`» starting anvil on ${RPC}`);
   const logFile = join(ROOT, "anvil.log");
   const out = openSync(logFile, "a");
-  const child = spawn("anvil", ["--silent"], { detached: true, stdio: ["ignore", out, out] });
+  const child = spawn("anvil", args, { detached: true, stdio: ["ignore", out, out] });
   child.unref();
   for (let i = 0; i < 100; i++) {
     if (await reachable(RPC)) return;

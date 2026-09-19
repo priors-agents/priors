@@ -18,14 +18,14 @@ deployment becomes usable the moment its record lands here.
 }
 ```
 
-## What is here today
+## What is here
 
-**Nothing but this file.** There is no committed deployment record, because the CreditPool is not deployed on
-Robinhood Chain mainnet (4663) or testnet (46630) yet.
+Whatever JSON files sit next to this one. `npx priors doctor` tells you what it resolved for the chain you are
+pointed at, and says so rather than guessing when there is no record.
 
 `31337.json` — the local dev chain — is written by `npm run devnet` and deliberately gitignored: it is a
 throwaway chain whose addresses mean nothing to anyone else.
 
-When a real deployment happens, its record is committed here and `npx priors doctor` picks it up with no
-further configuration. Until then, `POOL` and `TREASURY` in `.env` are the way to point the tools at an
-address by hand.
+A deployment becomes usable the moment its record is committed here; no further configuration is needed.
+`POOL` and `TREASURY` in `.env` override the record, which is how you point the tools at an address that has
+not been committed yet.

@@ -82,7 +82,10 @@ export class Priors {
   async firstLine(agentId) { this._needSigner(); if (!this.treasury) throw new Error("no treasury address configured"); const tx = await this.treasury.firstLine(agentId); return (await tx.wait()).hash; }
   /** Raise a treasury-sponsored agent's line once its record qualifies. */
   async raise(agentId) { this._needSigner(); const tx = await this.treasury.raise(agentId); return (await tx.wait()).hash; }
-  async canRaise(agentId) { return this.treasury.eligibleForRaise(await this.pool.creditReport(agentId)); }
+  // Array.from is load-bearing: creditReport() hands back a frozen ethers Result, and the tuple encoder for
+  // eligibleForRaise writes into the array it is given, so passing the Result straight through throws
+  // "Cannot assign to read only property '0'" for every agent, eligible or not.
+  async canRaise(agentId) { return this.treasury.eligibleForRaise(Array.from(await this.pool.creditReport(agentId))); }
   /** Borrow `dollars` for `days`; USDG lands in `to` (default: the signer). Returns the loanId. */
   async borrow(agentId, dollars, days, to) {
     this._needSigner();
