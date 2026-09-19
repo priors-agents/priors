@@ -18,6 +18,18 @@ deployments/31337.json
 deployments/*.local.json
 anvil.log
 
+# Agent/workflow working state. Plans, buildouts, specs and session notes are how the work gets done; they are
+# not the product and they never belong in a public repo. scripts/check-public.sh fails if one is ever tracked.
+docs/plans/
+docs/builds/
+docs/prd/
+docs/reports/
+.annotations/
+.pilot/
+.claude/
+CLAUDE.md
+AGENTS.local.md
+
 # Misc
 .DS_Store
 *.log

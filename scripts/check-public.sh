@@ -64,6 +64,14 @@ forbidden=(
   "cloudflare"
   "wallet.json"
   "deployments/31337.json"
+  "docs/plans"    # agent working state: plans, buildouts and session notes are not the product
+  "docs/builds"
+  "docs/prd"
+  "docs/reports"
+  ".annotations"
+  ".pilot"
+  ".claude"
+  "CLAUDE.md"
   "web"          # the site lives in the private repo and must not be published from here
   "sim"
   "api"
