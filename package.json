@@ -1,0 +1,37 @@
+{
+  "name": "priors",
+  "version": "0.1.0",
+  "description": "Credit-backed reputation for ERC-8004 agents: borrow real money, repay it, and the ledger remembers. Contracts, SDK, CLI and an agent skill.",
+  "license": "MIT",
+  "homepage": "https://priors.trade",
+  "repository": "github:priors-agents/priors",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "priors": "bin/priors.mjs"
+  },
+  "exports": {
+    ".": "./sdk/priors.mjs"
+  },
+  "files": [
+    "sdk",
+    "bin",
+    "skills",
+    "src",
+    "script",
+    "docs",
+    "AGENTS.md"
+  ],
+  "scripts": {
+    "quickstart": "node scripts/quickstart.mjs",
+    "devnet": "node scripts/devnet.mjs",
+    "priors": "node bin/priors.mjs",
+    "check-public": "bash scripts/check-public.sh",
+    "test": "forge test"
+  },
+  "dependencies": {
+    "ethers": "^6.13.4"
+  }
+}

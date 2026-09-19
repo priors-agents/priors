@@ -1,0 +1,30 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.26"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+via_ir = false
+fs_permissions = [{ access = "read-write", path = "./deployments" }]
+
+[fmt]
+line_length = 120
+tab_width = 4
+
+[rpc_endpoints]
+anvil = "http://127.0.0.1:8545"
+robinhood = "https://rpc.mainnet.chain.robinhood.com"
+robinhood_testnet = "https://rpc.testnet.chain.robinhood.com"
+
+[etherscan]
+robinhood = { key = "none", url = "https://robinhoodchain.blockscout.com/api", chain = 4663 }
+
+[lint]
+exclude_lints = ["mixed-case-function", "mixed-case-variable", "screaming-snake-case-immutable", "screaming-snake-case-const", "divide-before-multiply"]
+
+[invariant]
+runs = 256
+depth = 64
+fail_on_revert = false

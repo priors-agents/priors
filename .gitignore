@@ -1,0 +1,23 @@
+# Foundry
+cache/
+out/
+broadcast/
+
+# Node
+node_modules/
+
+# Local secrets and local chain state. A wallet key must never become a tracked
+# file; scripts/check-public.sh fails the build if one ever does.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+wallet.json
+deployments/31337.json
+deployments/*.local.json
+anvil.log
+
+# Misc
+.DS_Store
+*.log
