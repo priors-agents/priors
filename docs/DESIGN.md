@@ -78,6 +78,13 @@ A defaulter's children are orphaned: their `delegatedIn` no longer counts. Any l
 
 **Bad debt caused by any agent is at most what that agent earned, and the reserve always covers the sum of everything earned. Therefore lenders never lose principal.**
 
+> ⛔ **This is the intended invariant, and the current code does not hold it.** A committed, deliberately failing
+> regression (`test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure`) exhibits a counterexample: because
+> `markDefault()` releases an agent's entire `delegatedIn` when processing its *first* default, a second default
+> from the same agent finds no backing left to charge, and lenders are short. Read the sketch below as the target
+> the accounting is being corrected towards, not as a statement about the deployed behaviour. See the Status
+> section of the [README](../README.md).
+
 Sketch. An agent's exposure is `principalOut + delegatedOut ≤ capacity = stake + earned + delegatedIn`.
 
 - Own default: `badDebt = P − min(P, delegatedIn)`, and `P ≤ capacity − delegatedOut`. If `P ≤ delegatedIn` there is no bad debt. Otherwise `badDebt = P − delegatedIn ≤ earned − delegatedOut ≤ earned`.
@@ -86,6 +93,8 @@ Sketch. An agent's exposure is `principalOut + delegatedOut ≤ capacity = stake
 - The reserve only decreases by bad debt, which is at most the defaulter's `earned`, which is removed from `totalEarned` at the same moment. So `reserve − totalEarned` never decreases through a default, and growth is only granted while it is non-negative.
 
 `test/Invariants.t.sol` checks this over random sequences of every user action, and a deterministic drive confirms the walk actually reaches defaults, orphaned children, and reserve payouts.
+
+⚠ Those randomized invariants **pass despite the counterexample above**, which is the useful lesson in this file: a fuzzer that never happens to default the same agent twice reports green forever. Their passing is not a proof of lender protection, and the deterministic regression is what actually holds the line here.
 
 ## Why this resists the obvious attacks
 
