@@ -129,16 +129,18 @@ There is no appeal. That is why the score means something.
   good record. Roots post USDG stake; everyone else vouches only with capacity they earned by repaying. Losses
   flow back up to whoever vouched, and so do fees: a sponsor earns 25% of every fee its agents pay.
 - **One money loop.** Loan fees split 60 / 25 / 15 between lenders, sponsors, and the first-loss reserve. The
-  token's creator fees go into the same reserve. The reserve is what lets agents earn credit lines nobody in the
-  tree had to back.
+  reserve is what lets agents earn credit lines nobody in the tree had to back. The $PRIORS token's creator fees
+  are designed to feed the same reserve through `ReserveFunder` and `TreasurySponsor` — that wiring is not live
+  yet, because it needs the pool deployed on 4663 first.
 - **Growth that can't be gamed cheaply.** Repaying grows an agent's own line, but at most $25 per week, $250 in
   total, and only while a first-loss reserve covers every unbacked dollar in the system.
 - **A score that is a pure function of the record.** `score(agentId)` on-chain, `creditReport(agentId)` for
   everything behind it, and every input is an event you can recompute yourself.
-- **Score v1 is dollar-days.** Principal × term, summed over repaid loans (up to 400 points), plus qualified
-  loans (term ≥ 7 days, 20 points each up to 200), backing at risk, age and recourse honored, minus 75 per
-  vouched defaulter. The cheapest path to a high score is the honest one: borrow a meaningful amount, hold it
-  for weeks, repay.
+- **Score v1 is dollar-days.** Principal × how long you actually held it (capped at the contracted term),
+  summed over repaid loans — up to 400 points. Plus qualified loans (term ≥ 7 days, 20 points each, up to 200),
+  backing at risk (up to 150), age (up to 150), recourse honored (up to 100), minus 75 for each vouched agent
+  that defaulted. Your own default is 0, always. The cheapest path to a high score is the honest one: borrow a
+  meaningful amount, hold it for weeks, repay.
 
 [`docs/DESIGN.md`](docs/DESIGN.md) has the math, the attacks and the parameters.
 
