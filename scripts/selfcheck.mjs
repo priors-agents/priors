@@ -10,7 +10,7 @@
 // The end-to-end check needs Foundry and starts a throwaway anvil on port 8547 so it cannot collide with a devnet
 // you are already using. Skip it with `--no-chain` if Foundry is not installed.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ROOT, toUnits, fromUnits, formatUsd } from "../sdk/env.mjs";
@@ -116,6 +116,98 @@ check("check-public.sh fails on tracked agent working state", () => {
     if (!/docs\/builds/.test(r.stdout)) throw new Error(`guard failed, but not for docs/builds:\n${r.stdout}`);
   } finally {
     sh("git", ["rm", "-q", "--cached", "--", "docs/builds/selfcheck-planted.md"]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+check("--history catches a credential that was committed and then deleted", () => {
+  // The history scan once used its own shorter pattern list, so an OpenAI or AWS key committed and later removed
+  // passed clean while staying permanently retrievable from a public repo.
+  //
+  // Asserted by execution, not by reading the script: a source-text check on this exact bug passed while the
+  // behaviour was still broken. Runs in a throwaway repo so the real one is never committed to.
+  const dir = mkdtempSync(join(tmpdir(), "priors-history-"));
+  const git = (...a) => spawnSync("git", a, { cwd: dir, encoding: "utf8" });
+  try {
+    spawnSync("mkdir", ["-p", join(dir, "scripts"), join(dir, "docs")]);
+    writeFileSync(join(dir, "scripts", "check-public.sh"), readFileSync(join(ROOT, "scripts", "check-public.sh"), "utf8"));
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "selfcheck@example.invalid");
+    git("config", "user.name", "selfcheck");
+    git("add", "-A");
+    git("commit", "-q", "-m", "base");
+    // One per credential class that a shorter history pattern list would have missed.
+    //
+    // Assembled from fragments on purpose: written out whole, these fixtures are themselves credential-shaped, so
+    // check-public.sh would flag this very file and the guard would be unusable on its own repo. (It does exactly
+    // that if you inline them — which is a fair demonstration that the scanner works.)
+    const fixtures = [
+      ["aws", "AKIA" + "IOSFODNN7EXAMPLE"],
+      ["openai", "sk-" + "proj-" + "A1b2C3d4".repeat(5)],
+    ];
+    for (const [name, secret] of fixtures) {
+      // git removes a directory once its last tracked file goes, so recreate it each round.
+      spawnSync("mkdir", ["-p", join(dir, "docs")]);
+      writeFileSync(join(dir, "docs", `leak-${name}.txt`), `leaked=${secret}\n`);
+      git("add", "-f", `docs/leak-${name}.txt`);
+      git("commit", "-q", "-m", `oops ${name}`);
+      git("rm", "-q", `docs/leak-${name}.txt`);
+      git("commit", "-q", "-m", `remove ${name}`);
+    }
+    const r = spawnSync("bash", ["scripts/check-public.sh", "--history"], { cwd: dir, encoding: "utf8" });
+    if (r.status === 0) throw new Error(`--history exited 0 with credentials in history:\n${r.stdout}`);
+    if (!/historical blob/.test(r.stdout)) {
+      // Something else failed it (e.g. the inventory rule), which would hide a broken history scan.
+      throw new Error(`--history failed, but not on the historical blobs:\n${r.stdout}`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+console.log("configuration");
+check(".env is actually loaded, not just documented", () => {
+  // Every doc says `cp .env.example .env` and put RPC_URL there. Nothing read it until sdk/env.mjs did, so the
+  // documented real-chain path silently talked to localhost. Run in a temp cwd so the repo's own .env is not used.
+  const dir = mkdtempSync(join(tmpdir(), "priors-dotenv-"));
+  try {
+    writeFileSync(join(dir, ".env"), "# comment\nRPC_URL=http://127.0.0.1:9911\n");
+    const r = spawnSync(process.execPath, [join(ROOT, "bin", "priors.mjs"), "doctor"], {
+      cwd: dir,
+      encoding: "utf8",
+      // Strip an inherited RPC_URL so this proves the file was read, not the environment.
+      env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== "RPC_URL")),
+    });
+    const output = r.stdout + r.stderr;
+    if (!/127\.0\.0\.1:9911/.test(output)) throw new Error(`doctor ignored the .env RPC_URL:\n${output}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+check("an exported variable still beats the .env file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "priors-dotenv-"));
+  try {
+    writeFileSync(join(dir, ".env"), "RPC_URL=http://127.0.0.1:9911\n");
+    const r = spawnSync(process.execPath, [join(ROOT, "bin", "priors.mjs"), "doctor"], {
+      cwd: dir,
+      encoding: "utf8",
+      env: { ...process.env, RPC_URL: "http://127.0.0.1:9922" },
+    });
+    const output = r.stdout + r.stderr;
+    if (!/127\.0\.0\.1:9922/.test(output)) throw new Error(`the .env file overrode an explicit environment variable:\n${output}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+check("the .env.example placeholder key is treated as unset", () => {
+  // `PRIVATE_KEY=0x` copied and left unfilled must read as "no key yet", not reach ethers as a malformed one.
+  const dir = mkdtempSync(join(tmpdir(), "priors-dotenv-"));
+  try {
+    writeFileSync(join(dir, ".env"), "PRIVATE_KEY=0x\nRPC_URL=http://127.0.0.1:9911\n");
+    const r = spawnSync(process.execPath, [join(ROOT, "bin", "priors.mjs"), "doctor"], { cwd: dir, encoding: "utf8", env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== "PRIVATE_KEY" && k !== "RPC_URL")) });
+    const output = r.stdout + r.stderr;
+    if (/invalid BytesLike|invalid private key|value=/.test(output)) throw new Error(`the placeholder key reached ethers:\n${output}`);
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

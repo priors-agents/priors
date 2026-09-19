@@ -27,6 +27,31 @@ say_bad()  { echo "LEAK: $1"; fail=1; }
 # Each entry is a credential this project actually handles. A private key and a transaction hash are both
 # 0x + 64 hex and cannot be told apart by shape, so a bare shape rule would fire on every legitimate tx hash and
 # teach everyone to ignore it. The rules below match assignment, which is what a real leak looks like.
+# ⛔ ONE list, used by BOTH the tracked-file scan and the history scan below. When they were two lists, the
+# history expression silently omitted the OpenAI and AWS patterns, so a key committed and later deleted passed
+# `--history` clean while remaining permanently retrievable from a public repo. A partial scan that prints "ok"
+# is worse than no scan.
+CRED_LABELS=(
+  "assigned EVM private key"
+  "assigned hex mnemonic"
+  "Cloudflare API token"
+  "Anthropic API key"
+  "OpenAI API key"
+  "GitHub token"
+  "AWS access key id"
+  "private key PEM block"
+)
+CRED_PATTERNS=(
+  '(PRIVATE_KEY|privateKey|private_key)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"']?(0x)?[a-fA-F0-9]{64}'
+  '(MNEMONIC|mnemonic)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"']?(0x)?[a-fA-F0-9]{64}'
+  'cfat_[A-Za-z0-9_-]{20,}'
+  'sk-ant-[A-Za-z0-9_-]{20,}'
+  'sk-(proj-)?[A-Za-z0-9_-]{32,}'
+  'gh[pousr]_[A-Za-z0-9]{30,}'
+  'AKIA[0-9A-Z]{16}'
+  'BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE KEY'
+)
+
 shape() {  # shape <label> <extended-regex>
   local label="$1" re="$2" hits
   hits=$(git ls-files -z | xargs -0 grep -lIE -- "$re" 2>/dev/null)
@@ -38,14 +63,9 @@ shape() {  # shape <label> <extended-regex>
   fi
 }
 
-shape "assigned EVM private key"  '(PRIVATE_KEY|privateKey|private_key)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"']?(0x)?[a-fA-F0-9]{64}'
-shape "assigned mnemonic"         '(MNEMONIC|mnemonic)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"']?(0x)?[a-fA-F0-9]{64}'
-shape "Cloudflare API token"      'cfat_[A-Za-z0-9_-]{20,}'
-shape "Anthropic API key"         'sk-ant-[A-Za-z0-9_-]{20,}'
-shape "OpenAI API key"            'sk-(proj-)?[A-Za-z0-9_-]{32,}'
-shape "GitHub token"              'gh[pousr]_[A-Za-z0-9]{30,}'
-shape "AWS access key id"         'AKIA[0-9A-Z]{16}'
-shape "private key PEM block"     'BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE KEY'
+for i in "${!CRED_PATTERNS[@]}"; do
+  shape "${CRED_LABELS[$i]}" "${CRED_PATTERNS[$i]}"
+done
 
 # The one word mnemonic that is allowed here: anvil's own published test phrase, used only on chain 31337.
 # Any *other* 12-or-more-word BIP-39-looking phrase assigned to a mnemonic variable is a real finding.
@@ -102,11 +122,13 @@ say_ok "every tracked top-level entry is declared"
 # ---------------------------------------------------------------- 3. history (opt-in)
 # A secret removed in a later commit is still public once the repo is. Scans every blob that ever existed.
 if [ "$history" -eq 1 ]; then
-  echo "  .. scanning every blob in history"
+  echo "  .. scanning every blob in history against all ${#CRED_PATTERNS[@]} credential patterns"
+  # Built from the same array as the tracked-file scan, so the two can never drift apart again.
+  history_re=$(IFS='|'; echo "${CRED_PATTERNS[*]}")
   hits=$(git rev-list --objects --all 2>/dev/null | awk '{print $1}' | \
     while read -r obj; do
       [ "$(git cat-file -t "$obj" 2>/dev/null)" = "blob" ] || continue
-      if git cat-file -p "$obj" 2>/dev/null | grep -qIE '(PRIVATE_KEY|privateKey|private_key)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"']?(0x)?[a-fA-F0-9]{64}|cfat_[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'; then
+      if git cat-file -p "$obj" 2>/dev/null | grep -qIE "$history_re"; then
         echo "$obj"
       fi
     done)

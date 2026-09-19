@@ -17,6 +17,38 @@ import { ethers } from "ethers";
 import { Priors } from "./priors.mjs";
 
 export const ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * Load `.env` into process.env, without a dependency and without clobbering anything already exported.
+ *
+ * Every doc in this repo tells you to `cp .env.example .env` and put RPC_URL and PRIVATE_KEY in it. Until this
+ * existed nothing read that file, so following the documented real-chain setup quietly talked to localhost and
+ * signed with nothing — the documented production path failing before the first transaction.
+ *
+ * Deliberately minimal: `KEY=value`, `#` comments, optional surrounding quotes. An already-set variable wins, so
+ * `RPC_URL=... npx priors doctor` still overrides the file.
+ */
+export function loadDotEnv(file = join(ROOT, ".env")) {
+  if (!existsSync(file)) return {};
+  const loaded = {};
+  for (const raw of readFileSync(file, "utf8").split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq < 1) continue;
+    const key = line.slice(0, eq).trim().replace(/^export\s+/, "");
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    let value = line.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
+    loaded[key] = value;
+    if (process.env[key] === undefined) process.env[key] = value;
+  }
+  return loaded;
+}
+// The repo's own .env (what the docs tell you to create), plus one in the working directory for when the CLI is
+// installed as a dependency and run from somewhere else. The working directory wins.
+loadDotEnv(join(process.cwd(), ".env"));
+loadDotEnv();
 export const DEV_CHAIN = 31337;
 /// anvil's own published test mnemonic. Public by design, worthless by design, and never used off chain 31337.
 export const DEV_MNEMONIC = "test test test test test test test test test test test junk";
@@ -88,7 +120,10 @@ export async function resolve(opts = {}) {
   };
   if (!dep.creditPool) throw new NoDeployment(chainId);
 
-  const pk = opts.privateKey || process.env.PRIVATE_KEY;
+  // `.env.example` ships `PRIVATE_KEY=0x` as a placeholder. Copied and left unfilled it is present-but-useless,
+  // and handing it to ethers produces an opaque "invalid BytesLike" instead of "you have not set a key yet".
+  const rawPk = opts.privateKey || process.env.PRIVATE_KEY;
+  const pk = rawPk && rawPk !== "0x" && rawPk !== "0x0" ? rawPk : undefined;
   let signer = null;
   let derived = false;
   if (pk) {
