@@ -26,8 +26,16 @@ line("│  a local chain, the real contracts, and one agent earning credit");
 line("╰──────────────────────────────────────────────────────────────────");
 line();
 
-await devnet();
-await cli(["flow"]);
+// This is the one command the README leads with, so a failure here gets the same clean, hint-bearing message the
+// rest of the CLI gives rather than a raw unhandled-rejection stack trace.
+try {
+  await devnet();
+  await cli(["flow"]);
+} catch (e) {
+  line();
+  line(e.message || String(e));
+  process.exit(1);
+}
 
 line();
 line("that record is now on the chain. Two things to try next:");

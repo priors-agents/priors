@@ -15,11 +15,11 @@ import { spawn } from "node:child_process";
 import { mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { ethers } from "ethers";
-import { ROOT, devWallet, readDeployment, isDevChain } from "../sdk/env.mjs";
+import { ROOT, devWallet, readDeployment, isDevChain, toUnits, formatUnits } from "../sdk/env.mjs";
 
 const RPC = process.env.RPC_URL || "http://127.0.0.1:8545";
-const USD = 1_000_000n;
-const dollars = (n) => BigInt(n) * USD;
+
+const dollars = (n) => toUnits(BigInt(n));
 
 const POOL_ABI = [
   "function deposit(uint256 assets, address receiver) returns (uint256)",
@@ -114,7 +114,7 @@ export async function devnet() {
     throw new Error(`the treasury did not end up able to vouch (agentId=${tId}, enrolled=${report.enrolled}, available=${report.available}). firstLine() would revert.`);
   }
 
-  const fmt = (u) => `$${(Number(u) / 1e6).toLocaleString("en-US")}`;
+  const fmt = formatUnits;
   log("");
   log(`  chain            ${chainId}  ${RPC}`);
   log(`  CreditPool       ${dep.creditPool}`);

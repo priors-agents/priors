@@ -25,6 +25,24 @@ export const devWallet = (index) => ethers.HDNodeWallet.fromPhrase(DEV_MNEMONIC,
 
 export const deploymentPath = (chainId) => join(ROOT, "deployments", `${chainId}.json`);
 
+// --- money ---------------------------------------------------------------------------------------------------
+// USDG has 6 decimals on chain and the SDK speaks whole dollars, so this conversion happens in a dozen places.
+// It lives here once: a second implementation that rounds differently is how $0.011666 becomes $0.012.
+export const USDG_DECIMALS = 6n;
+const UNIT = 10n ** USDG_DECIMALS;
+/** Whole dollars (number or bigint) -> 6-decimal units. */
+export const toUnits = (dollars) => (typeof dollars === "bigint" ? dollars * UNIT : BigInt(Math.round(Number(dollars) * Number(UNIT))));
+/** 6-decimal units -> dollars as a number. Fine for display; do not do arithmetic on the result. */
+export const fromUnits = (units) => Number(units) / Number(UNIT);
+/**
+ * Money, formatted for a human, identically everywhere.
+ * Pinned to en-US on purpose: the default locale renders $0.0116 as $0,0116 on a French machine, and a CLI whose
+ * output depends on who ran it is a CLI whose output nobody can paste into a bug report.
+ */
+export const formatUsd = (dollars) => `$${Number(dollars).toLocaleString("en-US", { maximumFractionDigits: Number(USDG_DECIMALS) })}`;
+/** Same, from raw on-chain units. */
+export const formatUnits = (units) => formatUsd(fromUnits(units));
+
 export function readDeployment(chainId) {
   const p = deploymentPath(chainId);
   if (!existsSync(p)) return null;

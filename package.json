@@ -29,7 +29,8 @@
     "devnet": "node scripts/devnet.mjs",
     "priors": "node bin/priors.mjs",
     "check-public": "bash scripts/check-public.sh",
-    "test": "forge test"
+    "selfcheck": "node scripts/selfcheck.mjs",
+    "test": "node scripts/selfcheck.mjs"
   },
   "dependencies": {
     "ethers": "^6.13.4"

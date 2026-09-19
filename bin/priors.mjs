@@ -17,7 +17,7 @@
 //   npx priors fund                   mock USDG + gas for your wallet
 //   npx priors warp <days>            move chain time forward
 import { ethers } from "ethers";
-import { resolve, isDevChain, NoDeployment } from "../sdk/env.mjs";
+import { resolve, isDevChain, toUnits, fromUnits, formatUsd } from "../sdk/env.mjs";
 
 const args = process.argv.slice(2);
 const cmd = args[0];
@@ -32,9 +32,7 @@ for (let i = 1; i < args.length; i++) {
 const flag = (name) => flags[name];
 
 const out = (...a) => console.log(...a);
-// Pinned to en-US on purpose: the default locale turns $0.0116 into $0,0116 on a French machine, and a CLI that
-// prints money differently depending on who runs it is a CLI whose output nobody can paste into a bug report.
-const usd = (n) => `$${Number(n).toLocaleString("en-US", { maximumFractionDigits: 6 })}`;
+const usd = formatUsd;
 const die = (msg) => {
   console.error(msg);
   process.exit(1);
@@ -66,7 +64,8 @@ async function ctx(needSigner = true) {
   try {
     return await resolve({ needSigner });
   } catch (e) {
-    if (e instanceof NoDeployment) die(e.message);
+    // NoDeployment already carries its own guided message, and so does an unreachable-RPC error, so both want the
+    // same treatment: print what it says and stop, never a stack trace and never a guessed address.
     die(e.message);
   }
 }
@@ -77,7 +76,7 @@ async function fund(c, amount) {
   if (!c.dep.usdcIsMock) die("this deployment uses a real asset, not the mock. Nothing to mint.");
   await c.provider.send("anvil_setBalance", [c.address, "0x" + ethers.parseEther("100").toString(16)]);
   const mock = new ethers.Contract(c.dep.usdc, ["function mint(address,uint256)"], c.signer);
-  await (await mock.mint(c.address, BigInt(Math.round(amount * 1e6)))).wait();
+  await (await mock.mint(c.address, toUnits(amount))).wait();
   out(`funded ${c.address} with ${usd(amount)} mock USDG and 100 ETH of gas`);
 }
 
@@ -101,8 +100,12 @@ async function main() {
     out(`wallet           ${c.address || "(none — set PRIVATE_KEY)"}${c.derived ? "  (derived dev wallet, dev chain only)" : ""}`);
     if (c.address) {
       const bal = await c.provider.getBalance(c.address);
+      // Reachable when POOL/TREASURY are set by hand on a chain with no committed record but USDC is left out.
+      // Without this check ethers throws a bare "invalid address", which is the one kind of output doctor exists
+      // to prevent.
+      if (!c.dep.usdc) die("USDC is not set for this chain, so balances cannot be read.\n  fix:  set POOL, TREASURY and USDC together, or point at a chain that has a deployment record.");
       const asset = new ethers.Contract(c.dep.usdc, ["function balanceOf(address) view returns (uint256)"], c.provider);
-      const usdg = Number(await asset.balanceOf(c.address)) / 1e6;
+      const usdg = fromUnits(await asset.balanceOf(c.address));
       out(`balances         ${ethers.formatEther(bal)} native · ${usd(usdg)} USDG`);
       // An unfunded wallet is the actual blocker on a fresh chain, and printing two zeros as a neutral line is
       // how doctor sends you off to fail on `register` instead. Say what to do about it.
@@ -114,7 +117,7 @@ async function main() {
       }
     }
     const p = await c.priors.pool.getParams();
-    out(`params           loans ${usd(Number(p.minLoan) / 1e6)}–${usd(Number(p.maxLoan) / 1e6)} · fee ${Number(p.feeBps) / 100}% per 30d · grace ${Number(p.grace) / 86400}d · qualifies at ${Number(p.minScoreTerm) / 86400}d`);
+    out(`params           loans ${usd(fromUnits(p.minLoan))}–${usd(fromUnits(p.maxLoan))} · fee ${Number(p.feeBps) / 100}% per 30d · grace ${Number(p.grace) / 86400}d · qualifies at ${Number(p.minScoreTerm) / 86400}d`);
     return;
   }
 
