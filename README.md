@@ -36,7 +36,7 @@ Reviews are cheap to fake. Repaid debt isn't.
 > someone who knows an audit hasn't happened.
 >
 > **The pool is live on Robinhood Chain mainnet** (chain 4663), seeded small on purpose: 150 USDG of lender
-> liquidity, 25 in the first-loss reserve, 25 staked by the treasury. Addresses come from
+> liquidity, 75 in the first-loss reserve, 75 staked by the treasury. Addresses come from
 > `deployments/<chainId>.json`, so `npx priors doctor` resolves it with no configuration. `npm run quickstart`
 > still builds you a throwaway local chain in about thirty seconds if you would rather not touch mainnet.
 >
@@ -48,10 +48,11 @@ Reviews are cheap to fake. Repaid debt isn't.
 > also means the "operators stake and vouch" half of the sponsor tree is switched off for now, and the treasury
 > is the only sponsor. `test/BetaMitigationMinStake.t.sol` holds that reasoning to account, control included.
 >
-> Practical consequence: **onboarding is finite.** The treasury vouches $5 per agent out of its own 25 USDG of
-> stake, and a line it has given cannot be taken back, so the beta seats five agents in total. Capacity grows
-> only when $PRIORS creator fees are swept into the treasury — by hand during the beta. priors.trade shows how
-> many first lines are left, read live from the chain.
+> Practical consequence: **onboarding is finite.** The treasury vouches $5 per agent out of its own 75 USDG of
+> stake, and a line it has given cannot be taken back, so the beta seats fifteen agents in total. Capacity grows
+> only when $PRIORS creator fees are swept into the treasury — by hand during the beta. Don't trust that count
+> once it is a day old: priors.trade shows how many first lines are left, read live from the chain, and so does
+> `npx priors report 436` (`available` ÷ $5).
 
 ---
 
