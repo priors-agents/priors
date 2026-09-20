@@ -26,12 +26,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # `npm test` needs foundry, not just Node: selfcheck.mjs runs `forge test` to prove the
+      # lender-loss regression is really in the suite, and spawns `anvil` to drive a fresh agent
+      # through a real loan. Without this it fails on `spawn anvil ENOENT`.
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.3.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm ci
-      # selfcheck covers the CLI and the unit conversions; test-rpc-failover drives the real
-      # makeProvider against servers whose failures it scripts, so neither needs a chain.
       - run: npm test
       # Every entry point a user actually runs, so a syntax error cannot ship green.
       - run: node --check bin/priors.mjs && node --check sdk/env.mjs && node --check sdk/priors.mjs
