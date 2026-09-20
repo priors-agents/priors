@@ -276,7 +276,11 @@ scripts/quickstart.mjs       devnet + one agent through the entire record
 skills/priors/SKILL.md       the agent skill
 docs/AGENTS.md               guide for agent builders
 docs/DESIGN.md               the math, the attacks, the parameters
+SECURITY.md                  how to report a vulnerability, what is in scope, what is already fixed
 ```
+
+Found something? **[SECURITY.md](SECURITY.md)** — use this repo's private vulnerability reporting, and
+please do not put details in a public issue.
 
 ## Working on it
 

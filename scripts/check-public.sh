@@ -109,7 +109,7 @@ say_ok "no forbidden path is tracked"
 
 # Every tracked top-level entry must be one this repo declares. A new one is not automatically wrong — it is
 # something a human has to look at before it goes public.
-allowed_top="AGENTS.md README.md LICENSE package.json package-lock.json foundry.toml remappings.txt .env.example .gitignore .gitmodules .github bin deployments docs lib script scripts sdk skills src test"
+allowed_top="AGENTS.md README.md LICENSE SECURITY.md package.json package-lock.json foundry.toml remappings.txt .env.example .gitignore .gitmodules .github bin deployments docs lib script scripts sdk skills src test"
 while read -r entry; do
   [ -z "$entry" ] && continue
   case " $allowed_top " in
