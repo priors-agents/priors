@@ -120,10 +120,20 @@ export function makeProvider(rpcs, providerOpts = {}) {
   const ATTEMPTS = 2;
   const BUDGET_MS = 15000; // a CLI may wait longer than a web page, but not forever
 
+  /* The budget is only checked between attempts, so it bounds nothing if an attempt never returns -
+     and ethers' default is a 300 SECOND timeout. A black-holed endpoint that accepts the connection
+     and then goes quiet is a common failure, so each attempt gets its own share as a hard timeout. */
+  const perAttemptMs = Math.max(2000, Math.floor(BUDGET_MS / (urls.length * ATTEMPTS)));
+  const connect = (url) => {
+    const req = new ethers.FetchRequest(url);
+    req.timeout = perAttemptMs;
+    return req;
+  };
+
   class FailoverProvider extends ethers.JsonRpcProvider {
     constructor() {
-      super(urls[0], undefined, providerOpts);
-      this._backups = urls.slice(1).map((u) => new ethers.JsonRpcProvider(u, undefined, providerOpts));
+      super(connect(urls[0]), undefined, providerOpts);
+      this._backups = urls.slice(1).map((u) => new ethers.JsonRpcProvider(connect(u), undefined, providerOpts));
       this.rpcUrls = urls.slice();
     }
     async _send(payload) {

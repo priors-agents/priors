@@ -30,7 +30,7 @@
     "priors": "node bin/priors.mjs",
     "check-public": "bash scripts/check-public.sh",
     "selfcheck": "node scripts/selfcheck.mjs",
-    "test": "node scripts/selfcheck.mjs"
+    "test": "node scripts/selfcheck.mjs && node scripts/test-rpc-failover.mjs"
   },
   "dependencies": {
     "ethers": "^6.13.4"
