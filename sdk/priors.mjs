@@ -105,13 +105,31 @@ export class Priors {
     const tx = await this.pool.repay(loanId);
     return (await tx.wait()).hash;
   }
-  /** Register a new ERC-8004 identity on registries that expose register(string). Returns the agentId. */
+  /**
+   * Register a new ERC-8004 identity on registries that expose register(string). Returns the agentId.
+   *
+   * The id is read from the ERC-721 `Transfer` mint log, not from a `Registered` event: an identity registry is
+   * an ERC-721, so every one of them emits `Transfer(0x0, owner, tokenId)`, while the registry-specific event
+   * differs between implementations. Robinhood Chain's `AgentIdentity` emits
+   * `Registered(uint256,string,address)` — the same name as the dev registry's
+   * `Registered(uint256,address,string)` but a different argument order, so decoding by name found nothing and
+   * this threw for every real registration.
+   */
   async register(uri) {
     this._needSigner();
-    const reg = new ethers.Contract(await this.pool.registry(), REGISTRY_ABI, this.signer);
+    const registry = await this.pool.registry();
+    const reg = new ethers.Contract(registry, REGISTRY_ABI, this.signer);
     const rc = await (await reg.register(uri || "")).wait();
-    for (const log of rc.logs) { try { const ev = reg.interface.parseLog(log); if (ev && ev.name === "Registered") return Number(ev.args.agentId); } catch (_) {} }
-    throw new Error("Registered event not found");
+    const MINT = ethers.id("Transfer(address,address,uint256)");
+    const ZERO = "0x" + "0".repeat(64);
+    for (const log of rc.logs) {
+      if (log.address.toLowerCase() !== registry.toLowerCase()) continue;
+      // ERC-721 Transfer indexes all three args, so a mint is topics = [sig, 0x0, to, tokenId].
+      if (log.topics.length === 4 && log.topics[0] === MINT && log.topics[1] === ZERO) {
+        return Number(BigInt(log.topics[3]));
+      }
+    }
+    throw new Error(`no ERC-721 mint log from the registry ${registry} in tx ${rc.hash}; is it an ERC-8004 identity registry?`);
   }
 }
 export default Priors;
