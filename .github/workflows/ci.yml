@@ -19,7 +19,10 @@ jobs:
           submodules: recursive
       - uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: v1.3.0
+          # Pinned to the version the maintainers actually run. It was v1.3.0, whose `forge fmt` disagrees
+          # with newer releases about blank lines, so `fmt --check` failed in CI on files that were clean
+          # locally. A formatter check is only useful if both sides format the same way.
+          version: v1.7.1
       - run: forge --version
       - run: forge fmt --check
       - run: forge build --sizes
@@ -36,7 +39,10 @@ jobs:
       # through a real loan. Without this it fails on `spawn anvil ENOENT`.
       - uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: v1.3.0
+          # Pinned to the version the maintainers actually run. It was v1.3.0, whose `forge fmt` disagrees
+          # with newer releases about blank lines, so `fmt --check` failed in CI on files that were clean
+          # locally. A formatter check is only useful if both sides format the same way.
+          version: v1.7.1
       - uses: actions/setup-node@v4
         with:
           node-version: 22
