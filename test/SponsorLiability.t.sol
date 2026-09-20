@@ -246,6 +246,68 @@ contract SponsorLiabilityTest is Test {
         assertEq(pool.totalStake(), 0, "no stake left stranded in the books");
     }
 
+    /// The door round the back of the dead-root fix. `vouch`'s takeover branch voids the orphan's whole
+    /// `delegatedIn` — and that is exactly the amount a dead root's stake is now liable for. So anyone
+    /// could take over an orphan that had a loan drawn, for 1 unit, and turn stake-backed exposure into
+    /// bad debt against the reserve. Found by review and by the exposure invariant in CI, independently.
+    function test_aTakeoverCannotVoidBackingForADrawnLoan() public {
+        vm.startPrank(rootOp);
+        pool.enrollRoot(ROOT, 200 * USD);
+        pool.vouch(ROOT, MID, 100 * USD);
+        pool.borrow(ROOT, 100 * USD, 7 days, rootOp);
+        vm.stopPrank();
+        uint256 rootLoan = pool.loanCount();
+
+        vm.prank(midOp);
+        pool.borrow(MID, 100 * USD, 7 days, midOp); // drawn against ROOT's delegation
+        uint256 midLoan = pool.loanCount();
+
+        vm.warp(block.timestamp + 7 days + 3 days + 1);
+        pool.markDefault(rootLoan); // ROOT dies; 100 of its stake stays earmarked for MID
+
+        // a stranger's own root tries to adopt the orphan for one unit
+        address attacker = makeAddr("attacker");
+        vm.prank(attacker);
+        uint256 EVIL = reg.register("ipfs://evil");
+        _fund(attacker, 1_000 * USD);
+        vm.startPrank(attacker);
+        pool.enrollRoot(EVIL, 50 * USD);
+        vm.expectRevert(abi.encodeWithSelector(CreditPool.DelegationInUse.selector, MID, 100 * USD, 0));
+        pool.vouch(EVIL, MID, 1);
+        vm.stopPrank();
+
+        // and the dead root's stake still pays, which is the whole point
+        uint256 reserveBefore = pool.reserve();
+        pool.markDefault(midLoan);
+        assertEq(pool.creditReport(ROOT).stake, 0, "the dead root's earmarked stake must still be slashed");
+        assertEq(pool.reserve(), reserveBefore, "the reserve must not have paid");
+        assertEq(pool.totalBadDebt(), 0);
+    }
+
+    /// And an orphan with nothing drawn can still be re-sponsored, which is what the branch is for.
+    function test_anOrphanWithNothingDrawnCanStillBeReSponsored() public {
+        vm.startPrank(rootOp);
+        pool.enrollRoot(ROOT, 200 * USD);
+        pool.vouch(ROOT, MID, 100 * USD);
+        pool.borrow(ROOT, 100 * USD, 7 days, rootOp);
+        vm.stopPrank();
+        uint256 rootLoan = pool.loanCount();
+
+        vm.warp(block.timestamp + 7 days + 3 days + 1);
+        pool.markDefault(rootLoan);
+
+        address rescuer = makeAddr("rescuer");
+        vm.prank(rescuer);
+        uint256 GOOD = reg.register("ipfs://good");
+        _fund(rescuer, 1_000 * USD);
+        vm.startPrank(rescuer);
+        pool.enrollRoot(GOOD, 200 * USD);
+        pool.vouch(GOOD, MID, 50 * USD); // MID drew nothing, so this is allowed
+        vm.stopPrank();
+        assertEq(pool.creditReport(MID).sponsor, GOOD, "the orphan should have a new sponsor");
+        assertEq(pool.creditReport(MID).delegatedIn, 50 * USD);
+    }
+
     // ---------------------------------------------------------------- the honest path still works
 
     /// A sponsor whose child has drawn nothing gets all of it back. This is the case the treasury's own

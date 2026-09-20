@@ -593,7 +593,18 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
             // takeover is allowed only if the current sponsor is dead
             Agent storage old = _agents[c.sponsor];
             if (!old.defaulted) revert WrongSponsor(agentId, c.sponsor);
-            // old sponsor's delegation is void (capacity() already ignores it); clean the books
+            /* ...and only while the orphan owes nothing against that delegation. This branch voids
+               `c.delegatedIn` outright, and a dead ROOT's stake is now liable for exactly that amount
+               (see markDefault), so voiding it while a loan is drawn erases the backing before the loan
+               can default: anyone could call `vouch(theirOwnRoot, orphan, 1)` and turn ~$100 of
+               stake-backed exposure into bad debt against the reserve. Three separate things found this -
+               an audit's dust-takeover case, an independent review, and the exposure invariant failing in
+               CI at depth 400 - all the same door. It is also what left `principalOut + delegatedOut`
+               above `capacity`: a taken-over agent is no longer an orphan, so the invariant stops
+               skipping it, and its capacity had just been re-based to the new sponsor's amount.
+               An orphan with a live loan therefore waits for that loan to close before it can be
+               re-sponsored, which is the same rule `unvouch` follows. */
+            if (c.principalOut > 0) revert DelegationInUse(agentId, c.delegatedIn, 0);
             old.delegatedOut -= c.delegatedIn;
             c.delegatedIn = 0;
             c.sponsor = sponsorId;
