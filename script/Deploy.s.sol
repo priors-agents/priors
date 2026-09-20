@@ -82,6 +82,7 @@ contract Deploy is Script {
 
         string memory json = "deployment";
         vm.serializeUint(json, "chainId", block.chainid);
+        vm.serializeUint(json, "deployBlock", block.number);
         vm.serializeAddress(json, "usdc", usdc);
         vm.serializeBool(json, "usdcIsMock", usdcIsMock);
         vm.serializeAddress(json, "registry", registry);

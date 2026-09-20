@@ -78,12 +78,16 @@ A defaulter's children are orphaned: their `delegatedIn` no longer counts. Any l
 
 **Bad debt caused by any agent is at most what that agent earned, and the reserve always covers the sum of everything earned. Therefore lenders never lose principal.**
 
-> ⛔ **This is the intended invariant, and the current code does not hold it.** A committed, deliberately failing
-> regression (`test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure`) exhibits a counterexample: because
-> `markDefault()` releases an agent's entire `delegatedIn` when processing its *first* default, a second default
-> from the same agent finds no backing left to charge, and lenders are short. Read the sketch below as the target
-> the accounting is being corrected towards, not as a statement about the deployed behaviour. See the Status
-> section of the [README](../README.md).
+> **This invariant was broken once, and the break is worth knowing about.** `markDefault()` used to release an
+> agent's entire `delegatedIn` on its *first* default, so a second default from the same agent found no backing
+> left to charge and lenders came up short. The counterexample
+> (`test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure`) was committed as a failing test and left public
+> until the accounting was corrected: a default now consumes only the liable slice per loan, the remainder keeps
+> backing that agent's other open loans, and earned credit is written off against bad debt at settlement.
+> `test/DefaultAccounting.t.sol` covers the interacting cases.
+>
+> ⛔ It has still had **no independent review**. See the note under the sketch on why the randomized invariants
+> are not the reassurance they look like.
 
 Sketch. An agent's exposure is `principalOut + delegatedOut ≤ capacity = stake + earned + delegatedIn`.
 
@@ -94,7 +98,7 @@ Sketch. An agent's exposure is `principalOut + delegatedOut ≤ capacity = stake
 
 `test/Invariants.t.sol` checks this over random sequences of every user action, and a deterministic drive confirms the walk actually reaches defaults, orphaned children, and reserve payouts.
 
-⚠ Those randomized invariants **pass despite the counterexample above**, which is the useful lesson in this file: a fuzzer that never happens to default the same agent twice reports green forever. Their passing is not a proof of lender protection, and the deterministic regression is what actually holds the line here.
+⚠ Those randomized invariants **passed right through the bug described above**, which is the useful lesson in this file: a fuzzer that never happens to default the same agent twice reports green forever. Their passing was not, and is not, a proof of lender protection. The deterministic cases in `test/DefaultAccounting.t.sol` are what actually hold the line here — and the fact that a real defect survived the fuzzer is the reason to assume the next one might too.
 
 ## Why this resists the obvious attacks
 

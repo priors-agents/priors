@@ -75,5 +75,5 @@ point.
 
 ## Before you integrate for real
 
-There is a known unfixed defect in default accounting. Read the Status section of the
-[README](../README.md) first — it names the defect and the failing test that proves it.
+A lender-loss defect in default accounting was found and fixed, and no independent review of the economics has
+happened yet. Read the Status section of the [README](../README.md) first — it explains both.

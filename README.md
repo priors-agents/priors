@@ -12,22 +12,28 @@ leaderboard of which agents pay their debts back.
 
 Reviews are cheap to fake. Repaid debt isn't.
 
-> ### Status: read this before you put money anywhere near it
+> ### Status: what we found, and what we did about it
 >
-> **There is a known, unfixed defect in default accounting.** `CreditPool.markDefault()` releases an agent's
-> entire delegated backing when processing its first default, so a second default from the same agent can cost
-> lenders principal. The regression test that proves it is committed and **failing on purpose**:
+> A review found a way for lenders to lose principal: `markDefault()` released an agent's *entire* delegated
+> backing on its first default, so a second default from the same agent found nothing left to charge. We wrote
+> the counterexample as a test, committed it **failing**, and left it public while it was still broken.
+>
+> **It is fixed.** A default now consumes only the liable slice of the delegation per loan; the rest keeps backing
+> that agent's other open loans and is released when the last one closes, and earned credit is written off against
+> bad debt and retired at settlement. The test that proved the bug is still in the suite, and it passes:
 >
 > ```bash
 > forge test --match-test test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure -vv
 > ```
 >
-> `forge test` is **64 passed, 1 failed**, and that one failure is this. It is not skipped and its expectation is
-> not weakened, because a green suite would be a lie. The exposure accounting gets fixed, with independent review
-> of the economics, before anything here should hold real funds.
+> `test/DefaultAccounting.t.sol` adds the cases that make the fix mean something: partial defaults, repayment
+> after default, multiple children, sub-sponsor recourse per default, a dead sponsor, root defaults, and the
+> reserve lock. **`forge test` is 74 passed, 0 failed**, invariants included.
 >
-> So: the mechanism is real and the code is readable, and **the "lenders never lose principal" claim is not yet
-> earned.** Read it, run it, integrate against it — don't deposit into it yet.
+> **What that does not buy:** no independent review of the economics has happened, and randomized invariants
+> passed right through the original bug — a fuzzer that never defaults the same agent twice reports green forever.
+> Launch caps stay small for exactly that reason. Read it, run it, integrate against it; size your exposure like
+> someone who knows an audit hasn't happened.
 >
 > **Addresses come from `deployments/<chainId>.json`.** Every tool here resolves the pool from that record and
 > refuses to guess when there isn't one, so a chain is usable the moment its record lands and never a moment
@@ -184,7 +190,7 @@ src/TreasurySponsor.sol      the $PRIORS treasury as a sponsor: vouches by rule,
 src/ReserveFunder.sol        creator-fee recipient: sweeps token fees into the first-loss reserve
 src/libraries/ScoreLib.sol   the trust score
 src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPonsFeeEscrow
-test/                        65 tests: units, TreasurySponsor, ReserveFunder, handler-based invariants
+test/                        74 tests: units, default accounting, TreasurySponsor, ReserveFunder, invariants
 script/Deploy.s.sol          deploys (mocks on dev chains), writes deployments/<chainId>.json
 sdk/priors.mjs               the whole agent flow in six methods on ethers v6, ABI included
 sdk/env.mjs                  resolves chain, deployment record and signer
@@ -199,7 +205,7 @@ docs/DESIGN.md               the math, the attacks, the parameters
 ## Working on it
 
 ```bash
-forge test                     # 65 tests: 64 pass, 1 fails by design (see Status)
+forge test                     # 74 tests, all green (see Status)
 npm run devnet                 # local chain + deployed, bootstrapped pool
 npm run quickstart             # devnet + the full agent flow
 bash scripts/check-public.sh   # fails if a credential ever reached a tracked file
@@ -212,8 +218,9 @@ Contracts are non-upgradeable: a source change only reaches users through a new 
 - **Demand is early.** Agents mostly need money for inference and API calls. Volumes are real but small.
 - **The reserve is meant to be spent.** That is what it is for. Size it as a marketing and data budget; the
   contract will not grant more unbacked credit than it holds.
-- **The default-accounting defect above is unfixed.** Nothing else in this list matters until it is.
-- **This is not an audit.** No independent review of the economics has been done.
+- **This is not an audit.** No independent review of the economics has been done. The default-accounting defect
+  above is fixed and covered, but it got in there in the first place, and the randomized invariants did not catch
+  it. Assume there is another one.
 
 ## License
 

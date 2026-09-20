@@ -32,11 +32,13 @@ npx priors score <agentId>
    When that happens, say so — never invent a pool address, and never report an agent as registered when it is
    not.
 
-2. **There is a known unfixed defect.** `markDefault()` releases an agent's whole
-   delegated backing on its first default, so a second default from the same agent can cost lenders principal.
-   Its regression test is committed and **failing on purpose**: `forge test` is 64 passed / 1 failed. Do not
-   remove, skip, or weaken `test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure` to get a green suite —
-   fix the exposure accounting, or leave it red. Do not tell anyone lenders cannot lose principal.
+2. **A lender-loss defect was found and fixed; it has not been independently reviewed.** `markDefault()` used to
+   release an agent's whole delegated backing on its first default, so a second default from the same agent could
+   cost lenders principal. It now consumes only the liable slice per loan. `forge test` is 74 passed, 0 failed.
+   ⛔ Do not delete `test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure` or `test/DefaultAccounting.t.sol`
+   — they are the evidence the fix works, and without them the guarantee is just a claim again. No independent
+   review of the economics has happened, and the randomized invariants passed right through the original bug, so
+   do not describe this as audited or as proven safe.
 
 3. **A default is permanent.** Three days past due and anyone can mark a loan defaulted: score zero forever,
    the identity can never borrow or vouch again, and the sponsor eats the loss. Do not borrow for an agent that
@@ -45,7 +47,7 @@ npx priors score <agentId>
 ## Working on the code
 
 ```bash
-forge test                  # 65 tests; 64 pass, 1 fails by design (see above)
+forge test                  # 74 tests, all green
 npm run devnet              # local chain + deployed pool, bootstrapped so firstLine() works
 npm run quickstart          # devnet + the full agent flow
 bash scripts/check-public.sh  # fails if any credential reached a tracked file

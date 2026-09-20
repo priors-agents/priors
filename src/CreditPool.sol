@@ -191,6 +191,7 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
         uint256 toReserve
     );
     event SponsorFeesClaimed(uint256 indexed agentId, address indexed to, uint256 amount);
+    event BackingReleased(uint256 indexed agentId, uint256 indexed sponsor, uint256 amount);
     event Defaulted(
         uint256 indexed loanId, uint256 indexed agentId, uint256 principal, uint256 liableSponsor, uint256 badDebt
     );
@@ -565,6 +566,7 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
             if (!a.defaulted && block.timestamp >= l.issuedAt + params.minSeasoning) _grow(l.agentId, a, l.principal);
         }
         emit Repaid(loanId, l.agentId, l.principal, l.fee, msg.sender);
+        _settleDead(l.agentId, a);
     }
 
     /// @dev The fee is split three ways: lenders, the sponsor who vouched for the borrower, and the reserve.
@@ -629,25 +631,26 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
         c.activeLoans -= 1;
         totalPrincipalOut -= l.principal;
 
-        // the defaulter is dead: no more borrowing, no more sponsoring, earned capacity gone
+        // the defaulter is dead: no more borrowing, no more sponsoring. Its backing (delegation and earned
+        // credit) is NOT released here: the agent may still have other loans open, and each of them keeps
+        // its claim on that backing until it is repaid or defaults in turn. Only the slice this loan is
+        // liable for is consumed now; whatever is left over is released once the last loan closes.
         c.defaulted = true;
-        totalEarned -= c.earned;
-        c.earned = 0;
 
         uint256 liable;
         uint256 sponsorId = c.sponsor;
         if (!c.isRoot) {
             Agent storage s = _agents[sponsorId];
-            uint256 backing = c.delegatedIn;
-            liable = l.principal < backing ? l.principal : backing;
             s.childrenDefaulted += 1;
-            // the delegation is consumed either way
             if (!s.defaulted) {
-                s.delegatedOut -= backing;
+                uint256 backing = c.delegatedIn;
+                liable = l.principal < backing ? l.principal : backing;
+                // consume exactly the liable slice of the delegation; the rest still backs the other loans
+                c.delegatedIn -= liable;
+                s.delegatedOut -= liable;
             }
-            c.delegatedIn = 0;
 
-            if (liable > 0 && !s.defaulted) {
+            if (liable > 0) {
                 if (s.isRoot) {
                     // cash: slash the stake straight back into the pool (bounded by what is left of it)
                     if (liable > s.stake) liable = s.stake;
@@ -678,10 +681,8 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
                     totalPrincipalOut += liable;
                     emit RecourseIssued(rId, sponsorId, agentId, liable, dueAt);
                 }
-            } else if (s.defaulted) {
-                // sponsor already dead: nobody left to charge
-                liable = 0;
             }
+            // (sponsor already dead: liable stays 0, nobody is left to charge; the reserve takes it below)
         } else {
             // a root defaulting on its own loan: its stake covers it
             uint256 fromStake = l.principal < c.stake ? l.principal : c.stake;
@@ -696,6 +697,11 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
 
         uint256 badDebt = l.principal - liable;
         if (badDebt > 0) {
+            // the part of this loan that stood on earned credit is written off against that credit, so the
+            // reserve lock (reserve >= totalEarned) tracks what is still outstanding
+            uint256 fromEarned = badDebt < c.earned ? badDebt : c.earned;
+            c.earned -= fromEarned;
+            totalEarned -= fromEarned;
             totalBadDebt += badDebt;
             // the reserve eats it first; lenders only lose what the reserve cannot cover
             uint256 covered = badDebt < reserve ? badDebt : reserve;
@@ -707,6 +713,24 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
             emit ReserveCovered(loanId, covered, badDebt - covered);
         }
         emit Defaulted(loanId, agentId, l.principal, liable, badDebt);
+        _settleDead(agentId, c);
+    }
+
+    /// @dev Once a dead agent has no loans open, whatever backing it still holds is released: the unused
+    /// delegation goes back to a living sponsor's capacity, and any earned credit left is retired.
+    function _settleDead(uint256 agentId, Agent storage c) internal {
+        if (!c.defaulted || c.activeLoans != 0) return;
+        uint256 rest = c.delegatedIn;
+        if (rest > 0) {
+            c.delegatedIn = 0;
+            Agent storage s = _agents[c.sponsor];
+            if (!c.isRoot && !s.defaulted) s.delegatedOut -= rest;
+            emit BackingReleased(agentId, c.sponsor, rest);
+        }
+        if (c.earned > 0) {
+            totalEarned -= c.earned;
+            c.earned = 0;
+        }
     }
 
     // ------------------------------------------------------------------

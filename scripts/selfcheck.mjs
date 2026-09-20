@@ -58,11 +58,11 @@ check("money formatting does not follow the machine locale", () => {
 });
 
 console.log("contract suite");
-check("forge test is exactly 64 passed / 1 failed, and the failure is the retained lender-loss regression", () => {
-  // The README, AGENTS.md and the skill all state this count, and the whole disclosure rests on that one test
-  // still failing for its documented reason. So: a new failure breaks this check, and so does anyone "fixing" the
-  // suite green by skipping or weakening the regression. If the exposure accounting is genuinely corrected, this
-  // check is what tells you to update the disclosure — deliberately, not silently.
+check("forge test is fully green, and the lender-loss regression is still in it and still passing", () => {
+  // This check used to assert 64 passed / 1 failed, because the lender-loss defect was open and its regression
+  // was deliberately retained as a failing test. The exposure accounting is fixed now, so the assertion inverts:
+  // the suite must be green, AND the test that proved the bug must still exist and pass. Deleting the regression
+  // would otherwise turn a real guarantee back into an untested claim while the suite stayed reassuringly green.
   const r = sh("forge", ["test"], { timeout: 600_000 });
   if (r.error) throw new Error(`could not run forge: ${r.error.message} (is Foundry installed?)`);
   const summary = /(\d+) tests passed, (\d+) failed, (\d+) skipped \((\d+) total tests\)/.exec(r.stdout);
@@ -72,15 +72,22 @@ check("forge test is exactly 64 passed / 1 failed, and the failure is the retain
     const detail = (r.stdout.slice(-600) + r.stderr.slice(-900)).trim();
     throw new Error(`forge produced no test summary, so the suite did not run (compile error?):\n${detail || "(no output)"}`);
   }
-  const [, passed, failed, , total] = summary;
-  eq(total, "65", "total tests");
-  eq(passed, "64", "passing tests");
-  eq(failed, "1", "failing tests (the retained regression)");
-  if (!/test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure/.test(r.stdout)) {
-    throw new Error("the one failing test is not the documented lender-loss regression. Do not weaken or skip that test; see the Status section of the README.");
+  const [, passed, failed] = summary;
+  eq(failed, "0", "failing tests");
+  if (Number(passed) < 74) throw new Error(`expected at least the 74 tests this repo documents, got ${passed}`);
+
+  // The regression must still be present and green. `forge test` prints only failures by default, so ask for it
+  // by name: a green run tells you nothing about a test that no longer exists.
+  const named = sh("forge", ["test", "--match-test", "test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure", "-v"], { timeout: 600_000 });
+  if (!/1 passed|\[PASS\]/.test(named.stdout)) {
+    throw new Error(`the lender-loss regression is missing or not passing. Do not delete it: it is the test that proved the defect this protocol had.\n${named.stdout.slice(-400)}`);
   }
-  if (!/must not cost lenders principal/.test(r.stdout)) {
-    throw new Error("the regression failed, but not on its documented assertion");
+  // Same for the coverage added alongside the fix: partial defaults, repay-after-default, multiple children,
+  // sub-sponsor recourse, dead sponsor, root defaults, reserve lock.
+  const suite = sh("forge", ["test", "--match-contract", "DefaultAccounting"], { timeout: 600_000 });
+  const suiteSummary = /(\d+) tests passed, (\d+) failed/.exec(suite.stdout);
+  if (!suiteSummary || suiteSummary[2] !== "0" || Number(suiteSummary[1]) < 5) {
+    throw new Error(`the DefaultAccounting suite is missing or not green:\n${suite.stdout.slice(-400)}`);
   }
 });
 
@@ -235,12 +242,18 @@ if (!skipChain) {
   console.log("end to end (throwaway chain on 8547)");
   const env = { ...process.env, RPC_URL: RPC };
   const tmpHome = mkdtempSync(join(tmpdir(), "priors-selfcheck-"));
+  // Start from nothing. An interrupted earlier run can leave a chain on this port whose deployed contracts
+  // predate the ones in the working tree, and `devnet` would reuse it — so the suite would test yesterday's
+  // bytecode and say so in no way at all. Clearing both here makes the check independent of how it last ended.
+  sh("pkill", ["-f", `anvil --silent --port ${new URL(RPC).port}`]);
+  rmSync(join(ROOT, "deployments", "31337.json"), { force: true });
   try {
     check("a fresh agent reaches a repaid loan and a non-zero score", () => {
-      const dev = sh(process.execPath, ["scripts/devnet.mjs"], { env, timeout: 180_000 });
-      if (dev.status !== 0) throw new Error(`devnet failed:\n${dev.stdout}${dev.stderr}`);
-      const flow = sh(process.execPath, ["bin/priors.mjs", "flow"], { env, timeout: 180_000 });
-      if (flow.status !== 0) throw new Error(`flow failed:\n${flow.stdout}${flow.stderr}`);
+      // Generous timeouts: the first run after a contract change pays for a full solc compile inside devnet.
+      const dev = sh(process.execPath, ["scripts/devnet.mjs"], { env, timeout: 600_000 });
+      if (dev.status !== 0) throw new Error(`devnet failed (exit ${dev.status}${dev.signal ? `, signal ${dev.signal}` : ""}):\n${dev.stdout}${dev.stderr}`);
+      const flow = sh(process.execPath, ["bin/priors.mjs", "flow"], { env, timeout: 600_000 });
+      if (flow.status !== 0) throw new Error(`flow failed (exit ${flow.status}${flow.signal ? `, signal ${flow.signal} — timed out?` : ""}):\n${flow.stdout}${flow.stderr}`);
       const score = /score (\d+)\/1000/.exec(flow.stdout);
       if (!score) throw new Error(`no score in flow output:\n${flow.stdout}`);
       if (Number(score[1]) <= 0) throw new Error(`score came back ${score[1]}; a repaid loan must score above zero`);

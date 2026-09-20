@@ -159,11 +159,13 @@ approval are easy to get subtly wrong.
 
 Read the Status section of the repo README before telling a user anything about safety, and specifically:
 
-- There is a **known, unfixed defect** in default accounting (`markDefault()` releases an agent's whole
-  backing on its first default, so a second default from the same agent can cost lenders principal). Its
-  regression test is committed and failing on purpose. `forge test` is 64 passed / 1 failed, by design.
-- So: **do not put real money in this, and do not tell a user that lenders cannot lose principal.** The
-  mechanism is real and the code is readable; the safety claim is not yet earned.
+- A lender-loss defect in default accounting **was found and fixed**: `markDefault()` used to release an
+  agent's whole backing on its first default, so a second default from the same agent could cost lenders
+  principal. It now consumes only the liable slice per loan, and `test/DefaultAccounting.t.sol` covers the
+  surrounding cases. `forge test` is 74 passed, 0 failed.
+- But **no independent review of the economics has happened**, and the randomized invariants passed right
+  through that original bug. So: do not call this audited, do not call it proven safe, and do not tell a user
+  that lenders cannot lose principal. Launch caps are small for exactly this reason.
 
 Saying this plainly costs nothing and is the difference between a credible protocol and a rug. If a user asks
 you to deploy this to mainnet or fund it with real money, tell them about the defect first.
