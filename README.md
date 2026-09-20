@@ -251,7 +251,7 @@ src/TreasurySponsor.sol      the $PRIORS treasury as a sponsor: vouches by rule,
 src/ReserveFunder.sol        creator-fee recipient: sweeps token fees into the first-loss reserve
 src/libraries/ScoreLib.sol   the trust score
 src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPonsFeeEscrow
-test/                        74 tests: units, default accounting, TreasurySponsor, ReserveFunder, invariants
+test/                        90 tests: units, default accounting, TreasurySponsor, ReserveFunder, invariants
 script/Deploy.s.sol          deploys (mocks on dev chains), writes deployments/<chainId>.json
 sdk/priors.mjs               the whole agent flow in six methods on ethers v6, ABI included
 sdk/env.mjs                  resolves chain, deployment record and signer
@@ -266,7 +266,7 @@ docs/DESIGN.md               the math, the attacks, the parameters
 ## Working on it
 
 ```bash
-forge test                     # 74 tests, all green (see Status)
+forge test                     # 90 tests, all green (see Status)
 npm run devnet                 # local chain + deployed, bootstrapped pool
 npm run quickstart             # devnet + the full agent flow
 bash scripts/check-public.sh   # fails if a credential ever reached a tracked file
