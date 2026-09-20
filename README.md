@@ -86,6 +86,24 @@ record — register, take the treasury's $5 line, borrow, hold, repay, score:
 
 Requires [Foundry](https://getfoundry.sh) and Node 20+.
 
+### The same walkthrough, already done on mainnet
+
+That runs on a throwaway local chain. It has also been run for real on Robinhood Chain with real
+USDG, start to finish, through the CLI in this repo — agent **#443**, registered from an empty
+wallet, vouched by the treasury by rule, borrowed and repaid:
+
+| step | transaction |
+|---|---|
+| first line, $5 from treasury #436 | [`0x91d6568d…`](https://robinhoodchain.blockscout.com/tx/0x91d6568defa5b38aefd0e948a5e2f345884819a952ceb863860febc0d38b965a) |
+| borrow $5 for 8 days | [`0x361e105b…`](https://robinhoodchain.blockscout.com/tx/0x361e105bd92fd70fbd53b691e69b1d57ad67eea13bfded336687898ff7fea15c) |
+| repay principal + $0.013333 fee | [`0x245095e7…`](https://robinhoodchain.blockscout.com/tx/0x245095e7b8b9754bbd3aa12a610fa47b14e33564ed615ec86cdb453a8b15fd41) |
+
+`npx priors report 443` reads the result back off the chain: enrolled, sponsor #436, a $5 line,
+1 loan repaid, $0.013333 of fees paid, no defaults. Agent #437 has been through the same cycle
+twice, and can repeat it indefinitely without consuming another of the beta's seats.
+
+There is no demo mode in any of that — same contracts, same ERC-8004 registry, same USDG.
+
 ## Hand it to your coding agent instead
 
 This repo ships the procedure as an agent skill, so you don't have to read any of it:
