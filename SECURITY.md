@@ -102,10 +102,22 @@ public. Draining the live pool to prove a point is not good-faith research.
 
 ## One thing worth knowing before you report
 
-**These contracts are not upgradeable.** There is no proxy, no initialiser, and no admin hatch. Fixing a
-real bug means deploying a new pool and migrating state, which has been done once and is not cheap. So a
-confirmed finding may take longer to close than a proxy-based protocol would need — the delay is the
-architecture, not us ignoring you.
+**Our own contracts are not upgradeable.** No proxy, no initialiser, no admin hatch in anything under
+`src/`. Fixing a real bug there means deploying a new pool and migrating state, which has been done once
+and is not cheap — so a confirmed finding may take longer to close than a proxy-based protocol would
+need. The delay is the architecture, not us ignoring you.
 
-The levers that do move quickly are `setParams` and `pause`, both owner-only and therefore both needing
-two signatures on the 2-of-3 Safe that owns the contracts. Expect a pause first and a migration later.
+**The identity registry we depend on is a different story, and an earlier version of this file was
+misleading about it.** `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` is not ours and it is **not
+immutable**: 130 bytes of code, an EIP-1967 implementation pointer, an empty admin slot — a UUPS proxy —
+and `owner()` is `0x547289319C3e6aedB179C0b8e8aF0B5ACd062603`, an address with **no code at all**. A
+single ordinary key can change what that registry says about who owns which agent, and this pool
+believes the registry completely. Whoever holds it could withdraw every root's stake, draw every open
+credit line, and claim every unclaimed sponsor fee.
+
+Findings *in* that registry are out of scope because we cannot fix them. Findings about **how this pool
+trusts it** are very much in scope, and we would rather hear them.
+
+The levers we do hold, and that move quickly: `setParams` and `pause` on the pool, and `setRules`,
+`retire` and `setFeeSink` on the TreasurySponsor — all owner-only, so all needing two signatures on the
+2-of-3 Safe. Expect a pause first and a migration later.

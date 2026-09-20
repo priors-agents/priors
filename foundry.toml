@@ -26,5 +26,7 @@ exclude_lints = ["mixed-case-function", "mixed-case-variable", "screaming-snake-
 
 [invariant]
 runs = 256
-depth = 64
+# 400, not 64. `invariant_exposureWithinCapacity` was broken and the committed depth of 64 never found it:
+# it took 73 runs at depth 400 to surface. A bound the suite cannot reach is not a bound. ~21s a run.
+depth = 400
 fail_on_revert = false

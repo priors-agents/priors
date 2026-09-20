@@ -14,14 +14,20 @@ import {IPonsFeeEscrow, IPonsFactoryCreator} from "./interfaces/IPonsFeeEscrow.s
 ///         to the pool's first-loss reserve and stakes the rest under the treasury's own ERC-8004 identity as a
 ///         root sponsor. From that stake it vouches by rule, not by judgement:
 ///
-///           firstLine(agent)  any ERC-8004 identity that has never been enrolled gets a small first line
+///           firstLine(agent)  an ERC-8004 identity that has never been enrolled gets a small first line,
+///                             asked for by its own owner or delegate
 ///           raise(agent)      an agent it sponsors that has repaid enough qualified loans, is seasoned and
 ///                             clean, gets its line raised to the second tier
+///           reclaim(agent)    a line nobody has used for `idleAfter` goes back to the treasury, so the
+///                             capacity seats the next agent instead of sitting under a dead identity
 ///
 ///         Everything it vouches is capped per epoch, so the most a sybil attack can cost the treasury is one
-///         epoch's cap, in public. The sponsor fees its agents pay (25% of every loan fee) are collected to the
-///         fee sink, which is the buyback wallet. Losses show up as slashed stake and burnt branches on the
-///         treasury's own tree. Every call here is permissionless except the owner's parameter changes.
+///         epoch's cap, in public. Two things keep that cap from being burnt by strangers: only the identity's
+///         controller can ask for its line (so lining the whole registry to exhaust the cap costs a registration
+///         per identity, not a call), and idle lines are reclaimable by anyone (so what a sybil ring ties up
+///         comes back). The sponsor fees its agents pay (25% of every loan fee) are collected to the fee sink,
+///         which is the buyback wallet. Losses show up as slashed stake and burnt branches on the treasury's
+///         own tree. Sweep, raise, reclaim and collect are permissionless; the owner only changes parameters.
 contract TreasurySponsor is Ownable2Step, IERC721Receiver {
     using SafeERC20 for IERC20;
 
@@ -34,6 +40,7 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
         uint64 minSeasoning; // seconds enrolled before a raise
         uint256 minQualified; // qualified loans repaid before a raise
         uint256 minScore; // score before a raise
+        uint64 idleAfter; // seconds without a loan or a repayment before a line can be reclaimed
     }
 
     CreditPool public immutable pool;
@@ -49,6 +56,8 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
     uint64 public epochStart;
     uint256 public vouchedThisEpoch;
     mapping(uint256 => bool) public firstLined;
+    mapping(uint256 => uint64) public lastActive; // last time reclaim() saw the agent use its line
+    mapping(uint256 => uint256) public seenRepaid; // loansRepaid the last time reclaim() looked
 
     uint256 public totalToReserve;
     uint256 public totalStaked;
@@ -58,6 +67,7 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
     event Swept(address indexed caller, uint256 claimed, uint256 toReserve, uint256 toStake);
     event FirstLine(uint256 indexed agentId, uint256 amount, address indexed caller);
     event Raised(uint256 indexed agentId, uint256 added, uint256 lineNow);
+    event Reclaimed(uint256 indexed agentId, uint256 amount, address indexed caller);
     event Collected(uint256 amount, address indexed to);
     event RulesUpdated(Rules rules);
     event FeeSinkUpdated(address indexed feeSink);
@@ -69,6 +79,9 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
     error AlreadyEnrolled(uint256 agentId);
     error NotEligible(uint256 agentId);
     error EpochCapReached(uint256 wanted, uint256 left);
+    error NotController(uint256 agentId, address caller);
+    error NotIdle(uint256 agentId, uint256 reclaimableAt);
+    error NothingToReclaim(uint256 agentId);
     error InvalidRules();
 
     constructor(
@@ -92,7 +105,8 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
             epochLength: 7 days,
             minSeasoning: 14 days,
             minQualified: 3,
-            minScore: 100
+            minScore: 100,
+            idleAfter: 30 days
         });
         epochStart = uint64(block.timestamp);
         asset.approve(address(pool_), type(uint256).max);
@@ -160,15 +174,52 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
     // Vouching by rule
     // ------------------------------------------------------------------
 
-    /// @notice Give a never-enrolled ERC-8004 identity its first line. Anyone can call it for any agent.
+    /// @notice Give a never-enrolled ERC-8004 identity its first line. Only the identity's owner or its pool
+    ///         delegate can ask: a stranger could otherwise line every identity in the registry and burn the
+    ///         epoch cap for the price of the calls.
     function firstLine(uint256 id) external {
         if (agentId == 0) revert NotAdopted();
+        if (!pool.isController(id, msg.sender)) revert NotController(id, msg.sender);
         if (firstLined[id]) revert AlreadyLined(id);
         if (pool.creditReport(id).enrolled) revert AlreadyEnrolled(id);
         _spend(rules.firstLine);
         firstLined[id] = true;
+        lastActive[id] = uint64(block.timestamp);
         pool.vouch(agentId, id, rules.firstLine);
         emit FirstLine(id, rules.firstLine, msg.sender);
+    }
+
+    /// @notice Take back the line of a treasury-sponsored agent that has not borrowed or repaid for
+    ///         `idleAfter`. Anyone can call it; the capacity returns to the treasury's free stake.
+    ///
+    ///         The pool does not record when an agent last moved, so this keeps its own watermark: a call
+    ///         that finds an open loan, or more repayments than it saw last time, refreshes the watermark and
+    ///         returns 0. A line is only taken once two looks, `idleAfter` apart, saw nothing happen between
+    ///         them - so an agent that used its line always gets at least `idleAfter` of grace from the first
+    ///         look, and a reclaimed identity keeps its record and its earned capacity; only the vouch goes.
+    function reclaim(uint256 id) external returns (uint256 amount) {
+        if (agentId == 0) revert NotAdopted();
+        CreditPool.CreditReport memory r = pool.creditReport(id);
+        if (!r.enrolled || r.sponsor != agentId || r.defaulted || r.delegatedIn == 0) revert NothingToReclaim(id);
+        if (r.activeLoans > 0 || r.loansRepaid != seenRepaid[id]) {
+            seenRepaid[id] = r.loansRepaid;
+            lastActive[id] = uint64(block.timestamp);
+            return 0;
+        }
+        uint256 at = uint256(lastActive[id]) + rules.idleAfter;
+        if (block.timestamp < at) revert NotIdle(id, at);
+        amount = r.delegatedIn;
+        pool.unvouch(agentId, id, amount);
+        emit Reclaimed(id, amount, msg.sender);
+    }
+
+    /// @notice When `reclaim(id)` would succeed if nothing else happens: 0 if the line is not the treasury's
+    ///         or the agent has moved since the last look (a look is needed first).
+    function reclaimableAt(uint256 id) external view returns (uint256) {
+        CreditPool.CreditReport memory r = pool.creditReport(id);
+        if (!r.enrolled || r.sponsor != agentId || r.defaulted || r.delegatedIn == 0) return 0;
+        if (r.activeLoans > 0 || r.loansRepaid != seenRepaid[id]) return 0;
+        return uint256(lastActive[id]) + rules.idleAfter;
     }
 
     /// @notice Raise the line of an agent this treasury sponsors, once its record qualifies. Anyone can call it.
@@ -221,9 +272,10 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
     // ------------------------------------------------------------------
 
     function setRules(Rules calldata r) external onlyOwner {
-        if (r.reserveBps > 10_000 || r.epochLength == 0 || r.firstLine == 0 || r.secondLine < r.firstLine) {
-            revert InvalidRules();
-        }
+        if (
+            r.reserveBps > 10_000 || r.epochLength == 0 || r.firstLine == 0 || r.secondLine < r.firstLine
+                || r.idleAfter == 0
+        ) revert InvalidRules();
         rules = r;
         emit RulesUpdated(r);
     }

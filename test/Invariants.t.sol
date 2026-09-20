@@ -214,7 +214,10 @@ contract InvariantsTest is Test {
 
     /// ...and pool assets are exactly what lenders put in plus the fees borrowers paid.
     function invariant_assetsAreDepositsPlusFees() public view {
-        assertEq(pool.totalAssets(), handler.netDeposits() + pool.totalFeesEarned());
+        // Early-exit fees stay in the pool for the lenders who did not leave, so they are part of the
+        // identity too. Tracked as their own accumulator rather than folded into `totalFeesEarned`, which
+        // means "what borrowers paid" and should keep meaning only that.
+        assertEq(pool.totalAssets(), handler.netDeposits() + pool.totalFeesEarned() + pool.totalExitFees());
     }
 
     /// Deterministic drive of the handler: shows the random walk reaches borrows, repayments, defaults and

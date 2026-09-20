@@ -213,6 +213,7 @@ There is no appeal. That is why the score means something.
 | Term | 1 – 30 days |
 | Fee | 1% per 30 days, pro rata |
 | Fee split | 60% lenders · 25% sponsor · 15% first-loss reserve |
+| Lender hold period | 7 days. Withdrawing sooner leaves **0.5%** behind for the lenders who stayed |
 | Grace before anyone can default you | 3 days |
 | Counts as a qualified loan at | 7 days |
 | Treasury first line | $5 · raised to $50 once qualified |
@@ -243,6 +244,20 @@ depends on is already there.
 Addresses resolve from `deployments/<chainId>.json`, so nothing above needs copying by hand —
 `npx priors doctor` prints whatever is configured. The superseded pool is listed only so an old
 link is recognisable as dead rather than mysterious.
+
+### Why lenders have a hold period
+
+The lender slice of a fee lands on the share price the moment a loan is repaid, so whoever holds shares
+at that instant collects it. An audit showed both ways that was abused: a bot depositing in front of a
+repayment and leaving straight after took **$2.70 of a $3 lender fee**, leaving $0.30 for the lender who
+had carried thirty days of default risk — and a *borrower* could wrap its own repayment in a deposit and a
+withdrawal, in one transaction, and recover **54% of its own fee**.
+
+Leaving inside 7 days now leaves 0.5% behind, which stays in the pool for the lenders who did not leave.
+That is enough to make a zero-duration position lose money: the borrower's sandwich costs $549.54 against
+the $505.00 it owed. `earlyExitFee(holder, shares)` quotes it before you commit, and it is a **constant in
+the contract, not a parameter** — an owner-tunable exit fee would be a lever to confiscate deposits, and
+the owner cannot reach lender principal here. Hold past 7 days and it is zero.
 
 `RPC_URL` accepts a comma-separated list and tries it in order — the first entry first, the next only
 when that one fails or refuses to serve the request:

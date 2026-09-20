@@ -104,15 +104,16 @@ contract TreasurySponsorTest is Test {
         assertEq(usdc.balanceOf(address(fresh)), 20 * USDC, "the stake half waits for an identity");
     }
 
-    function test_firstLine_anyoneCanOpenItOnceForANewIdentity() public {
+    function test_firstLine_theIdentitysOwnerOpensItOnce() public {
         _creatorFees(200 * USDC);
         treasury.sweep();
-        vm.prank(anyone);
+        vm.prank(agentOp);
         treasury.firstLine(AGENT);
         CreditPool.CreditReport memory r = pool.creditReport(AGENT);
         assertTrue(r.enrolled);
         assertEq(r.sponsor, TREASURY_ID);
         assertEq(r.delegatedIn, 5 * USDC);
+        vm.prank(agentOp);
         vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.AlreadyLined.selector, AGENT));
         treasury.firstLine(AGENT);
         // the agent can borrow against it right away
@@ -134,20 +135,116 @@ contract TreasurySponsorTest is Test {
         pool.enrollRoot(root, 100 * USDC);
         pool.vouch(root, AGENT, 20 * USDC);
         vm.stopPrank();
+        vm.prank(agentOp);
         vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.AlreadyEnrolled.selector, AGENT));
         treasury.firstLine(AGENT);
+    }
+
+    /// The cheapest attack on the cap is not registering identities - it is lining the ones that already
+    /// exist. Four hundred identities sit in the registry; twenty calls would have burnt a week's cap and
+    /// tied twenty lines to agents that never asked. Only the identity's controller can ask.
+    function test_firstLine_strangersCannotBurnTheCapOnOtherPeoplesIdentities() public {
+        _creatorFees(200 * USDC);
+        treasury.sweep();
+        uint256 roomBefore = treasury.epochRoom();
+        vm.prank(anyone);
+        vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.NotController.selector, AGENT, anyone));
+        treasury.firstLine(AGENT);
+        assertEq(treasury.epochRoom(), roomBefore, "nothing spent");
+        assertFalse(pool.creditReport(AGENT).enrolled);
+        // the pool delegate the owner named can ask on its behalf
+        address bot = makeAddr("bot");
+        vm.prank(agentOp);
+        pool.setDelegate(AGENT, bot);
+        vm.prank(bot);
+        treasury.firstLine(AGENT);
+        assertEq(pool.creditReport(AGENT).delegatedIn, 5 * USDC);
+    }
+
+    /// A line nobody uses is capacity nobody else can have. After `idleAfter` anyone can hand it back.
+    function test_reclaim_anIdleLineGoesBackToTheTreasury() public {
+        _creatorFees(200 * USDC);
+        treasury.sweep();
+        vm.prank(agentOp);
+        treasury.firstLine(AGENT);
+        uint256 freeBefore = pool.creditReport(TREASURY_ID).available;
+        (,,,,,,,, uint64 idleAfter) = treasury.rules();
+        assertEq(treasury.reclaimableAt(AGENT), block.timestamp + idleAfter);
+        vm.prank(anyone);
+        vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.NotIdle.selector, AGENT, block.timestamp + idleAfter));
+        treasury.reclaim(AGENT);
+        vm.warp(block.timestamp + idleAfter);
+        vm.prank(anyone);
+        uint256 got = treasury.reclaim(AGENT);
+        assertEq(got, 5 * USDC);
+        CreditPool.CreditReport memory r = pool.creditReport(AGENT);
+        assertEq(r.delegatedIn, 0, "the vouch is gone");
+        assertTrue(r.enrolled, "the record stays");
+        assertEq(pool.creditReport(TREASURY_ID).available, freeBefore + 5 * USDC, "capacity is back");
+        // no second first line for the same identity, and nothing left to reclaim
+        vm.prank(agentOp);
+        vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.AlreadyLined.selector, AGENT));
+        treasury.firstLine(AGENT);
+        vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.NothingToReclaim.selector, AGENT));
+        treasury.reclaim(AGENT);
+    }
+
+    /// An agent that uses its line keeps it: a look that finds an open loan or a new repayment only
+    /// refreshes the watermark, and the clock restarts from that look.
+    function test_reclaim_sparesAnAgentThatUsesItsLine() public {
+        _creatorFees(200 * USDC);
+        treasury.sweep();
+        vm.prank(agentOp);
+        treasury.firstLine(AGENT);
+        (,,,,,,,, uint64 idleAfter) = treasury.rules();
+        uint256 lined = block.timestamp;
+        // borrows on day 20, repays on day 27
+        vm.warp(lined + 20 days);
+        vm.prank(agentOp);
+        uint256 loan = pool.borrow(AGENT, 5 * USDC, 7 days, agentOp);
+        // an open loan: not reclaimable, the look just refreshes
+        vm.warp(lined + 25 days);
+        assertEq(treasury.reclaimableAt(AGENT), 0);
+        assertEq(treasury.reclaim(AGENT), 0);
+        vm.warp(lined + 27 days);
+        vm.prank(agentOp);
+        pool.repay(loan);
+        // day 35: the first look since the repayment sees a new repayment and refreshes again
+        vm.warp(lined + 35 days);
+        assertEq(treasury.reclaim(AGENT), 0);
+        assertEq(treasury.reclaimableAt(AGENT), lined + 35 days + idleAfter);
+        vm.warp(lined + 35 days + idleAfter - 1);
+        vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.NotIdle.selector, AGENT, lined + 35 days + idleAfter));
+        treasury.reclaim(AGENT);
+        // and a truly idle month after that, it goes
+        vm.warp(lined + 35 days + idleAfter);
+        assertEq(treasury.reclaim(AGENT), 5 * USDC);
+    }
+
+    /// A defaulted agent has nothing left to reclaim - the default already consumed or released it.
+    function test_reclaim_hasNothingToTakeFromADefault() public {
+        _creatorFees(200 * USDC);
+        treasury.sweep();
+        vm.prank(agentOp);
+        treasury.firstLine(AGENT);
+        vm.prank(agentOp);
+        pool.borrow(AGENT, 5 * USDC, 7 days, agentOp);
+        vm.warp(block.timestamp + 7 days + 3 days + 1);
+        pool.markDefault(1);
+        vm.warp(block.timestamp + 60 days);
+        vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.NothingToReclaim.selector, AGENT));
+        treasury.reclaim(AGENT);
     }
 
     function test_epochCap_boundsWhatASybilCanDrain() public {
         _creatorFees(2_000 * USDC);
         treasury.sweep(); // $1,000 staked, far more than the cap
         uint256 n = 100 * USDC / (5 * USDC); // cap / firstLine = 20 identities per epoch
+        vm.startPrank(anyone);
         for (uint256 i = 0; i < n; i++) {
-            vm.prank(anyone);
             uint256 id = reg.register("ipfs://sybil");
             treasury.firstLine(id);
         }
-        vm.prank(anyone);
         uint256 extra = reg.register("ipfs://sybil");
         vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.EpochCapReached.selector, 5 * USDC, 0));
         treasury.firstLine(extra);
@@ -155,11 +252,13 @@ contract TreasurySponsorTest is Test {
         vm.warp(block.timestamp + 7 days);
         assertEq(treasury.epochRoom(), 100 * USDC);
         treasury.firstLine(extra);
+        vm.stopPrank();
     }
 
     function test_raise_onlyAfterACleanSeasonedRecord() public {
         _creatorFees(400 * USDC);
         treasury.sweep();
+        vm.prank(agentOp);
         treasury.firstLine(AGENT);
         vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.NotEligible.selector, AGENT));
         treasury.raise(AGENT);
@@ -185,6 +284,7 @@ contract TreasurySponsorTest is Test {
     function test_defaultSlashesTheTreasury_andItsScoreTakesThePenalty() public {
         _creatorFees(200 * USDC);
         treasury.sweep();
+        vm.prank(agentOp);
         treasury.firstLine(AGENT);
         vm.prank(agentOp);
         pool.borrow(AGENT, 5 * USDC, 7 days, agentOp);
@@ -199,6 +299,7 @@ contract TreasurySponsorTest is Test {
     function test_collect_sendsSponsorFeesToTheBuybackWallet() public {
         _creatorFees(200 * USDC);
         treasury.sweep();
+        vm.prank(agentOp);
         treasury.firstLine(AGENT);
         vm.prank(agentOp);
         uint256 loan = pool.borrow(AGENT, 5 * USDC, 30 days, agentOp);
@@ -231,12 +332,17 @@ contract TreasurySponsorTest is Test {
             epochLength: 1 days,
             minSeasoning: 1 days,
             minQualified: 1,
-            minScore: 50
+            minScore: 50,
+            idleAfter: 10 days
         });
         treasury.setRules(r);
-        (uint256 reserveBps,,,,,,,) = treasury.rules();
+        (uint256 reserveBps,,,,,,,,) = treasury.rules();
         assertEq(reserveBps, 3000);
         r.secondLine = 1 * USDC; // below firstLine
+        vm.expectRevert(TreasurySponsor.InvalidRules.selector);
+        treasury.setRules(r);
+        r.secondLine = 80 * USDC;
+        r.idleAfter = 0; // a zero idle period would let anyone reclaim an honest line the block after it opened
         vm.expectRevert(TreasurySponsor.InvalidRules.selector);
         treasury.setRules(r);
         treasury.retire(40 * USDC, owner);

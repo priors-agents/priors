@@ -230,16 +230,17 @@ contract HistoryImportTest is Test {
         treasury.sweep(); // permissionless; enrols the treasury as a root and funds the reserve
 
         uint64 minSeasoning;
-        (,,,,, minSeasoning,,) = treasury.rules();
+        (,,,,, minSeasoning,,,) = treasury.rules();
         assertGt(minSeasoning, 0, "the rule that is being skipped is actually set");
 
+        vm.prank(agentOwner);
         treasury.firstLine(AGENT);
         // No warp. A genuinely new agent could not pass eligibleForRaise here.
         assertTrue(treasury.eligibleForRaise(pool.creditReport(AGENT)), "imported history satisfies the gate at once");
         treasury.raise(AGENT);
 
         uint256 secondLine;
-        (,, secondLine,,,,,) = treasury.rules();
+        (,, secondLine,,,,,,) = treasury.rules();
         assertEq(pool.creditReport(AGENT).delegatedIn, secondLine, "went straight to the second line");
     }
 

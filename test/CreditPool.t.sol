@@ -102,13 +102,28 @@ contract CreditPoolTest is Test {
 
     // ------------------------------------------------------------------ lenders
 
+    /// Leaving straight away costs EARLY_EXIT_BPS, which is what makes a zero-duration position
+    /// unprofitable; leaving after MIN_HOLD costs nothing. Both halves are asserted, because a test that
+    /// only checked the fee would pass against a contract that charged it forever.
     function test_depositAndWithdraw_roundTrips() public {
         assertEq(pool.shares(lender), DEPOSIT);
         assertEq(pool.totalAssets(), DEPOSIT);
+
+        uint256 fee = 4_000 * USDC * pool.EARLY_EXIT_BPS() / 10_000;
+        assertEq(pool.earlyExitFee(lender, 4_000 * USDC), fee, "the quote should match what is charged");
         vm.prank(lender);
         pool.withdraw(4_000 * USDC, lender);
-        assertEq(usdc.balanceOf(lender), 4_000 * USDC);
-        assertEq(pool.poolLiquidity(), 6_000 * USDC);
+        assertEq(usdc.balanceOf(lender), 4_000 * USDC - fee, "an immediate exit pays the fee");
+        assertEq(pool.poolLiquidity(), 6_000 * USDC + fee, "and the fee stayed for the lenders who did not");
+        assertEq(pool.totalExitFees(), fee);
+
+        // The rest, held past the window, comes back whole.
+        vm.warp(block.timestamp + pool.MIN_HOLD());
+        assertEq(pool.earlyExitFee(lender, 1_000 * USDC), 0, "no fee once the hold period has passed");
+        uint256 before = usdc.balanceOf(lender);
+        vm.prank(lender);
+        pool.withdraw(1_000 * USDC, lender);
+        assertGt(usdc.balanceOf(lender) - before, 1_000 * USDC, "held shares are worth more, not less");
     }
 
     function test_withdraw_revertsWhenLiquidityIsLentOut() public {

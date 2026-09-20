@@ -151,6 +151,7 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
     uint256 public totalSponsorFees; // sponsors' share, cumulative
     uint256 public totalProtocolFees; // protocol share, cumulative (all of it went into the reserve)
     uint256 public unclaimedSponsorFees; // sponsor fees sitting here, not yet claimed
+    uint256 public totalExitFees; // cumulative early-exit fees kept for the lenders who stayed
     mapping(uint256 => uint256) public sponsorFees; // agentId => claimable
     uint256 public totalStake; // USDC held for roots (not lender money)
     uint256 public reserve; // first-loss reserve (not lender money)
@@ -222,6 +223,19 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
     error NotRoot(uint256 agentId);
     error WrongSponsor(uint256 agentId, uint256 currentSponsor);
     error InsufficientCapacity(uint256 agentId, uint256 requested, uint256 available);
+    error DelegationInUse(uint256 agentId, uint256 requested, uint256 releasable);
+    error ImportOutOfRange(uint256 agentId);
+
+    /// Ceiling for every duration parameter. A year is far outside anything this protocol expresses, and
+    /// past it the uint64 timestamp arithmetic in `repay` and `markDefault` overflows and reverts forever.
+    uint64 private constant MAX_PERIOD = 365 days;
+    /// Ceilings for imported history. These exist so a migration cannot brick the record it is preserving:
+    /// `ScoreLib` multiplies the counters by 20, 50 and 75, and an absurd value makes `score()` and
+    /// `creditReport()` revert permanently - after `vouch` sets `enrolled`, with imports already sealed and
+    /// the record no longer blank, there is no way back. Both bounds are orders of magnitude past any real
+    /// history: a billion loans, and a billion dollars of volume at six decimals.
+    uint256 private constant MAX_IMPORT_COUNT = 1e9;
+    uint256 private constant MAX_IMPORT_AMOUNT = 1e15;
     error InsufficientLiquidity(uint256 requested, uint256 available);
     error LoanSizeOutOfRange(uint256 amount);
     error TermOutOfRange(uint64 term);
@@ -345,6 +359,16 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
             // underflow it, and score() is reached through creditReport() - the agent's page and the SDK
             // would revert for good. Reject it here rather than let one typo brick a record.
             if (r.enrolledAt == 0 || r.enrolledAt > block.timestamp) revert BadEnrolmentDate(r.agentId, r.enrolledAt);
+            /* The date check above exists because one bad value there underflowed `score()`. The counters
+               next to it were unchecked, and they multiply: a large `qualifiedRepaid`, `recourseHonored` or
+               `childrenDefaulted` makes `score()` and `creditReport()` revert with an arithmetic panic
+               permanently, unrecoverably. Bound them the same way. */
+            if (
+                r.loansRepaid > MAX_IMPORT_COUNT || r.recourseHonored > MAX_IMPORT_COUNT
+                    || r.childrenDefaulted > MAX_IMPORT_COUNT || r.qualifiedRepaid > MAX_IMPORT_COUNT
+                    || r.volumeRepaid > MAX_IMPORT_AMOUNT || r.feesPaid > MAX_IMPORT_AMOUNT
+                    || r.dollarSecondsRepaid > MAX_IMPORT_AMOUNT * uint256(MAX_PERIOD)
+            ) revert ImportOutOfRange(r.agentId);
             registry.ownerOf(r.agentId); // must exist in ERC-8004 (reverts otherwise)
             a.enrolledAt = r.enrolledAt;
             a.loansRepaid = r.loansRepaid;
@@ -374,6 +398,32 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
     // Lenders
     // ------------------------------------------------------------------
 
+    /* A position that exists for zero seconds must not earn a fee.
+       The lender slice of a fee lands on the share price the instant a loan is repaid, so whoever holds
+       shares at that instant collects it. An audit measured both halves: a bot depositing in front of a
+       repayment and leaving straight after took $2.70 of a $3 lender fee, leaving $0.30 for the lender who
+       had carried thirty days of default risk; and a BORROWER could wrap its own repayment in a deposit and
+       a withdrawal, atomically, and recover 54% of its own fee.
+
+       Vesting the fee over a window is the fairer fix and was tried first. It changes when the share price
+       moves, which rippled through six existing tests and - on a non-upgradeable contract about to hold real
+       money - is a large blast radius for the least severe bug in this set (it steals yield, not principal).
+       This is the smaller one: leaving inside `MIN_HOLD` pays a fee back to the pool, which makes a
+       zero-duration position decisively unprofitable and leaves every other behaviour untouched.
+
+       Deliberately CONSTANT rather than a parameter. An owner-tunable exit fee would be a lever to
+       confiscate lender deposits, and "the owner cannot reach lender principal" is the strongest property
+       this design has. A fixed 0.5% cannot become 100%. */
+    uint64 public constant MIN_HOLD = 7 days;
+    uint256 public constant EARLY_EXIT_BPS = 50; // 0.5%, kept by the pool for the lenders who stayed
+    mapping(address => uint64) public lastDepositAt;
+
+    /// What leaving right now would cost this holder, so a caller never has to guess.
+    function earlyExitFee(address holder, uint256 shares_) public view returns (uint256) {
+        if (block.timestamp >= uint256(lastDepositAt[holder]) + MIN_HOLD) return 0;
+        return convertToAssets(shares_) * EARLY_EXIT_BPS / 10_000;
+    }
+
     function totalAssets() public view returns (uint256) {
         return poolLiquidity + totalPrincipalOut;
     }
@@ -399,6 +449,8 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
         poolLiquidity += assets;
         totalShares += minted;
         shares[receiver] += minted;
+        // The hold clock is on whoever ends up holding the shares, and a top-up restarts it.
+        lastDepositAt[receiver] = uint64(block.timestamp);
         emit Deposited(receiver, assets, minted);
     }
 
@@ -406,11 +458,18 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
         if (shares_ == 0) revert ZeroAmount();
         assets = convertToAssets(shares_);
         if (assets > poolLiquidity) revert InsufficientLiquidity(assets, poolLiquidity);
+        // Leaving inside MIN_HOLD leaves a slice behind. It never goes anywhere: `poolLiquidity` keeps it,
+        // so it raises the share price for the lenders who are still carrying the risk.
+        uint256 fee =
+            block.timestamp < uint256(lastDepositAt[msg.sender]) + MIN_HOLD ? assets * EARLY_EXIT_BPS / 10_000 : 0;
+        uint256 out = assets - fee;
         shares[msg.sender] -= shares_; // reverts on underflow
         totalShares -= shares_;
-        poolLiquidity -= assets;
-        usdc.safeTransfer(receiver, assets);
-        emit Withdrawn(msg.sender, assets, shares_);
+        totalExitFees += fee; // tracked so the books stay an exact identity, not an inequality
+        poolLiquidity -= out;
+        usdc.safeTransfer(receiver, out);
+        emit Withdrawn(msg.sender, out, shares_);
+        assets = out;
     }
 
     // ------------------------------------------------------------------
@@ -475,7 +534,13 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
     function withdrawStake(uint256 agentId, uint256 amount, address to) external nonReentrant onlyController(agentId) {
         Agent storage a = _agents[agentId];
         if (!a.isRoot) revert NotRoot(agentId);
-        uint256 avail = _available(agentId, a);
+        /* A defaulted agent's capacity is 0, so `_available` is 0 and its remaining stake used to be
+           unreachable forever: not withdrawable, not re-stakeable (`addStake` reverts `AgentDefaulted`),
+           not credited to lenders either, since `totalAssets` excludes `totalStake`. Dead weight owned by
+           nobody. Once a defaulted root has no loan open and nothing delegated out, nothing is relying on
+           that money and it is its own - the slashing already happened. */
+        uint256 avail =
+            !a.defaulted ? _available(agentId, a) : (a.activeLoans == 0 && a.delegatedOut == 0 ? a.stake : 0);
         if (amount > avail) revert InsufficientCapacity(agentId, amount, avail);
         a.stake -= amount;
         totalStake -= amount;
@@ -538,6 +603,19 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
     }
 
     /// @notice Pull back delegated capacity the child is not using.
+    ///
+    /// @dev A sponsor is first-loss for what it vouched, and the delegation backing a DRAWN loan cannot be
+    ///      released. Bounding this by the child's `_available` was not enough: `_available` counts the
+    ///      child's own earned credit, so a child with earned headroom let its sponsor detach the backing
+    ///      from a loan already drawn against it, and `markDefault` then found `delegatedIn == 0`, charged
+    ///      nobody, and sent the loss to the reserve. An audit measured that at $100 of reserve for $0.084
+    ///      of fees, with a stake that came back intact and could be recycled.
+    ///
+    ///      The bound is the rule `markDefault` already uses to decide liability: a default charges
+    ///      `min(principal, delegatedIn)` to the sponsor, so delegation is the primary backing for drawn
+    ///      principal and exactly that much of it stays until the loan closes. Anything above it is free,
+    ///      which is what keeps `TreasurySponsor.reclaim()` working - it only ever unvouches a line whose
+    ///      agent has no open loan, so for that caller the whole delegation is releasable.
     function unvouch(uint256 sponsorId, uint256 agentId, uint256 amount)
         external
         nonReentrant
@@ -548,7 +626,8 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
         if (amount == 0) revert ZeroAmount();
         uint256 childAvail = _available(agentId, c);
         if (amount > childAvail) revert InsufficientCapacity(agentId, amount, childAvail);
-        if (amount > c.delegatedIn) amount = c.delegatedIn;
+        uint256 releasable = c.delegatedIn > c.principalOut ? c.delegatedIn - c.principalOut : 0;
+        if (amount > releasable) revert DelegationInUse(agentId, amount, releasable);
         c.delegatedIn -= amount;
         _agents[sponsorId].delegatedOut -= amount;
         emit Unvouched(sponsorId, agentId, amount, c.delegatedIn);
@@ -727,7 +806,14 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
         if (!c.isRoot) {
             Agent storage s = _agents[sponsorId];
             s.childrenDefaulted += 1;
-            if (!s.defaulted) {
+            /* "The sponsor is dead" used to mean "the sponsor has nothing", and for a root that is simply
+               untrue: its stake is cash still sitting in this contract, still earmarked against this very
+               child. The loss went to the reserve instead, and past an empty reserve to the lenders, while
+               the stake stayed frozen in `totalStake` owned by nobody reachable. A dead root is still
+               charged, bounded by what is left of its stake; a dead non-root genuinely has nothing to take,
+               since recourse would be a loan it can never repay. */
+            bool chargeable = !s.defaulted || (s.isRoot && s.stake > 0);
+            if (chargeable) {
                 uint256 backing = c.delegatedIn;
                 liable = l.principal < backing ? l.principal : backing;
                 // consume exactly the liable slice of the delegation; the rest still backs the other loans
@@ -935,6 +1021,18 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
         if (p.epochLength == 0) revert InvalidParams();
         if (p.sponsorFeeBps + p.protocolFeeBps > 10_000) revert InvalidParams();
         if (p.minScoreTerm > p.maxTerm) revert InvalidParams();
+        /* Four of these are added to a uint64 timestamp elsewhere, and an unbounded value makes that
+           addition overflow and revert FOREVER, which is worse than any value it could legitimately hold:
+             grace, recourseTerm -> markDefault: no default can ever be recorded, so loss recognition
+                                    freezes and the principal keeps inflating the share price
+             minSeasoning        -> repay: no loan can be repaid
+             epochLength         -> _grow, reached from repay: same
+           An audit found these independently, twice. A year is already far outside anything this protocol
+           means to express, so bounding them costs nothing and removes the footgun. */
+        if (
+            p.maxTerm > MAX_PERIOD || p.grace > MAX_PERIOD || p.recourseTerm > MAX_PERIOD || p.minSeasoning > MAX_PERIOD
+                || p.epochLength > MAX_PERIOD
+        ) revert InvalidParams();
         params = p;
         emit ParamsUpdated(p);
     }
