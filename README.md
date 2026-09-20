@@ -28,7 +28,7 @@ Reviews are cheap to fake. Repaid debt isn't.
 >
 > `test/DefaultAccounting.t.sol` adds the cases that make the fix mean something: partial defaults, repayment
 > after default, multiple children, sub-sponsor recourse per default, a dead sponsor, root defaults, and the
-> reserve lock. **`forge test` is 90 passed, 0 failed**, invariants included.
+> reserve lock. **`forge test` is 97 passed, 0 failed**, invariants included.
 >
 > **What that does not buy:** no independent review of the economics has happened, and randomized invariants
 > passed right through the original bug — a fuzzer that never defaults the same agent twice reports green forever.
@@ -231,7 +231,8 @@ depends on is already there.
 | ERC-8004 Identity Registry | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
 | USDG (Robinhood's 6-decimal dollar, the pool asset) | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
 | $PRIORS token (Pons V2) | `0xedbf91223639800bcd5756815caf908df3b890be` |
-| RPC | `https://rpc.mainnet.chain.robinhood.com` |
+| RPC (official; the only one that serves `eth_getLogs`) | `https://rpc.mainnet.chain.robinhood.com` |
+| RPC backups, for plain calls | `https://robinhood-rpc.publicnode.com`, `https://rpc.ordofi.network` |
 | Explorer | `https://robinhoodchain.blockscout.com` |
 | **CreditPool** (live) | `0x4B9fb2dE6BE54aF037683A75F3C82c81C3EEd122` |
 | **TreasurySponsor** (live, sponsor `#445`) | `0xE2D9EB6C36a72f9d897439402FDbe32612F67CBc` |
@@ -243,6 +244,20 @@ Addresses resolve from `deployments/<chainId>.json`, so nothing above needs copy
 `npx priors doctor` prints whatever is configured. The superseded pool is listed only so an old
 link is recognisable as dead rather than mysterious.
 
+`RPC_URL` accepts a comma-separated list and tries it in order — the first entry first, the next only
+when that one fails or refuses to serve the request:
+
+```bash
+RPC_URL=https://rpc.mainnet.chain.robinhood.com,https://robinhood-rpc.publicnode.com,https://rpc.ordofi.network
+```
+
+Worth doing: the official endpoint rate-limits under load, and a 429 there is otherwise the end of the
+read. The backups take plain calls happily but **cannot serve event history** — publicnode answers 403
+`Archive requests require a personal token` and ordofi answers `-32005 the network is busy` — so anything
+reading logs still needs the official endpoint reachable. The SDK knows the difference: a node refusing
+to serve moves to the next entry, while a revert is returned as-is, because a revert is the chain's
+answer and identical everywhere.
+
 ## Repository
 
 ```
@@ -251,7 +266,7 @@ src/TreasurySponsor.sol      the $PRIORS treasury as a sponsor: vouches by rule,
 src/ReserveFunder.sol        creator-fee recipient: sweeps token fees into the first-loss reserve
 src/libraries/ScoreLib.sol   the trust score
 src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPonsFeeEscrow
-test/                        90 tests: units, default accounting, TreasurySponsor, ReserveFunder, invariants
+test/                        97 tests: units, default accounting, TreasurySponsor, ReserveFunder, invariants
 script/Deploy.s.sol          deploys (mocks on dev chains), writes deployments/<chainId>.json
 sdk/priors.mjs               the whole agent flow in six methods on ethers v6, ABI included
 sdk/env.mjs                  resolves chain, deployment record and signer
@@ -266,7 +281,7 @@ docs/DESIGN.md               the math, the attacks, the parameters
 ## Working on it
 
 ```bash
-forge test                     # 90 tests, all green (see Status)
+forge test                     # 97 tests, all green (see Status)
 npm run devnet                 # local chain + deployed, bootstrapped pool
 npm run quickstart             # devnet + the full agent flow
 bash scripts/check-public.sh   # fails if a credential ever reached a tracked file

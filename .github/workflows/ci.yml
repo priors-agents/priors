@@ -1,0 +1,46 @@
+# The README says `forge test` is 97 passed and that scripts/check-public.sh is "what CI runs".
+# Until now there was no CI, so both were claims a reader had to take on trust. This is the CI.
+#
+# check-public.sh is the load-bearing one: this repo is public, and the check that nothing
+# credential-shaped is tracked belongs on every push rather than on somebody remembering.
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.3.0
+      - run: forge --version
+      - run: forge fmt --check
+      - run: forge build --sizes
+      - run: forge test -vvv
+
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      # selfcheck covers the CLI and the unit conversions; test-rpc-failover drives the real
+      # makeProvider against servers whose failures it scripts, so neither needs a chain.
+      - run: npm test
+      # Every entry point a user actually runs, so a syntax error cannot ship green.
+      - run: node --check bin/priors.mjs && node --check sdk/env.mjs && node --check sdk/priors.mjs
+
+  public-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # --history walks every blob in every commit, which needs the full history, not a shallow clone.
+          fetch-depth: 0
+      - run: bash scripts/check-public.sh --history

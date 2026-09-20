@@ -100,8 +100,32 @@ export function splitRpcs(rpc) {
   return String(rpc || "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+/** How long the whole call may take, across every endpoint and attempt, before an honest error beats waiting. */
+const RPC_BUDGET_MS = 15000; // a CLI may wait longer than a web page, but not forever
+const RPC_ATTEMPTS = 2; // passes over the endpoint list
+/* A single attempt may use most of the budget, and the cap is deliberately NOT divided by the number
+   of endpoints. Dividing it was a real bug: with three endpoints configured each attempt got 2.5s, and
+   Robinhood Chain's own endpoint has been measured answering in 5.4s (and once at 10.4s) against a
+   375ms median. So adding backups - exactly what the docs tell you to do - made a working setup fail,
+   because the healthy-but-slow first endpoint was killed before it could answer. Slow-but-alive is the
+   failure that actually happens on this chain; a silent endpoint costs one attempt's worth and no more,
+   because the remaining budget is what bounds every later attempt. */
+const RPC_ATTEMPT_MAX_MS = 6000;
+
+/** True when the response is a node declining to serve the request, rather than the chain answering. */
+function declinedByNode(res) {
+  for (const r of Array.isArray(res) ? res : [res]) {
+    const e = r && r.error;
+    if (!e) continue;
+    const msg = String(e.message || "").toLowerCase();
+    if (e.code === -32005 || e.code === -32029 || e.code === 429) return e.message;
+    if (/rate limit|too many requests|archive|exceed|range|capacity|unavailable|try again/.test(msg)) return e.message;
+  }
+  return "";
+}
+
 /* Tries endpoints in the order given: first entry first, moving on only when that one fails, with a
-   second attempt each before writing it off. Deliberately not ethers' FallbackProvider, which queries
+   second pass before writing the list off. Deliberately not ethers' FallbackProvider, which queries
    providers together and waits for a weighted quorum - a dead first entry there can stall every call
    or fail quorum while a healthy endpoint sits behind it. Priority order is what an operator with a
    private endpoint and a public backstop actually wants.
@@ -110,25 +134,36 @@ export function splitRpcs(rpc) {
    directly, so overriding the higher-level `send` leaves network detection - the very first call -
    pinned to the first endpoint. Found by testing, not by reading.
 
-   Only a THROWN transport error fails over. A JSON-RPC error inside a successful response (a revert,
-   say) is the chain's answer and would be identical everywhere; retrying it elsewhere would just be
-   slower. */
+   A THROWN transport error fails over, and so does a node REFUSING to serve the request - a rate limit,
+   or a non-archive node declining a deep `eth_getLogs`. On Robinhood Chain that distinction is not
+   academic: of the three public endpoints, two answer a deep log query with HTTP 403 "Archive requests
+   require a personal token" and `-32005` "the network is busy". A revert is different: it is the chain's
+   answer, identical on every node, so it is returned rather than retried everywhere for nothing. */
 export function makeProvider(rpcs, providerOpts = {}) {
   const urls = splitRpcs(rpcs);
   if (urls.length === 0) throw new Error("no RPC endpoint configured");
   // Single endpoints get the retry too - that is the common case, and the one that needs it most.
-  const ATTEMPTS = 2;
-  const BUDGET_MS = 15000; // a CLI may wait longer than a web page, but not forever
-
-  /* The budget is only checked between attempts, so it bounds nothing if an attempt never returns -
-     and ethers' default is a 300 SECOND timeout. A black-holed endpoint that accepts the connection
-     and then goes quiet is a common failure, so each attempt gets its own share as a hard timeout. */
-  const perAttemptMs = Math.max(2000, Math.floor(BUDGET_MS / (urls.length * ATTEMPTS)));
   const connect = (url) => {
     const req = new ethers.FetchRequest(url);
-    req.timeout = perAttemptMs;
+    req.timeout = RPC_ATTEMPT_MAX_MS; // backstop; the race below is what actually bounds an attempt
     return req;
   };
+  /* FetchRequest's timeout is fixed at construction, so bounding an attempt by the REMAINING budget
+     has to be a race here rather than a property. */
+  const withDeadline = (promise, ms) =>
+    new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error(`RPC attempt exceeded ${ms}ms`)), ms);
+      promise.then(
+        (v) => {
+          clearTimeout(t);
+          resolve(v);
+        },
+        (e) => {
+          clearTimeout(t);
+          reject(e);
+        }
+      );
+    });
 
   class FailoverProvider extends ethers.JsonRpcProvider {
     constructor() {
@@ -148,11 +183,23 @@ export function makeProvider(rpcs, providerOpts = {}) {
 
       const started = Date.now();
       let last;
-      for (let i = 0; i < urls.length; i++) {
-        for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
-          if (Date.now() - started > BUDGET_MS) throw last || new Error("RPC budget exhausted");
+      /* Endpoints are the INNER loop: one pass over all of them in priority order, then a second pass.
+         Exhausting the first endpoint's retries before trying the second meant a silent first endpoint
+         ate the whole budget and the healthy backup was never reached - the failover starving itself.
+         Priority still holds, because every pass starts at the first entry. */
+      for (let attempt = 0; attempt < RPC_ATTEMPTS; attempt++) {
+        for (let i = 0; i < urls.length; i++) {
+          const left = RPC_BUDGET_MS - (Date.now() - started);
+          if (left <= 0) throw last || new Error("RPC budget exhausted");
+          const share = Math.min(left, RPC_ATTEMPT_MAX_MS);
           try {
-            return i === 0 ? await super._send(payload) : await this._backups[i - 1]._send(payload);
+            const call = i === 0 ? super._send(payload) : this._backups[i - 1]._send(payload);
+            const res = await withDeadline(call, share);
+            if (declinedByNode(res) && urls.length > 1) {
+              last = new Error(declinedByNode(res));
+              continue;
+            }
+            return res;
           } catch (e) {
             last = e;
           }

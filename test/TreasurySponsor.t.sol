@@ -224,8 +224,14 @@ contract TreasurySponsorTest is Test {
         treasury.setFeeSink(anyone);
         assertEq(treasury.feeSink(), anyone);
         TreasurySponsor.Rules memory r = TreasurySponsor.Rules({
-            reserveBps: 3000, firstLine: 10 * USDC, secondLine: 80 * USDC, epochCap: 200 * USDC,
-            epochLength: 1 days, minSeasoning: 1 days, minQualified: 1, minScore: 50
+            reserveBps: 3000,
+            firstLine: 10 * USDC,
+            secondLine: 80 * USDC,
+            epochCap: 200 * USDC,
+            epochLength: 1 days,
+            minSeasoning: 1 days,
+            minQualified: 1,
+            minScore: 50
         });
         treasury.setRules(r);
         (uint256 reserveBps,,,,,,,) = treasury.rules();
