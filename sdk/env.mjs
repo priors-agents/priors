@@ -127,6 +127,15 @@ export function makeProvider(rpcs, providerOpts = {}) {
       this.rpcUrls = urls.slice();
     }
     async _send(payload) {
+      // A broadcast is never retried and never failed over. If the transport dies after the node
+      // already accepted the transaction, sending it again gets "already known" back - an RPC error
+      // inside a 200, which this loop would hand to the caller as a failure for a transaction that
+      // in fact succeeded. A caller that believes that may re-sign at the next nonce and pay twice.
+      // Surfacing the transport error immediately is the honest answer: the tx hash is deterministic,
+      // so the caller can look it up.
+      const one = Array.isArray(payload) ? payload : [payload];
+      if (one.some((r) => r && r.method === "eth_sendRawTransaction")) return super._send(payload);
+
       const started = Date.now();
       let last;
       for (let i = 0; i < urls.length; i++) {
