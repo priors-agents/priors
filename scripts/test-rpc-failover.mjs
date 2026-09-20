@@ -30,6 +30,10 @@ function fakeRpc(plan = []) {
       if (mode === 'drop') { req.socket.destroy(); return; }
       const answer = (r) => {
         if (mode === 'revert') return { jsonrpc: '2.0', id: r.id, error: { code: 3, message: 'execution reverted' } };
+        // A real revert reason that collides with the old word list.
+        if (mode === 'revert-erc20') return { jsonrpc: '2.0', id: r.id, error: { code: 3, message: 'execution reverted: ERC20: transfer amount exceeds balance' } };
+        // A node saying "not now", the way ordofi does.
+        if (mode === 'busy') return { jsonrpc: '2.0', id: r.id, error: { code: -32005, message: 'the network is busy, please try again in a moment' } };
         if (r.method === 'eth_chainId') return { jsonrpc: '2.0', id: r.id, result: '0x1237' };
         return { jsonrpc: '2.0', id: r.id, result: '0x1' };
       };
@@ -216,6 +220,41 @@ await check('a revert is NOT failed over — it is the chain answering, and the 
     if (backup.state.hits > before) throw new Error('a revert was retried against the backup');
     return 'revert stayed on the first endpoint';
   } finally { reverting.close(); backup.close(); }
+});
+
+await check('an ERC-20 revert reason is not mistaken for a node refusing to serve', async () => {
+  /* The refusal test used to be a list of ordinary English words, and OpenZeppelin's ERC-20 reverts
+     with "transfer amount exceeds balance" - which matched "exceed". That revert was failed over to
+     every endpoint for the same answer and surfaced as a bare Error instead of a decodable
+     CALL_EXCEPTION. The suite's existing revert case said plain "execution reverted", which never
+     collided, so nothing caught it. Found by review. */
+  const reverting = await fakeRpc(['ok', 'revert-erc20', 'revert-erc20', 'revert-erc20', 'revert-erc20']);
+  const backup = await fakeRpc();
+  try {
+    const p = makeProvider([reverting.url, backup.url]);
+    await p.getNetwork();
+    const before = backup.state.hits;
+    try { await p.call({ to: '0x' + '11'.repeat(20), data: '0x12345678' }); } catch (_) { /* expected */ }
+    if (backup.state.hits > before) throw new Error('a revert saying "exceeds balance" was retried against the backup');
+    return '"transfer amount exceeds balance" stayed on the first endpoint';
+  } finally { reverting.close(); backup.close(); }
+});
+
+await check('a refusal on the ONLY endpoint is retried, not handed straight back', async () => {
+  /* One entry on purpose. A `urls.length > 1` guard used to return the refusal to the caller on the
+     first try, while a thrown transport error on the same single endpoint got a second attempt - and a
+     rate limit is the most transient failure there is. Found by review. */
+  const flaky = await fakeRpc(['ok', 'busy']); // network detection, then one refusal, then answers
+  try {
+    const p = makeProvider([flaky.url]);
+    await p.getNetwork();
+    const before = flaky.state.hits;
+    const block = await p.getBlockNumber();
+    const tries = flaky.state.hits - before;
+    if (tries < 2) throw new Error(`the refusal was surfaced after ${tries} attempt(s); it must be retried`);
+    if (block !== 1) throw new Error(`expected the retry to return the real answer, got ${block}`);
+    return `recovered after ${tries} attempts against one endpoint`;
+  } finally { flaky.close(); }
 });
 
 await check('a transaction broadcast is never retried', async () => {

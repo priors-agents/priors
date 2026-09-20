@@ -112,14 +112,28 @@ const RPC_ATTEMPTS = 2; // passes over the endpoint list
    because the remaining budget is what bounds every later attempt. */
 const RPC_ATTEMPT_MAX_MS = 6000;
 
-/** True when the response is a node declining to serve the request, rather than the chain answering. */
+/* True when the response is a node DECLINING to serve the request, rather than the chain answering.
+   Only the two things are distinguishable here, so the test has to be narrow: a revert is the chain's
+   answer and must be returned as-is, or the caller loses the CALL_EXCEPTION it can decode.
+
+   This used to match a list of ordinary English words - "exceed", "range", "capacity", "unavailable".
+   That is a trap, because a contract is free to revert with exactly those: OpenZeppelin's ERC-20 says
+   "transfer amount exceeds balance". Such a revert was failed over to every endpoint for the same
+   answer and then surfaced as a bare Error. So the test is now structural - the JSON-RPC codes nodes
+   actually use to say "not now" - plus a short list of phrases specific enough that no revert reason
+   would contain them. Found by review; the suite's revert case used a plain "execution reverted",
+   which never collided with the word list.
+
+   A non-200 (publicnode's 403 for an archive request) never reaches here: ethers throws on it, and a
+   thrown transport error already fails over. */
 function declinedByNode(res) {
   for (const r of Array.isArray(res) ? res : [res]) {
     const e = r && r.error;
     if (!e) continue;
     const msg = String(e.message || "").toLowerCase();
+    if (msg.includes("revert")) continue; // the chain answered; never ours to retry elsewhere
     if (e.code === -32005 || e.code === -32029 || e.code === 429) return e.message;
-    if (/rate limit|too many requests|archive|exceed|range|capacity|unavailable|try again/.test(msg)) return e.message;
+    if (/rate limit|rate-limit|too many requests|please try again|archive requests require/.test(msg)) return e.message;
   }
   return "";
 }
@@ -149,7 +163,12 @@ export function makeProvider(rpcs, providerOpts = {}) {
     return req;
   };
   /* FetchRequest's timeout is fixed at construction, so bounding an attempt by the REMAINING budget
-     has to be a race here rather than a property. */
+     has to be a race here rather than a property.
+     SHORTCUT: the losing side of the race is abandoned, not cancelled - ethers gives no AbortSignal
+     hook through JsonRpcProvider - so a socket can stay open for up to RPC_ATTEMPT_MAX_MS after this
+     returns. Ceiling: one idle socket per abandoned attempt, 6s each, in a short-lived CLI process.
+     Upgrade trigger: if this provider is ever reused by a long-running server, or ethers exposes an
+     abort hook, wire the signal through instead. */
   const withDeadline = (promise, ms) =>
     new Promise((resolve, reject) => {
       const t = setTimeout(() => reject(new Error(`RPC attempt exceeded ${ms}ms`)), ms);
@@ -195,8 +214,13 @@ export function makeProvider(rpcs, providerOpts = {}) {
           try {
             const call = i === 0 ? super._send(payload) : this._backups[i - 1]._send(payload);
             const res = await withDeadline(call, share);
-            if (declinedByNode(res) && urls.length > 1) {
-              last = new Error(declinedByNode(res));
+            /* No `urls.length > 1` guard: with a single endpoint that returned the refusal to the
+               caller on the first try, while a thrown transport error on the very same endpoint got a
+               second attempt. A rate limit is the most transient failure there is, and one endpoint is
+               the case this retry exists for. Falling through to the next pass retries the same URL. */
+            const declined = declinedByNode(res);
+            if (declined) {
+              last = new Error(declined);
               continue;
             }
             return res;

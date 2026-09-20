@@ -7,6 +7,9 @@ name: ci
 on:
   push:
   pull_request:
+# Nothing here writes back to the repo or uses the token, so it gets read and no more.
+permissions:
+  contents: read
 jobs:
   contracts:
     runs-on: ubuntu-latest
