@@ -449,8 +449,17 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
         poolLiquidity += assets;
         totalShares += minted;
         shares[receiver] += minted;
-        // The hold clock is on whoever ends up holding the shares, and a top-up restarts it.
-        lastDepositAt[receiver] = uint64(block.timestamp);
+        /* The hold clock is on whoever ends up holding the shares, weighted by how much arrives.
+           Setting it to `block.timestamp` outright was a griefing vector I put in and then found:
+           `deposit(1, victim)` would restart a stranger's seven days and tax their exit 0.5%, for one
+           unit of USDG. Keying it on `msg.sender == receiver` instead would have been worse - a sandwich
+           would simply deposit to a second address of its own and pay nothing.
+           A share-weighted average fixes both: one unit into a large position moves the clock by
+           essentially nothing, while a sandwich-sized deposit into an empty one sets it to now. */
+        uint256 held = shares[receiver] - minted;
+        lastDepositAt[receiver] = held == 0
+            ? uint64(block.timestamp)
+            : uint64((held * uint256(lastDepositAt[receiver]) + minted * block.timestamp) / (held + minted));
         emit Deposited(receiver, assets, minted);
     }
 

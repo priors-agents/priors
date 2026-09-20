@@ -135,7 +135,7 @@ contract SponsorLiabilityTest is Test {
            test that asked for 10 passed against the bug. */
         vm.startPrank(rootOp);
         try pool.unvouch(ROOT, MID, 60 * USD) {}
-            catch {
+        catch {
             pool.unvouch(ROOT, MID, 10 * USD);
         }
         uint256 free = pool.available(ROOT);
@@ -168,7 +168,7 @@ contract SponsorLiabilityTest is Test {
         // Greedy again: take back everything the contract will give, then try to walk with the stake.
         vm.startPrank(rootOp);
         try pool.unvouch(ROOT, MID, 60 * USD) {}
-            catch {
+        catch {
             pool.unvouch(ROOT, MID, 10 * USD);
         }
         uint256 free = pool.available(ROOT);

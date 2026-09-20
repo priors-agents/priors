@@ -261,6 +261,46 @@ contract AuditHardeningTest is Test {
         assertLt(usdc.balanceOf(bot), botBefore, "a zero-duration position must not be profitable");
     }
 
+    /// A bug I introduced with the exit fee and then caught: the hold clock was set to `block.timestamp`
+    /// outright, so anyone could `deposit(1, victim)` and restart a stranger's seven days, taxing their
+    /// exit 0.5% for one unit of USDG. The clock is share-weighted now.
+    function test_aDustDepositCannotResetSomeoneElsesHoldClock() public {
+        address victim = makeAddr("victim");
+        address griefer = makeAddr("griefer");
+        _fund(victim, 10_000 * USD);
+        vm.prank(victim);
+        pool.deposit(10_000 * USD, victim);
+
+        vm.warp(block.timestamp + pool.MIN_HOLD() + 1); // the victim has served its time
+        assertEq(pool.earlyExitFee(victim, pool.shares(victim)), 0, "the victim should be free to leave");
+
+        _fund(griefer, 1_000 * USD);
+        vm.prank(griefer);
+        pool.deposit(1, victim); // one unit, to someone else's address
+
+        assertEq(pool.earlyExitFee(victim, pool.shares(victim)), 0, "a dust deposit restarted the victim's clock");
+
+        uint256 before = usdc.balanceOf(victim);
+        uint256 sh = pool.shares(victim);
+        vm.prank(victim);
+        pool.withdraw(sh, victim);
+        assertGe(usdc.balanceOf(victim) - before, 10_000 * USD, "the victim was taxed on someone else's deposit");
+    }
+
+    /// The other half: a real deposit still starts a real clock, so the weighting cannot be used to dodge
+    /// the fee by depositing into a long-held position.
+    function test_aSandwichSizedDepositStillStartsTheClock() public {
+        address bot = makeAddr("bot");
+        _fund(bot, 1_000 * USD);
+        vm.prank(bot);
+        pool.deposit(10 * USD, bot);
+        vm.warp(block.timestamp + pool.MIN_HOLD() + 1); // small, long-held position
+
+        vm.prank(bot);
+        pool.deposit(990 * USD, bot); // now pile in
+        assertGt(pool.earlyExitFee(bot, pool.shares(bot)), 0, "a large top-up must re-arm the fee");
+    }
+
     // ---------------------------------------------------------------- 3. import bounds
 
     /// The migration this build runs is an `importRecords` call, so this is the guard protecting its own
