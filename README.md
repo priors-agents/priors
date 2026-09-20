@@ -28,7 +28,7 @@ Reviews are cheap to fake. Repaid debt isn't.
 >
 > `test/DefaultAccounting.t.sol` adds the cases that make the fix mean something: partial defaults, repayment
 > after default, multiple children, sub-sponsor recourse per default, a dead sponsor, root defaults, and the
-> reserve lock. **`forge test` is 74 passed, 0 failed**, invariants included.
+> reserve lock. **`forge test` is 90 passed, 0 failed**, invariants included.
 >
 > **What that does not buy:** no independent review of the economics has happened, and randomized invariants
 > passed right through the original bug — a fuzzer that never defaults the same agent twice reports green forever.
@@ -36,23 +36,35 @@ Reviews are cheap to fake. Repaid debt isn't.
 > someone who knows an audit hasn't happened.
 >
 > **The pool is live on Robinhood Chain mainnet** (chain 4663), seeded small on purpose: 150 USDG of lender
-> liquidity, 75 in the first-loss reserve, 75 staked by the treasury. Addresses come from
+> liquidity, 75 in the first-loss reserve, 65 staked by the treasury. Addresses come from
 > `deployments/<chainId>.json`, so `npx priors doctor` resolves it with no configuration. `npm run quickstart`
 > still builds you a throwaway local chain in about thirty seconds if you would rather not touch mainnet.
 >
-> **Beta posture, and it is a real restriction:** a second defect was found in default accounting after launch —
-> a *root* sponsor could vouch out capacity it had already borrowed against, because `vouch()` applies the
-> earned-room rule only to non-roots while `markDefault()` charges a root's shortfall to the reserve. It is
-> reproducible; the PoC is in the repo. Until the fix ships, **`minStake` is raised out of reach, so nobody new
-> can become a root sponsor.** `isRoot` is assigned in exactly one place, so that closes the only door — but it
-> also means the "operators stake and vouch" half of the sponsor tree is switched off for now, and the treasury
-> is the only sponsor. `test/BetaMitigationMinStake.t.sol` holds that reasoning to account, control included.
+> **A second defect was found after launch, and has now been fixed and redeployed.** A root sponsor could
+> vouch out `stake + earned`; when the delegation defaulted, `markDefault` clamped the root's liability to its
+> stake and charged the shortfall to the reserve — but never retired the root's `earned`. The same earned credit
+> then backed a defaulted delegation *and* remained the root's own borrowing capacity: the reserve paid twice,
+> `reserve >= totalEarned` broke, and lenders lost principal. Worth being precise about what was *not* wrong:
+> `vouch()` letting a root delegate more than its earned. A root's stake is cash, so that delegation is backed;
+> requiring `delegatedOut <= earned` for roots would break the treasury, which vouches every line out of stake
+> with `earned = 0`. The permission was right — the accounting on default was incomplete.
 >
-> Practical consequence: **onboarding is finite.** The treasury vouches $5 per agent out of its own 75 USDG of
-> stake, and a line it has given cannot be taken back, so the beta seats fifteen agents in total. Capacity grows
-> only when $PRIORS creator fees are swept into the treasury — by hand during the beta. Don't trust that count
-> once it is a day old: priors.trade shows how many first lines are left, read live from the chain, and so does
-> `npx priors report 436` (`available` ÷ $5).
+> `test/ReviewPoC_RootEarnedDoubleSpend.t.sol` is the original proof-of-concept, now inverted into the
+> regression guard: it runs the attack move for move and asserts containment. Revert the fix and it fails
+> naming the broken invariant. **The pool was migrated to the fixed bytecode**, carrying every agent's
+> repayment record across — see `importRecords` and `test/HistoryImport.t.sol` — and the `minStake` lockout
+> that had stood in for the fix is lifted, so third-party root sponsors work again.
+>
+> **The old pool is paused and abandoned.** $10 of stake is stranded in it forever, behind two credit lines
+> that were already given: `unvouch` is `onlyController(sponsor)` and the TreasurySponsor exposes none, so a
+> line cannot be taken back. That is a design property, not an accident, and it is the whole reason onboarding
+> is finite.
+>
+> Practical consequence: **onboarding is finite.** The treasury vouches $5 per agent out of its own 65 USDG of
+> stake, so the beta seats thirteen agents in total. Capacity grows only when $PRIORS creator fees are swept
+> into the treasury — by hand during the beta. Don't trust that count once it is a day old: priors.trade shows
+> how many first lines are left, read live from the chain, and so does `npx priors report 445`
+> (`available` ÷ $5).
 
 ---
 
@@ -89,18 +101,23 @@ Requires [Foundry](https://getfoundry.sh) and Node 20+.
 ### The same walkthrough, already done on mainnet
 
 That runs on a throwaway local chain. It has also been run for real on Robinhood Chain with real
-USDG, start to finish, through the CLI in this repo — agent **#443**, registered from an empty
-wallet, vouched by the treasury by rule, borrowed and repaid:
+USDG, start to finish, through the CLI in this repo.
+
+Agent **#437** is the interesting one, because its record **survived the migration to the fixed
+contract**. It repaid twice on the original pool; those two loans were carried across by
+`importRecords`, and it has since borrowed and repaid again on the new one:
 
 | step | transaction |
 |---|---|
-| first line, $5 from treasury #436 | [`0x91d6568d…`](https://robinhoodchain.blockscout.com/tx/0x91d6568defa5b38aefd0e948a5e2f345884819a952ceb863860febc0d38b965a) |
-| borrow $5 for 8 days | [`0x361e105b…`](https://robinhoodchain.blockscout.com/tx/0x361e105bd92fd70fbd53b691e69b1d57ad67eea13bfded336687898ff7fea15c) |
-| repay principal + $0.013333 fee | [`0x245095e7…`](https://robinhoodchain.blockscout.com/tx/0x245095e7b8b9754bbd3aa12a610fa47b14e33564ed615ec86cdb453a8b15fd41) |
+| borrow $5 for 8 days, on the new pool | [`0xff8c3e1f…`](https://robinhoodchain.blockscout.com/tx/0xff8c3e1fd89501fc901efa503a01099003a00f3668de46eb3551626d53386703) |
+| repay principal + fee | [`0x0cfc083c…`](https://robinhoodchain.blockscout.com/tx/0x0cfc083c83eab43395465b7e9c95f36b430f23c3208e639bb56275508cd6c13d) |
 
-`npx priors report 443` reads the result back off the chain: enrolled, sponsor #436, a $5 line,
-1 loan repaid, $0.013333 of fees paid, no defaults. Agent #437 has been through the same cycle
-twice, and can repeat it indefinitely without consuming another of the beta's seats.
+`npx priors report 437` reads the result back off the chain: sponsor #445, a $5 line, **3 loans
+repaid**, $15 of volume, $0.036665 of fees paid, no defaults. Two of those three predate the pool
+it is now borrowing from — which is the point of carrying history rather than restarting it.
+
+Agent #443 came through the same migration with its single repaid loan intact. Both can keep
+borrowing and repaying indefinitely without consuming another of the beta's seats.
 
 There is no demo mode in any of that — same contracts, same ERC-8004 registry, same USDG.
 

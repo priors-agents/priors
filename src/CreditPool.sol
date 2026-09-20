@@ -155,6 +155,7 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
     uint256 public totalStake; // USDC held for roots (not lender money)
     uint256 public reserve; // first-loss reserve (not lender money)
     uint256 public totalEarned; // sum of live agents' earned capacity; never allowed above `reserve`
+    bool public importsSealed; // once true, repayment history can never be written again
 
     mapping(uint256 => Agent) internal _agents;
     mapping(uint256 => address) public delegateOf; // agentId => an address allowed to act for the agent
@@ -182,6 +183,8 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
     );
     event Repaid(uint256 indexed loanId, uint256 indexed agentId, uint256 principal, uint256 fee, address payer);
     event CapacityEarned(uint256 indexed agentId, uint256 gained, uint256 earned);
+    /// @notice A sponsor's earned credit was written off because a delegation standing on it defaulted.
+    event CapacityRetired(uint256 indexed agentId, uint256 retired, uint256 earned, uint256 indexed forLoanId);
     event FeeSplit(
         uint256 indexed loanId,
         uint256 indexed sponsor,
@@ -201,6 +204,8 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
     event ReserveFunded(address indexed from, uint256 amount);
     event ReserveWithdrawn(address indexed to, uint256 amount);
     event ReserveCovered(uint256 indexed loanId, uint256 amount, uint256 lenderLoss);
+    event RecordImported(uint256 indexed agentId, uint256 loansRepaid, uint256 volumeRepaid);
+    event ImportsSealed();
     event DelegateSet(uint256 indexed agentId, address delegate);
     event ParamsUpdated(Params params);
 
@@ -227,6 +232,9 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
     error InvalidParams();
     error DelegationExceedsEarned(uint256 agentId, uint256 requested, uint256 earnedRoom);
     error ReserveLocked(uint256 requested, uint256 free);
+    error ImportsAreSealed();
+    error RecordAlreadyLive(uint256 agentId);
+    error BadEnrolmentDate(uint256 agentId, uint64 enrolledAt);
 
     // ------------------------------------------------------------------
     // Constructor
@@ -293,6 +301,79 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
     // Lenders
     // ------------------------------------------------------------------
 
+    // ------------------------------------------------------------------
+    // One-time history import (migration only)
+    // ------------------------------------------------------------------
+
+    /// @notice An agent's repayment record carried over from a previous deployment of this pool.
+    /// @dev    Reputation ONLY. Every money field - stake, earned, delegation, loans - is deliberately
+    ///         absent, so an import cannot itself create capacity or move a unit of anyone's funds: a
+    ///         migrated agent still has to be vouched for here, normally, out of somebody's real backing.
+    ///
+    ///         It is NOT inert downstream, though, and claiming otherwise would be false.
+    ///         `TreasurySponsor.eligibleForRaise` gates a second line on `enrolledAt + minSeasoning` and
+    ///         on `qualifiedRepaid`, both of which come from here - so an imported record can take its
+    ///         raise at once instead of seasoning first. That is what carrying history over MEANS: a
+    ///         migrated agent is not a newcomer. And it hands the owner no new power, because
+    ///         `TreasurySponsor.setRules` already lets them set `minSeasoning` to zero outright. What
+    ///         bounds the damage is the treasury's own capacity and epoch cap, not this function.
+    ///
+    ///         The window closes on the first deposit, so none of it is reachable once lenders are in.
+    struct ImportedRecord {
+        uint256 agentId;
+        uint64 enrolledAt;
+        uint256 loansRepaid;
+        uint256 volumeRepaid;
+        uint256 feesPaid;
+        uint256 recourseHonored;
+        uint256 childrenDefaulted;
+        uint256 qualifiedRepaid;
+        uint256 dollarSecondsRepaid;
+    }
+
+    /// @notice Carry repayment history over from a previous deployment, before this pool opens.
+    ///         Batched so a migration is one atomic transaction rather than a half-imported ledger.
+    ///         Capacity is NOT imported: every agent still has to be vouched for here, normally.
+    function importRecords(ImportedRecord[] calldata rs) external onlyOwner {
+        if (importsSealed) revert ImportsAreSealed();
+        for (uint256 i = 0; i < rs.length; i++) {
+            ImportedRecord calldata r = rs[i];
+            Agent storage a = _agents[r.agentId];
+            // Only ever onto a blank slate. Never edit a record this pool has itself written.
+            if (a.enrolled || a.loansRepaid != 0 || a.enrolledAt != 0) revert RecordAlreadyLive(r.agentId);
+            // `score()` ages a record with `block.timestamp - enrolledAt`. A date in the future would
+            // underflow it, and score() is reached through creditReport() - the agent's page and the SDK
+            // would revert for good. Reject it here rather than let one typo brick a record.
+            if (r.enrolledAt == 0 || r.enrolledAt > block.timestamp) revert BadEnrolmentDate(r.agentId, r.enrolledAt);
+            registry.ownerOf(r.agentId); // must exist in ERC-8004 (reverts otherwise)
+            a.enrolledAt = r.enrolledAt;
+            a.loansRepaid = r.loansRepaid;
+            a.volumeRepaid = r.volumeRepaid;
+            a.feesPaid = r.feesPaid;
+            a.recourseHonored = r.recourseHonored;
+            a.childrenDefaulted = r.childrenDefaulted;
+            a.qualifiedRepaid = r.qualifiedRepaid;
+            a.dollarSecondsRepaid = r.dollarSecondsRepaid;
+            emit RecordImported(r.agentId, r.loansRepaid, r.volumeRepaid);
+        }
+    }
+
+    /// @notice Close the import window by hand. `deposit` does it too, so it cannot be forgotten.
+    function sealImports() external onlyOwner {
+        _sealImports();
+    }
+
+    function _sealImports() internal {
+        if (!importsSealed) {
+            importsSealed = true;
+            emit ImportsSealed();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Lenders
+    // ------------------------------------------------------------------
+
     function totalAssets() public view returns (uint256) {
         return poolLiquidity + totalPrincipalOut;
     }
@@ -309,6 +390,8 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
     }
 
     function deposit(uint256 assets, address receiver) external nonReentrant whenNotPaused returns (uint256 minted) {
+        // Lender money is here: history is now whatever this pool records, and nothing else.
+        _sealImports();
         if (assets == 0) revert ZeroAmount();
         minted = convertToShares(assets);
         if (minted == 0) revert ZeroAmount();
@@ -366,7 +449,7 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
         if (stakeAmount < params.minStake) revert BelowMinStake(stakeAmount, params.minStake);
         a.enrolled = true;
         a.isRoot = true;
-        a.enrolledAt = uint64(block.timestamp);
+        if (a.enrolledAt == 0) a.enrolledAt = uint64(block.timestamp); // see vouch(): keep an imported date
         a.epochStart = uint64(block.timestamp);
         enrolledAgents.push(agentId);
         _addStake(agentId, a, stakeAmount);
@@ -425,7 +508,9 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
         if (!c.enrolled) {
             registry.ownerOf(agentId); // must exist in ERC-8004 (reverts otherwise)
             c.enrolled = true;
-            c.enrolledAt = uint64(block.timestamp);
+            // An imported record already carries the date it first enrolled, and age is part of the
+            // score - overwriting it here would quietly reset the very history the import preserved.
+            if (c.enrolledAt == 0) c.enrolledAt = uint64(block.timestamp);
             c.epochStart = uint64(block.timestamp);
             c.sponsor = sponsorId;
             enrolledAgents.push(agentId);
@@ -653,11 +738,24 @@ contract CreditPool is Ownable2Step, ReentrancyGuard, Pausable {
             if (liable > 0) {
                 if (s.isRoot) {
                     // cash: slash the stake straight back into the pool (bounded by what is left of it)
-                    if (liable > s.stake) liable = s.stake;
-                    s.stake -= liable;
-                    totalStake -= liable;
-                    poolLiquidity += liable;
-                    emit StakeSlashed(sponsorId, liable, loanId);
+                    uint256 fromStake = liable < s.stake ? liable : s.stake;
+                    // Whatever the stake could not cover stood on the root's earned credit, which is
+                    // reserve-backed: the reserve pays it below, and the earned must be retired here so
+                    // it cannot be spent a second time. Without this the same earned backs a delegation
+                    // that defaults AND remains the root's own borrowing capacity, charging the reserve
+                    // twice and breaking `reserve >= totalEarned` - lenders then lose principal.
+                    uint256 shortfall = liable - fromStake;
+                    if (shortfall > 0) {
+                        uint256 fromEarned = shortfall < s.earned ? shortfall : s.earned;
+                        s.earned -= fromEarned;
+                        totalEarned -= fromEarned;
+                        emit CapacityRetired(sponsorId, fromEarned, s.earned, loanId);
+                    }
+                    liable = fromStake; // only the cash slice actually came back to the pool
+                    s.stake -= fromStake;
+                    totalStake -= fromStake;
+                    poolLiquidity += fromStake;
+                    emit StakeSlashed(sponsorId, fromStake, loanId);
                 } else {
                     // credit: the sponsor now owes the pool. The debt moves; pool assets are unchanged.
                     uint64 dueAt = uint64(block.timestamp) + params.recourseTerm;
