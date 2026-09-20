@@ -122,13 +122,18 @@ export class Priors {
     const rc = await (await reg.register(uri || "")).wait();
     const MINT = ethers.id("Transfer(address,address,uint256)");
     const ZERO = "0x" + "0".repeat(64);
-    for (const log of rc.logs) {
-      if (log.address.toLowerCase() !== registry.toLowerCase()) continue;
-      // ERC-721 Transfer indexes all three args, so a mint is topics = [sig, 0x0, to, tokenId].
-      if (log.topics.length === 4 && log.topics[0] === MINT && log.topics[1] === ZERO) {
-        return Number(BigInt(log.topics[3]));
-      }
-    }
+    const me = (await this.signer.getAddress()).toLowerCase();
+    // ERC-721 Transfer indexes all three args, so a mint is topics = [sig, 0x0, to, tokenId].
+    const mints = rc.logs.filter(
+      (log) => log.address.toLowerCase() === registry.toLowerCase() && log.topics.length === 4 && log.topics[0] === MINT && log.topics[1] === ZERO
+    );
+    // Match on the recipient rather than taking the first mint: a registry that minted a second, companion token
+    // in the same transaction would otherwise hand back somebody else's id, and the caller would go on to build a
+    // credit history against an identity it does not own.
+    const ours = mints.filter((log) => ethers.getAddress("0x" + log.topics[2].slice(26)).toLowerCase() === me);
+    if (ours.length === 1) return Number(BigInt(ours[0].topics[3]));
+    if (ours.length > 1) throw new Error(`registry ${registry} minted ${ours.length} identities to ${me} in tx ${rc.hash}; cannot tell which one is yours`);
+    if (mints.length) throw new Error(`registry ${registry} minted in tx ${rc.hash}, but to someone other than ${me}`);
     throw new Error(`no ERC-721 mint log from the registry ${registry} in tx ${rc.hash}; is it an ERC-8004 identity registry?`);
   }
 }
