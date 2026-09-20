@@ -1,0 +1,12 @@
+{
+  "chainId": 4663,
+  "creditPool": "0xd970472b2904D5923882af034cea4067AF0AaC95",
+  "deployBlock": 67729526,
+  "owner": "0x140e38e4eD308e534fBb2Ee3EF057A51b98d5932",
+  "registry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+  "reserveFunder": "0x43d6E0e5aF75e63F1c1e6D340B6d511385Ba06cB",
+  "treasuryAgentId": 436,
+  "treasurySponsor": "0x5eDF7b2375D434B09c784e28917CB3D6714F5d60",
+  "usdc": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+  "usdcIsMock": false
+}

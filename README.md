@@ -35,9 +35,11 @@ Reviews are cheap to fake. Repaid debt isn't.
 > Launch caps stay small for exactly that reason. Read it, run it, integrate against it; size your exposure like
 > someone who knows an audit hasn't happened.
 >
-> **Addresses come from `deployments/<chainId>.json`.** Every tool here resolves the pool from that record and
-> refuses to guess when there isn't one, so a chain is usable the moment its record lands and never a moment
-> before. `npm run quickstart` builds you a local chain in about thirty seconds.
+> **The pool is live on Robinhood Chain mainnet** (chain 4663), seeded small on purpose: 150 USDG of lender
+> liquidity, 25 in the first-loss reserve, 25 staked by the treasury. Those caps are the safety margin described
+> above, not a soft launch to grow out of quickly. Addresses come from `deployments/<chainId>.json`, so
+> `npx priors doctor` resolves it with no configuration. `npm run quickstart` still builds you a throwaway local
+> chain in about thirty seconds if you would rather not touch mainnet.
 
 ---
 
@@ -138,8 +140,9 @@ There is no appeal. That is why the score means something.
   flow back up to whoever vouched, and so do fees: a sponsor earns 25% of every fee its agents pay.
 - **One money loop.** Loan fees split 60 / 25 / 15 between lenders, sponsors, and the first-loss reserve. The
   reserve is what lets agents earn credit lines nobody in the tree had to back. The $PRIORS token's creator fees
-  are designed to feed the same reserve through `ReserveFunder` and `TreasurySponsor` — that wiring is not live
-  yet, because it needs the pool deployed on 4663 first.
+  feed the same reserve through `ReserveFunder` and `TreasurySponsor`. The pool is deployed and the treasury is
+  staked; the one remaining hop is pointing the token's creator-fee recipient on Pons at the `TreasurySponsor`
+  address below, which only the token's creator can do. Until that happens the fees sit in the Pons escrow.
 - **Growth that can't be gamed cheaply.** Repaying grows an agent's own line, but at most $25 per week, $250 in
   total, and only while a first-loss reserve covers every unbacked dollar in the system.
 - **A score that is a pure function of the record.** `score(agentId)` on-chain, `creditReport(agentId)` for
@@ -180,7 +183,9 @@ depends on is already there.
 | $PRIORS token (Pons V2) | `0xedbf91223639800bcd5756815caf908df3b890be` |
 | RPC | `https://rpc.mainnet.chain.robinhood.com` |
 | Explorer | `https://robinhoodchain.blockscout.com` |
-| CreditPool · TreasurySponsor | see [`deployments/`](deployments/) |
+| **CreditPool** (live) | `0xd970472b2904D5923882af034cea4067AF0AaC95` |
+| **TreasurySponsor** (live, sponsor `#436`) | `0x5eDF7b2375D434B09c784e28917CB3D6714F5d60` |
+| ReserveFunder | `0x43d6E0e5aF75e63F1c1e6D340B6d511385Ba06cB` |
 
 ## Repository
 

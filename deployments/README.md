@@ -20,8 +20,12 @@ deployment becomes usable the moment its record lands here.
 
 ## What is here
 
-Whatever JSON files sit next to this one. `npx priors doctor` tells you what it resolved for the chain you are
-pointed at, and says so rather than guessing when there is no record.
+`4663.json` — **Robinhood Chain mainnet, live.** The CreditPool, the TreasurySponsor (ERC-8004 identity `#436`),
+the ReserveFunder, and the block the pool was deployed at. `npx priors doctor` picks it up with no configuration;
+point `RPC_URL` at `https://rpc.mainnet.chain.robinhood.com` and everything else resolves from this file.
+
+`npx priors doctor` tells you what it resolved for the chain you are pointed at, and says so rather than guessing
+when there is no record.
 
 `31337.json` — the local dev chain — is written by `npm run devnet` and deliberately gitignored: it is a
 throwaway chain whose addresses mean nothing to anyone else.
