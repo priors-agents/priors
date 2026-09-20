@@ -94,18 +94,71 @@ export class NoDeployment extends Error {
   }
 }
 
+/** `RPC_URL` may be one endpoint or several, comma-separated. */
+export function splitRpcs(rpc) {
+  if (Array.isArray(rpc)) return rpc.filter(Boolean);
+  return String(rpc || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/* Tries endpoints in the order given: first entry first, moving on only when that one fails, with a
+   second attempt each before writing it off. Deliberately not ethers' FallbackProvider, which queries
+   providers together and waits for a weighted quorum - a dead first entry there can stall every call
+   or fail quorum while a healthy endpoint sits behind it. Priority order is what an operator with a
+   private endpoint and a public backstop actually wants.
+
+   The seam is `_send`, not `send`: ethers' own `getNetwork()` reaches the transport through `_send`
+   directly, so overriding the higher-level `send` leaves network detection - the very first call -
+   pinned to the first endpoint. Found by testing, not by reading.
+
+   Only a THROWN transport error fails over. A JSON-RPC error inside a successful response (a revert,
+   say) is the chain's answer and would be identical everywhere; retrying it elsewhere would just be
+   slower. */
+export function makeProvider(rpcs, providerOpts = {}) {
+  const urls = splitRpcs(rpcs);
+  if (urls.length === 0) throw new Error("no RPC endpoint configured");
+  // Single endpoints get the retry too - that is the common case, and the one that needs it most.
+  const ATTEMPTS = 2;
+  const BUDGET_MS = 15000; // a CLI may wait longer than a web page, but not forever
+
+  class FailoverProvider extends ethers.JsonRpcProvider {
+    constructor() {
+      super(urls[0], undefined, providerOpts);
+      this._backups = urls.slice(1).map((u) => new ethers.JsonRpcProvider(u, undefined, providerOpts));
+      this.rpcUrls = urls.slice();
+    }
+    async _send(payload) {
+      const started = Date.now();
+      let last;
+      for (let i = 0; i < urls.length; i++) {
+        for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+          if (Date.now() - started > BUDGET_MS) throw last || new Error("RPC budget exhausted");
+          try {
+            return i === 0 ? await super._send(payload) : await this._backups[i - 1]._send(payload);
+          } catch (e) {
+            last = e;
+          }
+        }
+      }
+      throw last;
+    }
+  }
+  return new FailoverProvider();
+}
+
 /**
  * @param {{rpc?: string, privateKey?: string, needSigner?: boolean}} [opts]
  */
 export async function resolve(opts = {}) {
   const rpc = opts.rpc || process.env.RPC_URL || "http://127.0.0.1:8545";
+  const rpcs = splitRpcs(rpc);
   // cacheTimeout off: on chains that mine instantly, ethers' 250 ms result cache hands back stale nonces
-  const provider = new ethers.JsonRpcProvider(rpc, undefined, { cacheTimeout: -1 });
+  const provider = makeProvider(rpcs, { cacheTimeout: -1 });
   let chainId;
   try {
     chainId = Number((await provider.getNetwork()).chainId);
   } catch (e) {
-    throw new Error(`cannot reach ${rpc}: ${e.shortMessage || e.message}\n  is the chain running? \`npm run devnet\` starts a local one.`);
+    const where = rpcs.length > 1 ? `none of ${rpcs.length} endpoints (${rpcs.join(", ")})` : rpcs[0];
+    throw new Error(`cannot reach ${where}: ${e.shortMessage || e.message}\n  is the chain running? \`npm run devnet\` starts a local one.`);
   }
 
   const file = readDeployment(chainId) || {};
