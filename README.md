@@ -36,10 +36,22 @@ Reviews are cheap to fake. Repaid debt isn't.
 > someone who knows an audit hasn't happened.
 >
 > **The pool is live on Robinhood Chain mainnet** (chain 4663), seeded small on purpose: 150 USDG of lender
-> liquidity, 25 in the first-loss reserve, 25 staked by the treasury. Those caps are the safety margin described
-> above, not a soft launch to grow out of quickly. Addresses come from `deployments/<chainId>.json`, so
-> `npx priors doctor` resolves it with no configuration. `npm run quickstart` still builds you a throwaway local
-> chain in about thirty seconds if you would rather not touch mainnet.
+> liquidity, 25 in the first-loss reserve, 25 staked by the treasury. Addresses come from
+> `deployments/<chainId>.json`, so `npx priors doctor` resolves it with no configuration. `npm run quickstart`
+> still builds you a throwaway local chain in about thirty seconds if you would rather not touch mainnet.
+>
+> **Beta posture, and it is a real restriction:** a second defect was found in default accounting after launch —
+> a *root* sponsor could vouch out capacity it had already borrowed against, because `vouch()` applies the
+> earned-room rule only to non-roots while `markDefault()` charges a root's shortfall to the reserve. It is
+> reproducible; the PoC is in the repo. Until the fix ships, **`minStake` is raised out of reach, so nobody new
+> can become a root sponsor.** `isRoot` is assigned in exactly one place, so that closes the only door — but it
+> also means the "operators stake and vouch" half of the sponsor tree is switched off for now, and the treasury
+> is the only sponsor. `test/BetaMitigationMinStake.t.sol` holds that reasoning to account, control included.
+>
+> Practical consequence: **onboarding is finite.** The treasury vouches $5 per agent out of its own 25 USDG of
+> stake, and a line it has given cannot be taken back, so the beta seats five agents in total. Capacity grows
+> only when $PRIORS creator fees are swept into the treasury — by hand during the beta. priors.trade shows how
+> many first lines are left, read live from the chain.
 
 ---
 
@@ -138,6 +150,8 @@ There is no appeal. That is why the score means something.
 - **Sponsor tree.** A new agent can only get credit through a sponsor: its operator, or another agent with a
   good record. Roots post USDG stake; everyone else vouches only with capacity they earned by repaying. Losses
   flow back up to whoever vouched, and so do fees: a sponsor earns 25% of every fee its agents pay.
+  ⚠ **During the beta the root half of this is off** — `minStake` is raised out of reach, so the treasury is the
+  only sponsor and no one else can enrol as a root. See Status above for why.
 - **One money loop.** Loan fees split 60 / 25 / 15 between lenders, sponsors, and the first-loss reserve. The
   reserve is what lets agents earn credit lines nobody in the tree had to back. The $PRIORS token's creator fees
   feed the same reserve through `ReserveFunder` and `TreasurySponsor`. The pool is deployed and the treasury is
@@ -168,7 +182,7 @@ There is no appeal. That is why the score means something.
 | Treasury first line | $5 · raised to $50 once qualified |
 | Treasury vouching cap | $100 per 7-day epoch |
 | Earned capacity | 50% of repaid principal · max $25 per epoch · max $250 |
-| Minimum stake to enroll as a root sponsor | $10 |
+| Minimum stake to enroll as a root sponsor | $10 by default — **raised out of reach during the beta**, see Status |
 | Recourse term for a sponsor covering a default | 14 days |
 
 ## Robinhood Chain
