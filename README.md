@@ -233,9 +233,15 @@ depends on is already there.
 | $PRIORS token (Pons V2) | `0xedbf91223639800bcd5756815caf908df3b890be` |
 | RPC | `https://rpc.mainnet.chain.robinhood.com` |
 | Explorer | `https://robinhoodchain.blockscout.com` |
-| **CreditPool** (live) | `0xd970472b2904D5923882af034cea4067AF0AaC95` |
-| **TreasurySponsor** (live, sponsor `#436`) | `0x5eDF7b2375D434B09c784e28917CB3D6714F5d60` |
-| ReserveFunder | `0x43d6E0e5aF75e63F1c1e6D340B6d511385Ba06cB` |
+| **CreditPool** (live) | `0x4B9fb2dE6BE54aF037683A75F3C82c81C3EEd122` |
+| **TreasurySponsor** (live, sponsor `#445`) | `0xE2D9EB6C36a72f9d897439402FDbe32612F67CBc` |
+| ReserveFunder | `0xB24B2Fb4369d53Fc2A885bF0DB86e72ad1eD619f` |
+| Owner of all three (2-of-3 Safe) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
+| ~~CreditPool~~ (superseded, paused, do not use) | `0xd970472b2904D5923882af034cea4067AF0AaC95` |
+
+Addresses resolve from `deployments/<chainId>.json`, so nothing above needs copying by hand —
+`npx priors doctor` prints whatever is configured. The superseded pool is listed only so an old
+link is recognisable as dead rather than mysterious.
 
 ## Repository
 
