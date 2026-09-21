@@ -194,6 +194,34 @@ contract InvariantsTest is Test {
         targetContract(address(handler));
     }
 
+    /* A defaulted root's stake is either charged or reachable - never dead weight owned by nobody.
+       Proposed by llen (GHSA-4j38-23rc-qmv9) and stronger than the two targeted tests in
+       AuditHardening.t.sol, which pin one settled case and one unsettled case. This one asserts the
+       property across every state the fuzzer can reach.
+
+       It does NOT re-derive the contract's own availability expression, which would only assert that the
+       code agrees with itself. It attempts the withdrawal for real and rolls the state back, so what is
+       being checked is reachability: if a settled defaulted root cannot get its stake out, this reverts
+       and the invariant fails. That is exactly the shape of the bug on the superseded pool, where
+       `_capacity()` returned 0 for a defaulted agent and left the remainder unreachable forever. */
+    function invariant_deadRootStakeIsNeverStranded() public {
+        uint256 n = pool.enrolledCount();
+        for (uint256 i = 0; i < n; i++) {
+            uint256 id = pool.enrolledAgents(i);
+            CreditPool.Agent memory a = pool.getAgent(id);
+            if (!a.defaulted || !a.isRoot || a.stake == 0) continue;
+            // Still owes or still backs somebody: the stake is held for a reason, not stranded.
+            if (a.activeLoans != 0 || a.delegatedOut != 0) continue;
+
+            uint256 snap = vm.snapshotState();
+            address ctrl = reg.ownerOf(id);
+            vm.prank(ctrl);
+            pool.withdrawStake(id, a.stake, ctrl);
+            assertEq(pool.getAgent(id).stake, 0, "settled defaulted root could not clear its stake");
+            vm.revertToState(snap);
+        }
+    }
+
     /// Cash in the contract is exactly lender liquidity + root stakes + reserve. Nothing leaks, nothing is double counted.
     function invariant_cashIsFullyAccounted() public view {
         assertEq(
