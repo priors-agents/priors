@@ -114,7 +114,18 @@ async function sendChecked(contract, method, args, ifaces) {
   } catch (err) {
     throw new Error(`${method}(${args.map((a) => String(a)).join(", ")}) would revert: ${explainRevert(err, ifaces)}`);
   }
-  const tx = await contract[method](...args);
+  /* ethers sends the gas estimate verbatim, with no headroom. That is a real footgun here: `repay` runs
+     `_grow`, whose cost depends on seasoning and the epoch counters, so a branch taken at send time that
+     the estimate did not take costs slightly more - and the transaction mines with status 0 and NO revert
+     data, which is indistinguishable from a rule being broken. `test-reader-cache.mjs` documents the same
+     trap at about one run in five. Unused gas is refunded, so 25% of headroom costs nothing and removes
+     the flake. */
+  let overrides = {};
+  try {
+    const est = await contract[method].estimateGas(...args);
+    overrides = { gasLimit: est + est / 4n };
+  } catch (_) { /* node refuses to estimate: let ethers try its own way rather than fail here */ }
+  const tx = await contract[method](...args, overrides);
   return tx.wait();
 }
 
