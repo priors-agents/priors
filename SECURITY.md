@@ -74,9 +74,55 @@ finding:
 - **A parameter-only mitigation for that same issue** is documented and tested in
   `test/BetaMitigationMinStake.t.sol`: raising `minStake` beyond an attacker's budget closes the only
   door into rootness without a redeploy. It is kept because it is the lever available in a hurry.
+- **A dead root sponsor's stake was not charged for a defaulted child**, so the first-loss reserve paid
+  instead and lender principal was destroyed. `markDefault` left the sponsor liable for nothing once it
+  was already defaulted itself. Fixed: liability is now `!s.defaulted || (s.isRoot && s.stake > 0)`.
+  Pinned by `test_aDeadRootsEarmarkedStakeIsSlashedForItsChild` and
+  `test_withAnEmptyReserveTheDeadRootsStakeStillProtectsLenders` in `test/SponsorLiability.t.sol`.
+- **The same defect had a second door, in `vouch`.** A dead sponsor's child could be taken over with a
+  dust vouch, and the takeover branch zeroed `delegatedIn` while the child's loan was still drawn —
+  collapsing a stake-backed claim to dust just before the default, which is strictly worse than the first
+  path. Fixed with a `principalOut == 0` gate on takeover; an orphan with a live loan now waits for that
+  loan to close. Pinned by `test_aTakeoverCannotVoidBackingForADrawnLoan`, and by
+  `invariant_exposureWithinCapacity`, which is what caught it at depth 400 after the first fix looked
+  complete.
+- **A sponsor could withdraw delegation that was underwriting a live loan.** `unvouch` is now bounded by
+  `delegatedIn - principalOut`. Pinned by `test_unvouchCannotReleaseDelegationBackingALiveLoan`.
+- **A defaulted root's residual stake was stranded forever**, because `_capacity` returns 0 for a
+  defaulted agent and `withdrawStake` measured against it. A settled defaulted agent that owes nothing
+  and backs nothing can now recover it. Pinned by
+  `test_aSettledDefaultedRootCanRecoverItsResidualStake` and its negative case.
+
+All four are live as of the 2026-09-21 cutover. Because these contracts are not upgradeable, "fixed in
+`src/`" and "fixed on chain" are different claims with a migration between them, and for about ten hours
+they were not the same thing here — see **Credits**. `scripts/verify-migration.mjs` checks the deployed
+runtime bytecode against the compiled artifact, so you can confirm which one you are looking at rather
+than trusting this file.
 
 An independent rediscovery of a fixed issue is still worth telling us about, and we will say so and
 credit the work. It is not a new finding.
+
+## Credits
+
+People who have found something real, or told us something we needed to hear.
+
+- **llen** (`@yossweh`) — GHSA-4j38-23rc-qmv9, 2026-09-20. Reported that the dead-root accounting defect
+  and its `vouch` takeover variant were still present in the **deployed** bytecode, with two
+  proof-of-concepts executed against the live contract and the live USDG at a fork anchor. We had found
+  and fixed both in `src/` about an hour earlier — the advisory cites our own `d2f0019` and `fb1a0e5` as
+  the patched versions — so this was not a new defect. It was something more useful and easier to miss: a
+  published fix is not a deployed fix, and for ten hours the live pool ran pre-fix code with real deposits
+  behind it while the repository looked patched. The report is the reason the cutover was not left to
+  drift. Also correctly flagged that `deposit` reverts `ZeroAmount` for an amount smaller than one share
+  once the share price passes 1:1 (see below), and proposed a stronger invariant than the two we had:
+  assert that a defaulted root's stake is either charged or explicitly released, never left where
+  `withdrawStake` reverts forever.
+
+**Not fixed, deliberately:** the `ZeroAmount` revert on a sub-share deposit. `convertToShares` rounds
+down, in the pool's favour, which is the correct direction for an ERC-4626-style vault; the effect is that
+the smallest depositable amount becomes one share's worth rather than one unit. It cannot be aimed at a
+third party and it costs nothing but a retry, so it stays. Reported for completeness and recorded here so
+it is not re-reported as new.
 
 ## Rewards
 
