@@ -21,12 +21,42 @@ export const POOL_ABI = [
   "function getLoan(uint256) view returns (tuple(uint256 agentId,uint256 principal,uint256 fee,uint64 issuedAt,uint64 dueAt,uint64 closedAt,uint8 status,bool isRecourse,uint256 recourseFor))",
   "function loansOf(uint256 agentId) view returns (uint256[])",
   "function getParams() view returns (tuple(uint256 minLoan,uint256 maxLoan,uint64 minTerm,uint64 maxTerm,uint64 grace,uint64 recourseTerm,uint256 feeBps,uint256 growthBps,uint256 maxEarned,uint256 maxEarnPerEpoch,uint64 epochLength,uint64 minSeasoning,uint256 minStake,uint256 sponsorFeeBps,uint256 protocolFeeBps,uint64 minScoreTerm))",
+  // Asked of the contract rather than re-derived in JS - see quote().
+  "function quoteFee(uint256 amount, uint64 term) view returns (uint256)",
   "function usdc() view returns (address)",
   "function registry() view returns (address)",
   "function vouch(uint256 sponsorId, uint256 agentId, uint256 amount)",
   "function enrollRoot(uint256 agentId, uint256 stakeAmount)",
   "function setDelegate(uint256 agentId, address delegate)",
   "event Borrowed(uint256 indexed loanId, uint256 indexed agentId, uint256 principal, uint256 fee, uint64 dueAt, address to)",
+  /* The pool reverts with custom errors, which are four bytes on the wire. Without these in the ABI every
+     failure reaches an integrator as an undecoded selector - "0x1f2a2005" instead of
+     "InsufficientCapacity(462, 11000000, 5000000)", which is the difference between a two-minute fix and
+     an afternoon. */
+  "error NotController(uint256 agentId, address caller)",
+  "error InvalidAgent(uint256 agentId)",
+  "error AlreadyEnrolled(uint256 agentId)",
+  "error NotEnrolled(uint256 agentId)",
+  "error AgentDefaulted(uint256 agentId)",
+  "error IsRoot(uint256 agentId)",
+  "error NotRoot(uint256 agentId)",
+  "error WrongSponsor(uint256 agentId, uint256 currentSponsor)",
+  "error InsufficientCapacity(uint256 agentId, uint256 requested, uint256 available)",
+  "error DelegationInUse(uint256 agentId, uint256 requested, uint256 releasable)",
+  "error ImportOutOfRange(uint256 agentId)",
+  "error InsufficientLiquidity(uint256 requested, uint256 available)",
+  "error LoanSizeOutOfRange(uint256 amount)",
+  "error TermOutOfRange(uint64 term)",
+  "error LoanNotActive(uint256 loanId)",
+  "error LoanNotDue(uint256 loanId, uint64 dueAt)",
+  "error ZeroAmount()",
+  "error BelowMinStake(uint256 amount, uint256 minStake)",
+  "error InvalidParams()",
+  "error DelegationExceedsEarned(uint256 agentId, uint256 requested, uint256 earnedRoom)",
+  "error ReserveLocked(uint256 requested, uint256 free)",
+  "error ImportsAreSealed()",
+  "error RecordAlreadyLive(uint256 agentId)",
+  "error BadEnrolmentDate(uint256 agentId, uint64 enrolledAt)",
 ];
 export const TREASURY_ABI = [
   "function firstLine(uint256 agentId)",
@@ -35,12 +65,58 @@ export const TREASURY_ABI = [
   "function firstLined(uint256) view returns (bool)",
   "function eligibleForRaise(tuple(bool enrolled,bool isRoot,bool defaulted,uint256 sponsor,uint256 capacity,uint256 available,uint256 delegatedIn,uint256 delegatedOut,uint256 earned,uint256 stake,uint256 principalOut,uint256 activeLoans,uint256 loansRepaid,uint256 volumeRepaid,uint256 feesPaid,uint256 recourseHonored,uint256 childrenDefaulted,uint64 enrolledAt,uint256 score,uint256 qualifiedRepaid,uint256 dollarSecondsRepaid)) view returns (bool)",
   "function agentId() view returns (uint256)",
+  "error NotAdopted()",
+  "error NotOurs(uint256 agentId)",
+  "error AlreadyLined(uint256 agentId)",
+  "error AlreadyEnrolled(uint256 agentId)",
+  "error NotEligible(uint256 agentId)",
+  "error EpochCapReached(uint256 wanted, uint256 left)",
+  "error NotController(uint256 agentId, address caller)",
+  "error NotIdle(uint256 agentId, uint256 reclaimableAt)",
+  "error NothingToReclaim(uint256 agentId)",
+  "error InvalidRules()",
 ];
 const ERC20_ABI = ["function approve(address,uint256)", "function allowance(address,address) view returns (uint256)", "function balanceOf(address) view returns (uint256)"];
 const REGISTRY_ABI = ["function ownerOf(uint256) view returns (address)", "function register(string) returns (uint256)", "event Registered(uint256 indexed agentId, address indexed owner, string agentURI)"];
 
 const toUnits = (dollars) => (typeof dollars === "bigint" ? dollars : BigInt(Math.round(Number(dollars) * 1e6)));
 const toDollars = (units) => Number(units) / 1e6;
+
+/**
+ * Turn a revert into a sentence. ethers surfaces a failed call as an error carrying four bytes of selector
+ * and prints the whole transaction object around it, so the useful part - which rule you broke - is the one
+ * thing not visible. Decoded against the contract's own ABI it reads
+ * `InsufficientCapacity(462, 11000000, 5000000)`: the agent, what it asked for, what it had.
+ */
+export function explainRevert(err, ifaces) {
+  const data = err?.data || err?.info?.error?.data || err?.error?.data || err?.transaction?.data;
+  if (typeof data === "string" && data.startsWith("0x") && data.length >= 10) {
+    for (const iface of ifaces) {
+      try {
+        const d = iface.parseError(data);
+        if (d) return `${d.name}(${d.args.map((a) => String(a)).join(", ")})`;
+      } catch (_) { /* not this ABI's error */ }
+    }
+  }
+  return err?.shortMessage || err?.message || String(err);
+}
+
+/**
+ * Simulate, then send.
+ *
+ * A doomed transaction otherwise costs gas to discover, and on a chain that mines it anyway it comes back
+ * with status 0 and NO revert data at all - the reason only exists before the send. One `eth_call` buys a
+ * readable failure and a refund.
+ */
+async function sendChecked(contract, method, args, ifaces) {
+  try {
+    await contract[method].staticCall(...args);
+  } catch (err) {
+    throw new Error(`${method}(${args.map((a) => String(a)).join(", ")}) would revert: ${explainRevert(err, ifaces)}`);
+  }
+  const tx = await contract[method](...args);
+  return tx.wait();
+}
 
 export class Priors {
   /** @param {{rpc?: string, provider?: any, pool: string, treasury?: string, signer?: any}} opts */
@@ -51,6 +127,8 @@ export class Priors {
     const runner = this.signer || this.provider;
     this.pool = new ethers.Contract(opts.pool, POOL_ABI, runner);
     this.treasury = opts.treasury ? new ethers.Contract(opts.treasury, TREASURY_ABI, runner) : null;
+    // Both, in order: a treasury call can revert with a pool error, since firstLine() ends up in vouch().
+    this._ifaces = [this.pool.interface, ...(this.treasury ? [this.treasury.interface] : [])];
   }
 
   // ---- read ----
@@ -69,19 +147,41 @@ export class Priors {
     const ids = await this.pool.loansOf(agentId);
     return Promise.all(ids.map(async (id) => { const l = await this.pool.getLoan(id); return { loanId: Number(id), principal: toDollars(l.principal), fee: toDollars(l.fee), issuedAt: Number(l.issuedAt), dueAt: Number(l.dueAt), status: ["none", "active", "repaid", "defaulted"][Number(l.status)], isRecourse: l.isRecourse }; }));
   }
-  /** Fee for a loan of `dollars` over `days`, in dollars, from the live params. */
+  /**
+   * Fee for a loan of `dollars` over `days`, in dollars, asked of the contract.
+   *
+   * This used to re-derive `amount * feeBps * term / (10000 * 30 days)` in JavaScript. The two agree on
+   * every value tested, so it was never a wrong number - but it was the same rule written twice, and the
+   * copy in here is the one that cannot be redeployed in step with the other. `quoteFee` is a view; there
+   * is no reason to guess what it would say.
+   */
   async quote(dollars, days) {
-    const p = await this.pool.getParams();
-    const fee = (toUnits(dollars) * p.feeBps * BigInt(days * 86400)) / (10_000n * BigInt(30 * 86400));
-    return { fee: toDollars(fee), total: toDollars(toUnits(dollars) + fee), qualifiesForScore: days * 86400 >= Number(p.minScoreTerm) };
+    const units = toUnits(dollars);
+    const term = BigInt(Math.round(days * 86400));
+    const [fee, p] = await Promise.all([this.pool.quoteFee(units, term), this.pool.getParams()]);
+    return {
+      fee: toDollars(fee),
+      total: toDollars(units + fee),
+      qualifiesForScore: term >= p.minScoreTerm,
+      withinTermLimits: term >= p.minTerm && term <= p.maxTerm,
+      withinSizeLimits: units >= p.minLoan && units <= p.maxLoan,
+    };
   }
 
   // ---- write ----
   _needSigner() { if (!this.signer) throw new Error("this call needs a signer"); }
   /** Ask the treasury for a first $5 line. Works for any ERC-8004 identity that was never enrolled. Anyone may call it. */
-  async firstLine(agentId) { this._needSigner(); if (!this.treasury) throw new Error("no treasury address configured"); const tx = await this.treasury.firstLine(agentId); return (await tx.wait()).hash; }
+  async firstLine(agentId) {
+    this._needSigner();
+    if (!this.treasury) throw new Error("no treasury address configured");
+    return (await sendChecked(this.treasury, "firstLine", [agentId], this._ifaces)).hash;
+  }
   /** Raise a treasury-sponsored agent's line once its record qualifies. */
-  async raise(agentId) { this._needSigner(); const tx = await this.treasury.raise(agentId); return (await tx.wait()).hash; }
+  async raise(agentId) {
+    this._needSigner();
+    if (!this.treasury) throw new Error("no treasury address configured");
+    return (await sendChecked(this.treasury, "raise", [agentId], this._ifaces)).hash;
+  }
   // Array.from is load-bearing: creditReport() hands back a frozen ethers Result, and the tuple encoder for
   // eligibleForRaise writes into the array it is given, so passing the Result straight through throws
   // "Cannot assign to read only property '0'" for every agent, eligible or not.
@@ -89,8 +189,12 @@ export class Priors {
   /** Borrow `dollars` for `days`; USDG lands in `to` (default: the signer). Returns the loanId. */
   async borrow(agentId, dollars, days, to) {
     this._needSigner();
-    const tx = await this.pool.borrow(agentId, toUnits(dollars), BigInt(days * 86400), to || (await this.signer.getAddress()));
-    const rc = await tx.wait();
+    const rc = await sendChecked(
+      this.pool,
+      "borrow",
+      [agentId, toUnits(dollars), BigInt(Math.round(days * 86400)), to || (await this.signer.getAddress())],
+      this._ifaces
+    );
     for (const log of rc.logs) { try { const ev = this.pool.interface.parseLog(log); if (ev && ev.name === "Borrowed") return Number(ev.args.loanId); } catch (_) {} }
     throw new Error("Borrowed event not found");
   }
@@ -101,9 +205,14 @@ export class Priors {
     const due = l.principal + l.fee;
     const usdc = new ethers.Contract(await this.pool.usdc(), ERC20_ABI, this.signer);
     const me = await this.signer.getAddress();
-    if ((await usdc.allowance(me, await this.pool.getAddress())) < due) await (await usdc.approve(await this.pool.getAddress(), due)).wait();
-    const tx = await this.pool.repay(loanId);
-    return (await tx.wait()).hash;
+    const poolAddr = await this.pool.getAddress();
+    if ((await usdc.allowance(me, poolAddr)) < due) await (await usdc.approve(poolAddr, due)).wait();
+    /* Checked after the approval, not before: repay pulls with transferFrom, so simulating a repayment the
+       allowance cannot yet cover would fail for a reason that is about to stop being true. */
+    if ((await usdc.balanceOf(me)) < due) {
+      throw new Error(`repay(${loanId}) needs ${toDollars(due)} USDG but ${me} holds ${toDollars(await usdc.balanceOf(me))}`);
+    }
+    return (await sendChecked(this.pool, "repay", [loanId], this._ifaces)).hash;
   }
   /**
    * Register a new ERC-8004 identity on registries that expose register(string). Returns the agentId.
@@ -119,7 +228,7 @@ export class Priors {
     this._needSigner();
     const registry = await this.pool.registry();
     const reg = new ethers.Contract(registry, REGISTRY_ABI, this.signer);
-    const rc = await (await reg.register(uri || "")).wait();
+    const rc = await sendChecked(reg, "register", [uri || ""], this._ifaces);
     const MINT = ethers.id("Transfer(address,address,uint256)");
     const ZERO = "0x" + "0".repeat(64);
     const me = (await this.signer.getAddress()).toLowerCase();

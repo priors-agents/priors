@@ -29,6 +29,19 @@ function check(name, fn) {
   }
 }
 
+/* `check` only handles synchronous bodies: a promise-returning fn resolves after the try block has already
+   printed "ok", so a failing async assertion would be reported as passing. The SDK checks below are async,
+   hence this. */
+async function checkAsync(name, fn) {
+  try {
+    await fn();
+    console.log(`  ok   ${name}`);
+  } catch (e) {
+    console.log(`  FAIL ${name}\n         ${e.message}`);
+    failures++;
+  }
+}
+
 const eq = (actual, expected, what) => {
   if (actual !== expected) throw new Error(`${what}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
 };
@@ -259,6 +272,39 @@ if (!skipChain) {
       if (Number(score[1]) <= 0) throw new Error(`score came back ${score[1]}; a repaid loan must score above zero`);
       if (!/loanId \d+/.test(flow.stdout)) throw new Error("flow never reported a loanId");
     });
+    await checkAsync("the SDK quotes a fee the contract agrees with, rather than re-deriving it", async () => {
+      const { ethers } = await import("ethers");
+      const { Priors } = await import("../sdk/priors.mjs");
+      const dep = JSON.parse(readFileSync(join(ROOT, "deployments", "31337.json"), "utf8"));
+      const s = new Priors({ rpc: RPC, pool: dep.creditPool, treasury: dep.treasurySponsor });
+      const pool = new ethers.Contract(dep.creditPool, ["function quoteFee(uint256,uint64) view returns (uint256)"], s.provider);
+      // A spread of sizes and terms, including ones where integer division truncates.
+      for (const [dollars, days] of [[5, 7], [11, 3], [1, 1], [7, 13], [99, 17]]) {
+        const q = await s.quote(dollars, days);
+        const onChain = await pool.quoteFee(BigInt(Math.round(dollars * 1e6)), BigInt(days * 86400));
+        eq(Math.round(q.fee * 1e6), Number(onChain), `fee for $${dollars} over ${days}d`);
+      }
+    });
+
+    await checkAsync("a reverting call names the rule it broke, instead of a bare selector", async () => {
+      const { Priors } = await import("../sdk/priors.mjs");
+      const dep = JSON.parse(readFileSync(join(ROOT, "deployments", "31337.json"), "utf8"));
+      const { ethers } = await import("ethers");
+      // Any funded dev wallet: repay() has no controller gate, so this needs no identity and no balance.
+      const signer = ethers.HDNodeWallet.fromPhrase("test test test test test test test test test test test junk");
+      const s = new Priors({ rpc: RPC, pool: dep.creditPool, treasury: dep.treasurySponsor, signer });
+      // Loan 0 is the constructor's sentinel: it exists, so this is LoanNotActive rather than a panic.
+      let msg = "";
+      try {
+        await s.repay(0);
+        throw new Error("repay(0) was expected to revert and did not");
+      } catch (e) {
+        msg = e.message;
+      }
+      if (/^0x[0-9a-f]{8}/i.test(msg.trim())) throw new Error(`error surfaced as a raw selector: ${msg}`);
+      if (!/LoanNotActive/.test(msg)) throw new Error(`expected the decoded custom error, got: ${msg}`);
+    });
+
     check("dev-only commands refuse a chain that is not a dev chain", () => {
       // Point warp at a real chain: it must refuse on the cheat-method probe, not on a transaction.
       const r = sh(process.execPath, ["bin/priors.mjs", "warp", "1"], {
