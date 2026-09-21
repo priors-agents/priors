@@ -112,12 +112,17 @@ contract**. It repaid twice on the original pool; those two loans were carried a
 | borrow $5 for 8 days, on the new pool | [`0xff8c3e1f…`](https://robinhoodchain.blockscout.com/tx/0xff8c3e1fd89501fc901efa503a01099003a00f3668de46eb3551626d53386703) |
 | repay principal + fee | [`0x0cfc083c…`](https://robinhoodchain.blockscout.com/tx/0x0cfc083c83eab43395465b7e9c95f36b430f23c3208e639bb56275508cd6c13d) |
 
-`npx priors report 437` reads the result back off the chain: sponsor #445, a $5 line, **3 loans
-repaid**, $15 of volume, $0.036665 of fees paid, no defaults. Two of those three predate the pool
-it is now borrowing from — which is the point of carrying history rather than restarting it.
+`npx priors report 437` reads the result back off the chain: **3 loans repaid**, $15 of volume,
+$0.036665 of fees paid, no defaults. Every one of those predates the pool it reads from today —
+which is the point of carrying history rather than restarting it.
 
-Agent #443 came through the same migration with its single repaid loan intact. Both can keep
-borrowing and repaying indefinitely without consuming another of the beta's seats.
+Agent #443 came through the same way with its single repaid loan intact. Both can keep borrowing
+and repaying indefinitely without consuming another of the beta's seats.
+
+A record and a credit line are separate things, and a migration carries only the record: capacity
+is not imported, so after a cutover an agent shows its full history with a `$0` line and no
+sponsor until it asks the treasury for one (`firstLine`, which only the identity's own controller
+can call). That is why a freshly migrated agent reads as `sponsor #0` for a while.
 
 There is no demo mode in any of that — same contracts, same ERC-8004 registry, same USDG.
 
@@ -235,10 +240,11 @@ depends on is already there.
 | RPC (official; the only one that serves `eth_getLogs`) | `https://rpc.mainnet.chain.robinhood.com` |
 | RPC backups, for plain calls | `https://robinhood-rpc.publicnode.com`, `https://rpc.ordofi.network` |
 | Explorer | `https://robinhoodchain.blockscout.com` |
-| **CreditPool** (live) | `0x4B9fb2dE6BE54aF037683A75F3C82c81C3EEd122` |
-| **TreasurySponsor** (live, sponsor `#445`) | `0xE2D9EB6C36a72f9d897439402FDbe32612F67CBc` |
-| ReserveFunder | `0xB24B2Fb4369d53Fc2A885bF0DB86e72ad1eD619f` |
+| **CreditPool** (live) | `0x0259889e6EBab1a18CeE7e62Bc5B9648FB6C44e5` |
+| **TreasurySponsor** (live, sponsor `#461`) | `0x9338d18b5E7faC5ce06a6AD1Af33Db68fE0b4daC` |
+| ReserveFunder | `0x32349B1Ad07513B5Fa6dCC3dbDC0B5ed17FcB72d` |
 | Owner of all three (2-of-3 Safe) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
+| ~~CreditPool~~ (superseded, paused, do not use) | `0x4B9fb2dE6BE54aF037683A75F3C82c81C3EEd122` |
 | ~~CreditPool~~ (superseded, paused, do not use) | `0xd970472b2904D5923882af034cea4067AF0AaC95` |
 
 Addresses resolve from `deployments/<chainId>.json`, so nothing above needs copying by hand —
