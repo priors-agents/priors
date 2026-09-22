@@ -20,9 +20,11 @@ deployment becomes usable the moment its record lands here.
 
 ## What is here
 
-`4663.json` — **Robinhood Chain mainnet, live.** The CreditPool, the TreasurySponsor (ERC-8004 identity `#436`),
-the ReserveFunder, and the block the pool was deployed at. `npx priors doctor` picks it up with no configuration;
-point `RPC_URL` at `https://rpc.mainnet.chain.robinhood.com` and everything else resolves from this file.
+`4663.json` — **Robinhood Chain mainnet, live.** The CreditPool, the invite-gated TreasurySponsor v3
+(ERC-8004 identity `#486`), the ReserveFunder, and the block the pool was deployed at. `npx priors doctor`
+picks it up with no configuration; point `RPC_URL` at `https://rpc.mainnet.chain.robinhood.com` and
+everything else resolves from this file. `treasuryVersion` records which TreasurySponsor generation the
+record points at; the v2 sponsor it replaced is listed in the root README and is still in bounty scope.
 
 `npx priors doctor` tells you what it resolved for the chain you are pointed at, and says so rather than guessing
 when there is no record.

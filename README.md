@@ -242,9 +242,10 @@ depends on is already there.
 | RPC backups, for plain calls | `https://robinhood-rpc.publicnode.com`, `https://rpc.ordofi.network` |
 | Explorer | `https://robinhoodchain.blockscout.com` |
 | **CreditPool** (live) | `0x0259889e6EBab1a18CeE7e62Bc5B9648FB6C44e5` |
-| **TreasurySponsor** (live, sponsor `#461`) | `0x9338d18b5E7faC5ce06a6AD1Af33Db68fE0b4daC` |
+| **TreasurySponsor** v3 (live, sponsor `#486`, invite-gated) | `0x59f212317b42D308E81EaF8C078fc8189E2a77Df` |
 | ReserveFunder | `0x32349B1Ad07513B5Fa6dCC3dbDC0B5ed17FcB72d` |
 | Owner of all three (2-of-3 Safe) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
+| ~~TreasurySponsor~~ v2 (superseded by v3, sponsor `#461`; still backs the lines it opened — see BOUNTY.md) | `0x9338d18b5E7faC5ce06a6AD1Af33Db68fE0b4daC` |
 | ~~CreditPool~~ (superseded, paused, do not use) | `0x4B9fb2dE6BE54aF037683A75F3C82c81C3EEd122` |
 | ~~CreditPool~~ (superseded, paused, do not use) | `0xd970472b2904D5923882af034cea4067AF0AaC95` |
 
