@@ -37,10 +37,6 @@ The deployed contracts on Robinhood Chain (chain 4663):
 |---|---|
 | `CreditPool` | [`0x0259889e6EBab1a18CeE7e62Bc5B9648FB6C44e5`](https://robinhoodchain.blockscout.com/address/0x0259889e6EBab1a18CeE7e62Bc5B9648FB6C44e5) |
 | `TreasurySponsor` v3 | [`0x59f212317b42D308E81EaF8C078fc8189E2a77Df`](https://robinhoodchain.blockscout.com/address/0x59f212317b42D308E81EaF8C078fc8189E2a77Df) |
-| `TreasurySponsor` v2 | [`0x9338d18b5E7faC5ce06a6AD1Af33Db68fE0b4daC`](https://robinhoodchain.blockscout.com/address/0x9338d18b5E7faC5ce06a6AD1Af33Db68fE0b4daC) |
-
-v2 is in scope because it is not retired: it still sponsors the lines it opened before v3, and it still holds
-the stake backing them.
 
 Also in scope: `sdk/priors.mjs` and the site's wallet path, where a bug can cost a *user* money even though
 the contracts are sound — a mis-encoded call, a wrong address, an invite that redeems against the wrong agent.
