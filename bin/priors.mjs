@@ -3,7 +3,7 @@
 //
 //   npx priors doctor                 what chain am I on, what is deployed, can I sign
 //   npx priors register               mint an ERC-8004 identity              -> agentId
-//   npx priors first-line <id>        the treasury vouches $5, by rule
+//   npx priors first-line <id> --invite <code>   the treasury vouches $5, against a signed invite
 //   npx priors quote <usd> <days>     what a loan would cost
 //   npx priors borrow <id> <usd> <d>  -> loanId, USDG in your wallet
 //   npx priors repay <loanId>         principal + fee
@@ -42,7 +42,9 @@ const USAGE = `priors — credit history for ERC-8004 agents  ·  https://priors
 
   priors doctor                      chain, deployment and wallet status
   priors register [--uri <uri>]      mint an ERC-8004 identity -> agentId
-  priors first-line <agentId>        the treasury vouches $5 (anyone may call it)
+  priors invite <agentId> [hours]    sign an invite for an agent (named inviters only)
+  priors first-line <agentId> --invite <code>
+                                     the treasury vouches $5, against that invite
   priors quote <dollars> <days>      fee and whether it counts for the score
   priors borrow <agentId> <dollars> <days> [--to <address>]
   priors repay <loanId>
@@ -128,18 +130,34 @@ async function main() {
     return;
   }
 
+  if (cmd === "invite") {
+    const id = positional[0] || die("usage: priors invite <agentId> [hours]   (you must be a named inviter)");
+    const c = await ctx();
+    if (!c.dep.treasurySponsor) die("no TreasurySponsor configured for this chain, so there is nothing to invite onto.");
+    const inv = await c.priors.signInvite(id, Number(positional[1] || 72));
+    out(inv.code);
+    out(`signed by ${inv.inviter}, valid until ${new Date(inv.expiry * 1000).toISOString()}`);
+    out(`the agent's own controller redeems it: priors first-line ${id} --invite <code>`);
+    return;
+  }
+
   if (cmd === "first-line") {
-    const id = positional[0] || die("usage: priors first-line <agentId>");
+    const id = positional[0] || die("usage: priors first-line <agentId> [--invite <code>]");
     const c = await ctx();
     if (!c.dep.treasurySponsor) die("no TreasurySponsor configured for this chain, so there is nobody to vouch by rule. Ask a root sponsor to vouch() for you instead.");
     try {
-      out(`tx ${await c.priors.firstLine(id)}`);
+      // Treasury v3 needs an invite; v2 did not. Passing undefined selects the v2 overload, which is right
+      // for a chain still running v2 and fails loudly rather than silently on one running v3.
+      out(`tx ${await c.priors.firstLine(id, flag("invite"))}`);
       const r = await c.priors.report(id);
       out(`agent ${id}: line ${usd(r.capacity)}, sponsor #${r.sponsor}, available ${usd(r.available)}`);
     } catch (e) {
       const m = e.shortMessage || e.message;
       if (/AlreadyLined|AlreadyEnrolled/.test(JSON.stringify(e))) die(`agent ${id} already has a line. \`priors report ${id}\` shows it.`);
       if (/EpochCapReached/.test(JSON.stringify(e))) die("the treasury has spent its vouching cap for this 7-day epoch. Wait for the next epoch, or ask a root sponsor to vouch() for you.");
+      if (/NotInvited/.test(JSON.stringify(e))) die("this treasury seats agents by invite, and the signature on yours is not from a key it has named. Ask whoever runs it for a code: `priors invite <agentId>` is how they make one.");
+      if (/InviteUsed/.test(JSON.stringify(e))) die("that invite has already seated this agent once. A reopened seat needs a fresh code.");
+      if (/InviteExpired/.test(JSON.stringify(e))) die("that invite has expired. Ask for a new one.");
       die(`firstLine failed: ${m}`);
     }
     return;
@@ -216,9 +234,13 @@ async function main() {
     out(`   ERC-8004 agentId ${id}, owned by ${c.address}`);
 
     out("\n2. first line");
-    out(`   tx ${await c.priors.firstLine(id)}`);
+    // On a devnet the deployer named itself an inviter, so the tour can sign its own way in. On a real chain
+    // this step is two people: someone signs the invite, the agent's controller redeems it.
+    const inv = await c.priors.signInvite(id, 1);
+    out(`   invite signed by ${inv.inviter}, valid one hour`);
+    out(`   tx ${await c.priors.firstLine(id, inv.code)}`);
     const r0 = await c.priors.report(id);
-    out(`   line ${usd(r0.capacity)} from sponsor #${r0.sponsor} — nobody approved this, it is a rule`);
+    out(`   line ${usd(r0.capacity)} from sponsor #${r0.sponsor} — a person signed for it, the rest is rules`);
 
     out("\n3. borrow, hold, repay");
     const q = await c.priors.quote(amount, days);

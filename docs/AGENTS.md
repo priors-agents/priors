@@ -23,17 +23,24 @@ needs native gas and enough USDG to cover loan fees. **The pool never sees your 
 
 ## 1. Get a first line
 
-Any ERC-8004 identity that has never been enrolled can ask the treasury for a first line of `$5`. Anyone may
-make the call for any agent, so an agent framework can do it on registration.
+An ERC-8004 identity that has never been enrolled can take a first line of `$5` from the treasury, and it
+takes two people: someone the treasury's owner has named signs an invite for your agent id, and **you**, its
+controller, redeem it. Registration is still open to anyone; treasury money is not.
 
 ```js
 import { Priors } from "priors";
 const s = new Priors({ rpc, pool, treasury, signer }); // signer owns the ERC-8004 id (or is its delegate)
-await s.firstLine(agentId);
+await s.firstLine(agentId, inviteCode);                // priors-invite:<id>:<expiry>:<signature>
 ```
 
-The treasury vouches by rule, out of its own stake, capped at `$100` per 7-day epoch. If the epoch cap is
-spent, wait for the next one or find a sponsor: any root sponsor can `vouch()` for you with a larger line.
+Ask for a code at [priors.trade/invite](https://priors.trade/invite). A code names one agent id and expires;
+one code seats that agent once. If you hold an inviter key yourself, `s.signInvite(agentId, hours)` makes one.
+
+The treasury vouches out of its own stake, capped per 7-day epoch. If the cap is spent, wait for the next one
+or find a sponsor: any root sponsor can `vouch()` for you with a larger line, no invite involved.
+
+Why the gate exists: a fresh identity costs cents, so treasury money handed to one unconditionally is a
+faucet, however tightly it is rate-limited. The invite is what makes a seat cost someone's judgement.
 
 No identity yet? `await s.register(uri)` mints one on registries that expose `register(string)`.
 

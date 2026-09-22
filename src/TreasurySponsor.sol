@@ -5,6 +5,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {CreditPool} from "./CreditPool.sol";
 import {IERC8004Identity} from "./interfaces/IERC8004Identity.sol";
 import {IPonsFeeEscrow, IPonsFactoryCreator} from "./interfaces/IPonsFeeEscrow.sol";
@@ -15,21 +17,25 @@ import {IPonsFeeEscrow, IPonsFactoryCreator} from "./interfaces/IPonsFeeEscrow.s
 ///         root sponsor. From that stake it vouches by rule, not by judgement:
 ///
 ///           firstLine(agent)  an ERC-8004 identity that has never been enrolled gets a small first line,
-///                             asked for by its own owner or delegate
+///                             asked for by its own owner or delegate, WITH AN INVITE signed by an inviter
+///                             the owner named. Registration is permissionless; treasury money is not.
 ///           raise(agent)      an agent it sponsors that has repaid enough qualified loans, is seasoned and
 ///                             clean, gets its line raised to the second tier
 ///           reclaim(agent)    a line nobody has used for `idleAfter` goes back to the treasury, so the
 ///                             capacity seats the next agent instead of sitting under a dead identity
 ///
-///         Everything it vouches is capped per epoch, so the most a sybil attack can cost the treasury is one
-///         epoch's cap, in public. Two things keep that cap from being burnt by strangers: only the identity's
-///         controller can ask for its line (so lining the whole registry to exhaust the cap costs a registration
-///         per identity, not a call), and idle lines are reclaimable by anyone (so what a sybil ring ties up
-///         comes back). The sponsor fees its agents pay (25% of every loan fee) are collected to the fee sink,
+///         The rule that makes the treasury's money safe from strangers: no first line without an invite. A
+///         fresh identity costs cents, so any money handed to one unconditionally is a faucet, however it is
+///         rate-limited. An invite is a signature from a key the owner trusts, over the agent id and an expiry,
+///         so a seat needs a person, not a script. The epoch cap still bounds what invited agents can draw in a
+///         week, only the identity's controller can redeem its invite, and idle lines are reclaimable by anyone. The sponsor fees its agents pay (25% of every loan fee) are collected to the fee sink,
 ///         which is the buyback wallet. Losses show up as slashed stake and burnt branches on the treasury's
 ///         own tree. Sweep, raise, reclaim and collect are permissionless; the owner only changes parameters.
-contract TreasurySponsor is Ownable2Step, IERC721Receiver {
+contract TreasurySponsor is Ownable2Step, IERC721Receiver, EIP712 {
     using SafeERC20 for IERC20;
+
+    /// @dev EIP-712: Invite(uint256 agentId,uint64 expiry). Bound to this contract and chain by the domain.
+    bytes32 public constant INVITE_TYPEHASH = keccak256("Invite(uint256 agentId,uint64 expiry)");
 
     struct Rules {
         uint256 reserveBps; // share of each sweep that goes to the reserve; the rest is staked
@@ -56,8 +62,11 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
     uint64 public epochStart;
     uint256 public vouchedThisEpoch;
     mapping(uint256 => bool) public firstLined;
+    mapping(address => bool) public inviters; // keys whose signature seats an agent
     mapping(uint256 => uint64) public lastActive; // last time reclaim() saw the agent use its line
     mapping(uint256 => uint256) public seenRepaid; // loansRepaid the last time reclaim() looked
+    mapping(bytes32 => bool) public inviteUsed; // a signed invite seats an agent once, reopening included
+    uint256 public pendingStake; // asset already split for stake but not yet staked (no identity, or below minStake)
 
     uint256 public totalToReserve;
     uint256 public totalStaked;
@@ -66,6 +75,8 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
     event Adopted(uint256 indexed agentId);
     event Swept(address indexed caller, uint256 claimed, uint256 toReserve, uint256 toStake);
     event FirstLine(uint256 indexed agentId, uint256 amount, address indexed caller);
+    event Invited(uint256 indexed agentId, address indexed inviter, uint64 expiry);
+    event InviterSet(address indexed inviter, bool allowed);
     event Raised(uint256 indexed agentId, uint256 added, uint256 lineNow);
     event Reclaimed(uint256 indexed agentId, uint256 amount, address indexed caller);
     event Collected(uint256 amount, address indexed to);
@@ -80,6 +91,9 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
     error NotEligible(uint256 agentId);
     error EpochCapReached(uint256 wanted, uint256 left);
     error NotController(uint256 agentId, address caller);
+    error NotInvited(uint256 agentId, address signer);
+    error InviteExpired(uint256 agentId, uint64 expiry);
+    error InviteUsed(uint256 agentId);
     error NotIdle(uint256 agentId, uint256 reclaimableAt);
     error NothingToReclaim(uint256 agentId);
     error InvalidRules();
@@ -90,7 +104,7 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
         IPonsFactoryCreator factory_,
         address owner_,
         address feeSink_
-    ) Ownable(owner_) {
+    ) Ownable(owner_) EIP712("Priors Treasury", "3") {
         pool = pool_;
         asset = pool_.usdc();
         registry = pool_.registry();
@@ -144,22 +158,36 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
             emit Swept(msg.sender, claimed, 0, 0);
             return (0, 0);
         }
-        toReserve = bal * rules.reserveBps / 10_000;
+        /* Only money that arrived since the last sweep is split. The stake share of an earlier sweep that
+           could not be staked yet (no identity adopted, or below the pool's minimum) waits here as
+           `pendingStake`, and a second sweep must not carve the reserve share out of it again: with a
+           permissionless sweep, that would let anyone move the whole stake share into the reserve one
+           call at a time, and keep small deposits from ever adding up to an initial stake. */
+        uint256 fresh = bal > pendingStake ? bal - pendingStake : 0;
+        toReserve = fresh * rules.reserveBps / 10_000;
         toStake = bal - toReserve;
         if (toReserve > 0) {
             pool.fundReserve(toReserve);
             totalToReserve += toReserve;
         }
         if (toStake > 0) {
+            bool staked;
             if (agentId == 0) {
-                toStake = 0; // nothing to stake under yet; held until adopted
+                staked = false; // nothing to stake under yet; held until adopted
             } else if (!pool.creditReport(agentId).enrolled) {
-                if (toStake >= pool.getParams().minStake) pool.enrollRoot(agentId, toStake);
-                else toStake = 0;
+                staked = toStake >= pool.getParams().minStake;
+                if (staked) pool.enrollRoot(agentId, toStake);
             } else {
                 pool.addStake(agentId, toStake);
+                staked = true;
             }
-            totalStaked += toStake;
+            if (staked) {
+                totalStaked += toStake;
+                pendingStake = 0;
+            } else {
+                pendingStake = toStake;
+                toStake = 0;
+            }
         }
         emit Swept(msg.sender, claimed, toReserve, toStake);
     }
@@ -174,19 +202,43 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
     // Vouching by rule
     // ------------------------------------------------------------------
 
-    /// @notice Give a never-enrolled ERC-8004 identity its first line. Only the identity's owner or its pool
-    ///         delegate can ask: a stranger could otherwise line every identity in the registry and burn the
-    ///         epoch cap for the price of the calls.
-    function firstLine(uint256 id) external {
+    /// @notice Give a never-enrolled ERC-8004 identity its first line. Two people have to agree: the identity's
+    ///         owner or pool delegate calls, and an inviter the owner named has signed
+    ///         `Invite(agentId, expiry)` for it. Without the invite there is no line, whatever the caller does.
+    ///
+    ///         A seat that `reclaim()` took back can be reopened the same way, with a new invite: the
+    ///         identity keeps its record, but the treasury's money goes back behind it only on a person's
+    ///         fresh decision. An invite seats an agent once; the same signature cannot reopen it later.
+    function firstLine(uint256 id, uint64 expiry, bytes calldata invite) external {
         if (agentId == 0) revert NotAdopted();
         if (!pool.isController(id, msg.sender)) revert NotController(id, msg.sender);
-        if (firstLined[id]) revert AlreadyLined(id);
-        if (pool.creditReport(id).enrolled) revert AlreadyEnrolled(id);
+        CreditPool.CreditReport memory r = pool.creditReport(id);
+        bool reopening = r.enrolled && r.sponsor == agentId && r.delegatedIn == 0 && r.activeLoans == 0 && !r.defaulted;
+        if (firstLined[id] && !reopening) revert AlreadyLined(id);
+        if (r.enrolled && !reopening) revert AlreadyEnrolled(id);
+        if (block.timestamp > expiry) revert InviteExpired(id, expiry);
+        bytes32 digest = inviteDigest(id, expiry);
+        if (inviteUsed[digest]) revert InviteUsed(id);
+        address signer = ECDSA.recover(digest, invite);
+        if (!inviters[signer]) revert NotInvited(id, signer);
+        inviteUsed[digest] = true;
         _spend(rules.firstLine);
         firstLined[id] = true;
         lastActive[id] = uint64(block.timestamp);
+        seenRepaid[id] = r.loansRepaid;
         pool.vouch(agentId, id, rules.firstLine);
+        emit Invited(id, signer, expiry);
         emit FirstLine(id, rules.firstLine, msg.sender);
+    }
+
+    /// @notice The EIP-712 digest an inviter signs to seat `id` until `expiry`. Off-chain signers use the same
+    ///         domain: name "Priors Treasury", version "3", this chain, this contract.
+    function inviteDigest(uint256 id, uint64 expiry) public view returns (bytes32) {
+        return _hashTypedDataV4(keccak256(abi.encode(INVITE_TYPEHASH, id, expiry)));
+    }
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32) {
+        return _domainSeparatorV4();
     }
 
     /// @notice Take back the line of a treasury-sponsored agent that has not borrowed or repaid for
@@ -223,12 +275,17 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
     }
 
     /// @notice Raise the line of an agent this treasury sponsors, once its record qualifies. Anyone can call it.
+    ///         Only an open seat is raised: a line that `reclaim()` took back stays closed until a fresh
+    ///         invite reopens it, so nobody can alternate reclaim and raise to burn the epoch's budget. A
+    ///         raise counts as activity, so the bigger line gets its own `idleAfter` before it can be reclaimed.
     function raise(uint256 id) external {
         if (agentId == 0) revert NotAdopted();
         CreditPool.CreditReport memory r = pool.creditReport(id);
         if (!eligibleForRaise(r)) revert NotEligible(id);
         uint256 add = rules.secondLine - r.delegatedIn;
         _spend(add);
+        lastActive[id] = uint64(block.timestamp);
+        seenRepaid[id] = r.loansRepaid;
         pool.vouch(agentId, id, add);
         emit Raised(id, add, r.delegatedIn + add);
     }
@@ -236,7 +293,8 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
     function eligibleForRaise(CreditPool.CreditReport memory r) public view returns (bool) {
         return r.enrolled && !r.defaulted && r.sponsor == agentId && r.childrenDefaulted == 0
             && r.qualifiedRepaid >= rules.minQualified && r.score >= rules.minScore
-            && block.timestamp >= uint256(r.enrolledAt) + rules.minSeasoning && r.delegatedIn < rules.secondLine;
+            && block.timestamp >= uint256(r.enrolledAt) + rules.minSeasoning && r.delegatedIn > 0
+            && r.delegatedIn < rules.secondLine;
     }
 
     /// @notice How much the treasury may still vouch this epoch.
@@ -278,6 +336,12 @@ contract TreasurySponsor is Ownable2Step, IERC721Receiver {
         ) revert InvalidRules();
         rules = r;
         emit RulesUpdated(r);
+    }
+
+    /// @notice Name or revoke a key whose signed invites seat agents.
+    function setInviter(address who, bool allowed) external onlyOwner {
+        inviters[who] = allowed;
+        emit InviterSet(who, allowed);
     }
 
     function setFeeSink(address sink) external onlyOwner {

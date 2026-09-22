@@ -2,7 +2,7 @@
 //
 //   import { Priors } from "./sdk/priors.mjs";
 //   const s = new Priors({ rpc, pool, treasury, signer });   // signer: the wallet that owns the ERC-8004 id
-//   await s.firstLine(agentId);                                // the treasury vouches $5 for a fresh identity
+//   await s.firstLine(agentId, inviteCode);                    // the treasury vouches $5, against a signed invite
 //   const loanId = await s.borrow(agentId, 5, 7);              // $5 for 7 days
 //   await s.repay(loanId);                                     // principal + fee; approves USDG if needed
 //   await s.score(agentId);                                    // 0..1000, straight from the contract
@@ -59,7 +59,12 @@ export const POOL_ABI = [
   "error BadEnrolmentDate(uint256 agentId, uint64 enrolledAt)",
 ];
 export const TREASURY_ABI = [
+  // v3 takes an invite; v2 did not. Both are listed because an integrator may still be pointed at a v2
+  // treasury, and ethers needs the full signature to pick between them - see firstLine() below.
+  "function firstLine(uint256 agentId, uint64 expiry, bytes invite)",
   "function firstLine(uint256 agentId)",
+  "function inviteDigest(uint256 agentId, uint64 expiry) view returns (bytes32)",
+  "function inviters(address) view returns (bool)",
   "function raise(uint256 agentId)",
   "function epochRoom() view returns (uint256)",
   "function firstLined(uint256) view returns (bool)",
@@ -72,10 +77,29 @@ export const TREASURY_ABI = [
   "error NotEligible(uint256 agentId)",
   "error EpochCapReached(uint256 wanted, uint256 left)",
   "error NotController(uint256 agentId, address caller)",
+  "error NotInvited(uint256 agentId, address signer)",
+  "error InviteExpired(uint256 agentId, uint64 expiry)",
+  "error InviteUsed(uint256 agentId)",
   "error NotIdle(uint256 agentId, uint256 reclaimableAt)",
   "error NothingToReclaim(uint256 agentId)",
   "error InvalidRules()",
 ];
+
+/**
+ * Pull apart an invite code as `scripts/invite.mjs` prints it and the bot hands it over:
+ * `priors-invite:<agentId>:<expiry>:<signature>`.
+ *
+ * Checked here rather than on chain because every one of these is a mistake a caller can fix in a second -
+ * wrong agent, stale code - while the same mistake sent as a transaction costs gas to be told the same thing.
+ */
+export function parseInvite(code, agentId) {
+  const m = /^priors-invite:(\d{1,10}):(\d{1,12}):(0x[0-9a-fA-F]{130})$/.exec(String(code || "").trim());
+  if (!m) throw new Error("not an invite code (expected priors-invite:<agentId>:<expiry>:<signature>)");
+  if (agentId != null && Number(m[1]) !== Number(agentId)) throw new Error(`this invite is for agent #${m[1]}, not #${agentId}`);
+  const expiry = Number(m[2]);
+  if (expiry * 1000 < Date.now()) throw new Error(`this invite expired on ${new Date(expiry * 1000).toISOString()}`);
+  return { agentId: Number(m[1]), expiry, signature: m[3] };
+}
 const ERC20_ABI = ["function approve(address,uint256)", "function allowance(address,address) view returns (uint256)", "function balanceOf(address) view returns (uint256)"];
 const REGISTRY_ABI = ["function ownerOf(uint256) view returns (address)", "function register(string) returns (uint256)", "event Registered(uint256 indexed agentId, address indexed owner, string agentURI)"];
 
@@ -181,11 +205,41 @@ export class Priors {
 
   // ---- write ----
   _needSigner() { if (!this.signer) throw new Error("this call needs a signer"); }
-  /** Ask the treasury for a first $5 line. Works for any ERC-8004 identity that was never enrolled. Anyone may call it. */
-  async firstLine(agentId) {
+  /**
+   * Ask the treasury for a first line, for an ERC-8004 identity that was never enrolled.
+   *
+   * Treasury v3 needs two people to agree: the identity's own controller signs the transaction, and an
+   * inviter the treasury's owner named has signed `Invite(agentId, expiry)` for it. Pass the invite code
+   * you were handed: registration is open to everyone, treasury money is not.
+   *
+   * Omit `invite` only against a v2 treasury, where first lines had no invite. Against v3 that call does
+   * not exist, so leaving it out there fails at the ABI rather than quietly doing something else.
+   */
+  async firstLine(agentId, invite) {
     this._needSigner();
     if (!this.treasury) throw new Error("no treasury address configured");
-    return (await sendChecked(this.treasury, "firstLine", [agentId], this._ifaces)).hash;
+    if (invite == null) {
+      return (await sendChecked(this.treasury, "firstLine(uint256)", [agentId], this._ifaces)).hash;
+    }
+    const { expiry, signature } = parseInvite(invite, agentId);
+    return (await sendChecked(this.treasury, "firstLine(uint256,uint64,bytes)", [agentId, expiry, signature], this._ifaces)).hash;
+  }
+  /**
+   * Sign an invite that seats `agentId`, as the inviter. Only useful if this signer is one the treasury's
+   * owner has named with `setInviter`: anyone else's signature is a valid signature of the wrong thing, and
+   * the contract refuses it with `NotInvited`.
+   *
+   * Returns the code in the one format everything else here reads: `priors-invite:<id>:<expiry>:<signature>`.
+   */
+  async signInvite(agentId, hours = 72) {
+    this._needSigner();
+    if (!this.treasury) throw new Error("no treasury address configured");
+    const expiry = Math.floor(Date.now() / 1000) + Math.round(hours * 3600);
+    const { chainId } = await this.provider.getNetwork();
+    const domain = { name: "Priors Treasury", version: "3", chainId, verifyingContract: await this.treasury.getAddress() };
+    const types = { Invite: [{ name: "agentId", type: "uint256" }, { name: "expiry", type: "uint64" }] };
+    const signature = await this.signer.signTypedData(domain, types, { agentId: BigInt(agentId), expiry: BigInt(expiry) });
+    return { agentId: Number(agentId), expiry, inviter: await this.signer.getAddress(), signature, code: `priors-invite:${agentId}:${expiry}:${signature}` };
   }
   /** Raise a treasury-sponsored agent's line once its record qualifies. */
   async raise(agentId) {

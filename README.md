@@ -145,7 +145,7 @@ instructions.
 | | | |
 |---|---|---|
 | **1** | **identity** | `register(uri)` on the ERC-8004 registry, once. Your NFT is your identity. Already have an id? Skip this. The pool never sees your keys, only the id. |
-| **2** | **first line** | `treasury.firstLine(agentId)` → a $5 line, sponsored by the $PRIORS treasury, by rule, out of its own stake. **Anyone can call it for you.** Epoch cap spent? Wait 7 days, or ask a root sponsor to `vouch()` a bigger line. |
+| **2** | **first line** | `treasury.firstLine(agentId, expiry, invite)` → a $5 line, sponsored by the $PRIORS treasury out of its own stake. **It takes two people:** someone the owner named signs an invite for your id, and you, its controller, redeem it. Ask at [priors.trade/invite](https://priors.trade/invite). Epoch cap spent? Wait 7 days, or ask a root sponsor to `vouch()` a bigger line, which needs no invite. |
 | **3** | **borrow, hold, repay** | `quote(5, 7)` → fee $0.011666. `borrow(id, 5, 7)` → USDG in your wallet. Do work. `repay(loanId)` → principal + fee. Under 7 days repays fine but does not count: dollar-days are the score. |
 | **4** | **grow** | `treasury.raise(agentId)` → $50, after 3 qualified loans, 14 days and a clean record. Repaying earns capacity of your own, up to $250. `vouch(yours, other, amount)` backs someone from it — and their default becomes your recourse loan. |
 
@@ -154,7 +154,8 @@ Every step is one CLI subcommand:
 ```bash
 npx priors doctor                 # which chain, what is deployed, can I sign, what do loans cost
 npx priors register               # -> agentId
-npx priors first-line <agentId>   # -> $5 line
+npx priors invite <agentId>       # -> an invite code, if you hold an inviter key
+npx priors first-line <agentId> --invite <code>   # -> $5 line
 npx priors quote 5 7              # -> fee, and whether it counts for the score
 npx priors borrow <agentId> 5 7   # -> loanId
 npx priors repay <loanId>
@@ -169,7 +170,7 @@ Or from JavaScript — six methods on ethers v6:
 ```js
 import { Priors } from "priors";
 const s = new Priors({ rpc, pool, treasury, signer });
-await s.firstLine(agentId);
+await s.firstLine(agentId, inviteCode);   // priors-invite:<id>:<expiry>:<signature>
 const loanId = await s.borrow(agentId, 5, 7);
 await s.repay(loanId);
 await s.score(agentId);   // 0..1000
@@ -283,7 +284,7 @@ answer and identical everywhere.
 
 ```
 src/CreditPool.sol           the pool, credit lines, sponsor tree, default waterfall, reserve
-src/TreasurySponsor.sol      the $PRIORS treasury as a sponsor: vouches by rule, not by judgement
+src/TreasurySponsor.sol      the $PRIORS treasury as a sponsor: a person's invite opens a seat, rules size it
 src/ReserveFunder.sol        creator-fee recipient: sweeps token fees into the first-loss reserve
 src/libraries/ScoreLib.sol   the trust score
 src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPonsFeeEscrow
@@ -298,10 +299,12 @@ skills/priors/SKILL.md       the agent skill
 docs/AGENTS.md               guide for agent builders
 docs/DESIGN.md               the math, the attacks, the parameters
 SECURITY.md                  how to report a vulnerability, what is in scope, what is already fixed
+BOUNTY.md                    what a finding pays, what is in scope on chain, and the safe harbour
 ```
 
 Found something? **[SECURITY.md](SECURITY.md)** — use this repo's private vulnerability reporting, and
-please do not put details in a public issue.
+please do not put details in a public issue. **[BOUNTY.md](BOUNTY.md)** says what it is worth; the pool
+holds about $344, so the ceiling is small and we say so up front rather than after you have spent a week.
 
 ## Working on it
 

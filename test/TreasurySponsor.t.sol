@@ -30,6 +30,23 @@ contract TreasurySponsorTest is Test {
     uint256 TREASURY_ID;
     uint256 AGENT;
 
+    // the inviter: a key the owner names; its EIP-712 signature over (agentId, expiry) is the seat
+    uint256 constant INVITER_PK = 0xA11CE;
+    address inviter = vm.addr(INVITER_PK);
+    uint64 constant FAR = type(uint64).max;
+    bytes32 DS;
+    bytes32 TH; // cached: a prank must not be consumed by a view call while an invite is being built
+
+    function _sig(uint256 id, uint64 expiry) internal view returns (bytes memory) {
+        return _sigBy(INVITER_PK, id, expiry);
+    }
+
+    function _sigBy(uint256 pk, uint256 id, uint64 expiry) internal view returns (bytes memory) {
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DS, keccak256(abi.encode(TH, id, expiry))));
+        (uint8 v, bytes32 r, bytes32 s_) = vm.sign(pk, digest);
+        return abi.encodePacked(r, s_, v);
+    }
+
     function setUp() public {
         usdc = new MockUSDC();
         reg = new MockIdentityRegistry();
@@ -51,7 +68,10 @@ contract TreasurySponsorTest is Test {
         TREASURY_ID = reg.register("priors-treasury");
         reg.safeTransferFrom(owner, address(treasury), TREASURY_ID);
         treasury.adopt(TREASURY_ID);
+        treasury.setInviter(inviter, true);
         vm.stopPrank();
+        DS = treasury.DOMAIN_SEPARATOR();
+        TH = treasury.INVITE_TYPEHASH();
 
         vm.prank(agentOp);
         AGENT = reg.register("ipfs://agent");
@@ -108,14 +128,14 @@ contract TreasurySponsorTest is Test {
         _creatorFees(200 * USDC);
         treasury.sweep();
         vm.prank(agentOp);
-        treasury.firstLine(AGENT);
+        treasury.firstLine(AGENT, FAR, _sig(AGENT, FAR));
         CreditPool.CreditReport memory r = pool.creditReport(AGENT);
         assertTrue(r.enrolled);
         assertEq(r.sponsor, TREASURY_ID);
         assertEq(r.delegatedIn, 5 * USDC);
         vm.prank(agentOp);
         vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.AlreadyLined.selector, AGENT));
-        treasury.firstLine(AGENT);
+        treasury.firstLine(AGENT, FAR, _sig(AGENT, FAR));
         // the agent can borrow against it right away
         vm.prank(agentOp);
         uint256 loan = pool.borrow(AGENT, 5 * USDC, 7 days, agentOp);
@@ -137,7 +157,7 @@ contract TreasurySponsorTest is Test {
         vm.stopPrank();
         vm.prank(agentOp);
         vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.AlreadyEnrolled.selector, AGENT));
-        treasury.firstLine(AGENT);
+        treasury.firstLine(AGENT, FAR, _sig(AGENT, FAR));
     }
 
     /// The cheapest attack on the cap is not registering identities - it is lining the ones that already
@@ -149,7 +169,7 @@ contract TreasurySponsorTest is Test {
         uint256 roomBefore = treasury.epochRoom();
         vm.prank(anyone);
         vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.NotController.selector, AGENT, anyone));
-        treasury.firstLine(AGENT);
+        treasury.firstLine(AGENT, FAR, _sig(AGENT, FAR));
         assertEq(treasury.epochRoom(), roomBefore, "nothing spent");
         assertFalse(pool.creditReport(AGENT).enrolled);
         // the pool delegate the owner named can ask on its behalf
@@ -157,7 +177,7 @@ contract TreasurySponsorTest is Test {
         vm.prank(agentOp);
         pool.setDelegate(AGENT, bot);
         vm.prank(bot);
-        treasury.firstLine(AGENT);
+        treasury.firstLine(AGENT, FAR, _sig(AGENT, FAR));
         assertEq(pool.creditReport(AGENT).delegatedIn, 5 * USDC);
     }
 
@@ -166,7 +186,7 @@ contract TreasurySponsorTest is Test {
         _creatorFees(200 * USDC);
         treasury.sweep();
         vm.prank(agentOp);
-        treasury.firstLine(AGENT);
+        treasury.firstLine(AGENT, FAR, _sig(AGENT, FAR));
         uint256 freeBefore = pool.creditReport(TREASURY_ID).available;
         (,,,,,,,, uint64 idleAfter) = treasury.rules();
         assertEq(treasury.reclaimableAt(AGENT), block.timestamp + idleAfter);
@@ -181,10 +201,10 @@ contract TreasurySponsorTest is Test {
         assertEq(r.delegatedIn, 0, "the vouch is gone");
         assertTrue(r.enrolled, "the record stays");
         assertEq(pool.creditReport(TREASURY_ID).available, freeBefore + 5 * USDC, "capacity is back");
-        // no second first line for the same identity, and nothing left to reclaim
+        // the spent invite does not reopen the seat (a fresh one would: see TreasuryV3Audit), and nothing is left to reclaim
         vm.prank(agentOp);
-        vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.AlreadyLined.selector, AGENT));
-        treasury.firstLine(AGENT);
+        vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.InviteUsed.selector, AGENT));
+        treasury.firstLine(AGENT, FAR, _sig(AGENT, FAR));
         vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.NothingToReclaim.selector, AGENT));
         treasury.reclaim(AGENT);
     }
@@ -195,7 +215,7 @@ contract TreasurySponsorTest is Test {
         _creatorFees(200 * USDC);
         treasury.sweep();
         vm.prank(agentOp);
-        treasury.firstLine(AGENT);
+        treasury.firstLine(AGENT, FAR, _sig(AGENT, FAR));
         (,,,,,,,, uint64 idleAfter) = treasury.rules();
         uint256 lined = block.timestamp;
         // borrows on day 20, repays on day 27
@@ -226,7 +246,7 @@ contract TreasurySponsorTest is Test {
         _creatorFees(200 * USDC);
         treasury.sweep();
         vm.prank(agentOp);
-        treasury.firstLine(AGENT);
+        treasury.firstLine(AGENT, FAR, _sig(AGENT, FAR));
         vm.prank(agentOp);
         pool.borrow(AGENT, 5 * USDC, 7 days, agentOp);
         vm.warp(block.timestamp + 7 days + 3 days + 1);
@@ -243,15 +263,15 @@ contract TreasurySponsorTest is Test {
         vm.startPrank(anyone);
         for (uint256 i = 0; i < n; i++) {
             uint256 id = reg.register("ipfs://sybil");
-            treasury.firstLine(id);
+            treasury.firstLine(id, FAR, _sig(id, FAR));
         }
         uint256 extra = reg.register("ipfs://sybil");
         vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.EpochCapReached.selector, 5 * USDC, 0));
-        treasury.firstLine(extra);
+        treasury.firstLine(extra, FAR, _sig(extra, FAR));
         assertEq(treasury.epochRoom(), 0);
         vm.warp(block.timestamp + 7 days);
         assertEq(treasury.epochRoom(), 100 * USDC);
-        treasury.firstLine(extra);
+        treasury.firstLine(extra, FAR, _sig(extra, FAR));
         vm.stopPrank();
     }
 
@@ -259,7 +279,7 @@ contract TreasurySponsorTest is Test {
         _creatorFees(400 * USDC);
         treasury.sweep();
         vm.prank(agentOp);
-        treasury.firstLine(AGENT);
+        treasury.firstLine(AGENT, FAR, _sig(AGENT, FAR));
         vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.NotEligible.selector, AGENT));
         treasury.raise(AGENT);
         // three qualified loans over three weeks
@@ -285,7 +305,7 @@ contract TreasurySponsorTest is Test {
         _creatorFees(200 * USDC);
         treasury.sweep();
         vm.prank(agentOp);
-        treasury.firstLine(AGENT);
+        treasury.firstLine(AGENT, FAR, _sig(AGENT, FAR));
         vm.prank(agentOp);
         pool.borrow(AGENT, 5 * USDC, 7 days, agentOp);
         vm.warp(block.timestamp + 7 days + 3 days + 1);
@@ -300,7 +320,7 @@ contract TreasurySponsorTest is Test {
         _creatorFees(200 * USDC);
         treasury.sweep();
         vm.prank(agentOp);
-        treasury.firstLine(AGENT);
+        treasury.firstLine(AGENT, FAR, _sig(AGENT, FAR));
         vm.prank(agentOp);
         uint256 loan = pool.borrow(AGENT, 5 * USDC, 30 days, agentOp);
         vm.warp(block.timestamp + 30 days);
@@ -350,5 +370,61 @@ contract TreasurySponsorTest is Test {
         treasury.transferCreatorFeeRecipient(launchToken, owner);
         assertEq(escrow.feeRecipientOf(launchToken), owner);
         vm.stopPrank();
+    }
+
+    /// Registration is permissionless; treasury money is not. Without an invite there is no line, and the
+    /// caller being the identity's owner does not change that.
+    function test_firstLine_needsAnInvite() public {
+        _creatorFees(200 * USDC);
+        treasury.sweep();
+        uint256 roomBefore = treasury.epochRoom();
+        uint256 strangerPk = 0xBAD;
+        vm.prank(agentOp);
+        vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.NotInvited.selector, AGENT, vm.addr(strangerPk)));
+        treasury.firstLine(AGENT, FAR, _sigBy(strangerPk, AGENT, FAR));
+        assertEq(treasury.epochRoom(), roomBefore, "nothing spent");
+        assertFalse(pool.creditReport(AGENT).enrolled);
+    }
+
+    /// An invite names one identity and one deadline. It cannot be moved to another id, used after it expires,
+    /// or reused once a line exists.
+    function test_invite_isBoundToTheIdentityAndTheDeadline() public {
+        _creatorFees(200 * USDC);
+        treasury.sweep();
+        vm.prank(agentOp);
+        uint256 other = reg.register("ipfs://other");
+        bytes memory forAgent = _sig(AGENT, FAR);
+        // a different identity recovers to a different, un-named signer
+        vm.prank(agentOp);
+        vm.expectRevert();
+        treasury.firstLine(other, FAR, forAgent);
+        // expired
+        uint64 soon = uint64(block.timestamp + 1 hours);
+        bytes memory brief = _sig(AGENT, soon);
+        vm.warp(soon + 1);
+        vm.prank(agentOp);
+        vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.InviteExpired.selector, AGENT, soon));
+        treasury.firstLine(AGENT, soon, brief);
+        // valid, once
+        vm.prank(agentOp);
+        treasury.firstLine(AGENT, FAR, forAgent);
+        vm.prank(agentOp);
+        vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.AlreadyLined.selector, AGENT));
+        treasury.firstLine(AGENT, FAR, forAgent);
+    }
+
+    /// The owner can revoke an inviter; invites it already signed stop working at once.
+    function test_owner_revokesAnInviter() public {
+        _creatorFees(200 * USDC);
+        treasury.sweep();
+        bytes memory sig = _sig(AGENT, FAR);
+        vm.prank(owner);
+        treasury.setInviter(inviter, false);
+        vm.prank(agentOp);
+        vm.expectRevert(abi.encodeWithSelector(TreasurySponsor.NotInvited.selector, AGENT, inviter));
+        treasury.firstLine(AGENT, FAR, sig);
+        vm.expectRevert(abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), anyone));
+        vm.prank(anyone);
+        treasury.setInviter(anyone, true);
     }
 }

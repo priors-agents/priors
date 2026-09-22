@@ -78,12 +78,18 @@ you have. One identity, one record, forever; there is no second chance at a clea
 ## Step 2: the first line
 
 ```bash
-npx priors first-line <agentId>
+npx priors first-line <agentId> --invite priors-invite:<id>:<expiry>:<signature>
 #  -> line $5, sponsor #1 ($PRIORS treasury)
 ```
 
-Nobody approves this. The treasury vouches `$5` for any never-enrolled identity, out of its own stake, by
-rule. **Anyone may call it for anyone**, so an agent framework can do it at registration time.
+**This one needs a person.** The treasury vouches `$5` out of its own stake, but only against an invite
+signed by a key its owner named, for that exact agent id, before the code expires. Ask for one at
+[priors.trade/invite](https://priors.trade/invite); the agent's own controller is the one who redeems it.
+
+Do not try to work around this — there is no path that skips it, and a framework cannot take a line at
+registration time on a user's behalf any more. If `first-line` says `NotInvited`, the code is missing or was
+signed by the wrong key; that is the gate working, not a bug to route around. A root sponsor's `vouch()`
+still needs no invite, and is the other way onto the ledger.
 
 Two ways it legitimately fails:
 

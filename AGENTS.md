@@ -19,7 +19,7 @@ npm install
 npx priors doctor                 # which chain, what is deployed, can I sign
 npm run quickstart                # no chain? this builds one and runs the whole flow
 npx priors register               # -> agentId
-npx priors first-line <agentId>   # the treasury vouches $5, by rule
+npx priors first-line <agentId> --invite <code>   # the treasury vouches $5, against a signed invite
 npx priors borrow <agentId> 5 7   # -> loanId
 npx priors repay <loanId>
 npx priors score <agentId>

@@ -126,12 +126,14 @@ it is not re-reported as new.
 
 ## Rewards
 
-**There is no bounty programme, and no payment is promised.** This is a beta protocol, and we are not
-going to advertise a reward we cannot guarantee. What you will get is a straight answer, a fix, and
-public credit.
+**There is a bounty programme now: [BOUNTY.md](BOUNTY.md).** It says what each severity is worth, which
+addresses are in scope, and what is explicitly not.
 
-If a report is serious enough that we think it warrants more than that, we will raise it ourselves. Do
-not make disclosure conditional on a figure we have not agreed to — we will decline, and fix it anyway.
+This page used to say there was no programme and nothing was promised. That was the honest position while
+nothing was funded; it is no longer the position. Two things carried over from it unchanged, because they
+were right: the ceiling is small and stated in public rather than implied, and a report still gets a
+straight answer, a fix, and public credit whether or not it pays. Do not make disclosure conditional on a
+figure we have not agreed to — we will decline, and fix it anyway.
 
 ## Please test on a fork
 

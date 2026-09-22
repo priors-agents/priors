@@ -215,6 +215,19 @@ contract HistoryImportTest is Test {
         TreasurySponsor treasury = new TreasurySponsor(
             pool, IPonsFeeEscrow(address(escrow)), IPonsFactoryCreator(address(escrow)), owner, owner
         );
+        uint256 inviterPk = 0xA11CE;
+        vm.prank(owner);
+        treasury.setInviter(vm.addr(inviterPk), true);
+        bytes32 ds = treasury.DOMAIN_SEPARATOR();
+        (uint8 v, bytes32 r, bytes32 s_) = vm.sign(
+            inviterPk,
+            keccak256(
+                abi.encodePacked(
+                    "\x19\x01", ds, keccak256(abi.encode(treasury.INVITE_TYPEHASH(), AGENT, type(uint64).max))
+                )
+            )
+        );
+        bytes memory invite = abi.encodePacked(r, s_, v);
 
         vm.startPrank(owner);
         uint256 TID = reg.register("priors-treasury");
@@ -234,7 +247,7 @@ contract HistoryImportTest is Test {
         assertGt(minSeasoning, 0, "the rule that is being skipped is actually set");
 
         vm.prank(agentOwner);
-        treasury.firstLine(AGENT);
+        treasury.firstLine(AGENT, type(uint64).max, invite);
         // No warp. A genuinely new agent could not pass eligibleForRaise here.
         assertTrue(treasury.eligibleForRaise(pool.creditReport(AGENT)), "imported history satisfies the gate at once");
         treasury.raise(AGENT);

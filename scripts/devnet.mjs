@@ -28,7 +28,7 @@ const POOL_ABI = [
   "function poolLiquidity() view returns (uint256)",
   "function reserve() view returns (uint256)",
 ];
-const TREASURY_ABI = ["function sweep() returns (uint256,uint256)", "function agentId() view returns (uint256)", "function epochRoom() view returns (uint256)"];
+const TREASURY_ABI = ["function sweep() returns (uint256,uint256)", "function agentId() view returns (uint256)", "function epochRoom() view returns (uint256)", "function setInviter(address,bool)", "function inviters(address) view returns (bool)"];
 const MOCK_USDC_ABI = ["function mint(address,uint256)", "function approve(address,uint256)", "function balanceOf(address) view returns (uint256)"];
 
 const log = (...a) => console.log(...a);
@@ -107,6 +107,18 @@ export async function devnet() {
   log("» treasury sweeps $400 -> half to the reserve, half staked as a root sponsor");
   await (await usdc.mint(dep.treasurySponsor, dollars(400))).wait();
   await (await treasury.sweep()).wait();
+
+  /* Treasury v3 will not open a first line without an invite signed by a key its owner named, so a devnet
+     with no inviter is a devnet where the very first step of the tour reverts. The deployer is the owner
+     here, so it names itself: on a throwaway chain the interesting property is that the gate exists and is
+     exercised, not who holds the pen. On a real deployment the inviter is a separate key, deliberately. */
+  log("» treasury names this chain's dev wallets as inviters, so first lines can be signed for");
+  // Both wallets, because they are two different people here: devWallet(0) deploys and owns, devWallet(50) is
+  // what `priors flow` and the quickstart run as. Naming only the first leaves the tour's very first step
+  // reverting with NotInvited, which is a confusing way to meet a gate that is working correctly.
+  for (const who of [deployerAddr, devWallet(50).address]) {
+    if (!(await treasury.inviters(who))) await (await treasury.setInviter(who, true)).wait();
+  }
 
   const tId = Number(await treasury.agentId());
   const report = await pool.creditReport(tId);

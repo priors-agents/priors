@@ -13,6 +13,7 @@ import {IPonsFeeEscrow, IPonsFactoryCreator} from "../src/interfaces/IPonsFeeEsc
 ///   POOL=0x...             the live CreditPool (required)
 ///   OWNER=0x...            treasury owner, defaults to the broadcaster (use the pool's Safe)
 ///   FEE_SINK=0x...         buyback wallet for the treasury's 25% sponsor cut, defaults to OWNER
+///   INVITER=0x...          key whose signed invites seat agents (scripts/invite.mjs signs with it)
 ///   PONS_FEE_ESCROW=0x...  and PONS_FACTORY=0x...  Pons wiring; zero on chains without Pons
 ///
 /// Writes deployments/<chainId>.treasury.json; merge it into deployments/<chainId>.json once the identity is
@@ -29,7 +30,11 @@ contract DeployTreasury is Script {
         TreasurySponsor treasury = new TreasurySponsor(
             pool, IPonsFeeEscrow(ponsEscrow), IPonsFactoryCreator(ponsFactory), owner, vm.envOr("FEE_SINK", owner)
         );
+        address inviter = vm.envOr("INVITER", address(0));
+        // the deployer is the owner only while it is also the broadcaster; otherwise the Safe names the inviter
+        if (inviter != address(0) && owner == msg.sender) treasury.setInviter(inviter, true);
         vm.stopBroadcast();
+        if (inviter != address(0) && owner != msg.sender) console.log("owner must call setInviter:", inviter);
 
         console.log("TreasurySponsor v2:", address(treasury));
         console.log("pool:", address(pool));
