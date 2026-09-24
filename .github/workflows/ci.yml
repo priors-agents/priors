@@ -1,4 +1,4 @@
-# The README says `forge test` is 97 passed and that scripts/check-public.sh is "what CI runs".
+# The README says `forge test` is 404 passed and that scripts/check-public.sh is "what CI runs".
 # Until now there was no CI, so both were claims a reader had to take on trust. This is the CI.
 #
 # check-public.sh is the load-bearing one: this repo is public, and the check that nothing
@@ -49,7 +49,7 @@ jobs:
       - run: npm ci
       - run: npm test
       # Every entry point a user actually runs, so a syntax error cannot ship green.
-      - run: node --check bin/priors.mjs && node --check sdk/env.mjs && node --check sdk/priors.mjs
+      - run: for f in bin/priors.mjs bin/priors-v2.mjs sdk/env.mjs sdk/priors.mjs sdk/priors-v2.mjs sdk/float.mjs sdk/x402.mjs; do node --check "$f"; done
 
   public-safety:
     runs-on: ubuntu-latest

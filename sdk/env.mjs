@@ -56,6 +56,10 @@ export const DEV_MNEMONIC = "test test test test test test test test test test t
 export const devWallet = (index) => ethers.HDNodeWallet.fromPhrase(DEV_MNEMONIC, undefined, `m/44'/60'/0'/0/${index}`);
 
 export const deploymentPath = (chainId) => join(ROOT, "deployments", `${chainId}.json`);
+/** The v2 set (CreditPoolV2, treasury v4, seats v2) has its own record, written by script/DeployV2.s.sol. */
+export const deploymentPathV2 = (chainId) => join(ROOT, "deployments", `${chainId}.v2.json`);
+/** Robinhood Chain's official endpoint: the default for the v2 tools, which have no local devnet. */
+export const MAINNET_RPC = "https://rpc.mainnet.chain.robinhood.com";
 
 // --- money ---------------------------------------------------------------------------------------------------
 // USDG has 6 decimals on chain and the SDK speaks whole dollars, so this conversion happens in a dozen places.
@@ -77,6 +81,12 @@ export const formatUnits = (units) => formatUsd(fromUnits(units));
 
 export function readDeployment(chainId) {
   const p = deploymentPath(chainId);
+  if (!existsSync(p)) return null;
+  return JSON.parse(readFileSync(p, "utf8"));
+}
+
+export function readDeploymentV2(chainId) {
+  const p = deploymentPathV2(chainId);
   if (!existsSync(p)) return null;
   return JSON.parse(readFileSync(p, "utf8"));
 }
@@ -260,6 +270,9 @@ export async function resolve(opts = {}) {
     registry: file.registry,
     usdcIsMock: process.env.USDC ? false : Boolean(file.usdcIsMock),
     treasuryAgentId: file.treasuryAgentId,
+    // "paused" once the pool is superseded: history still reads, new loans revert.
+    status: file.status,
+    supersededBy: file.supersededBy,
   };
   if (!dep.creditPool) throw new NoDeployment(chainId);
 
@@ -281,6 +294,43 @@ export async function resolve(opts = {}) {
 
   const priors = new Priors({ provider, pool: dep.creditPool, treasury: dep.treasurySponsor, signer });
   return { provider, signer, derived, dep, chainId, rpc, priors, address: signer ? await signer.getAddress() : null };
+}
+
+/**
+ * Resolve the v2 set: a PriorsV2 client on deployments/<chainId>.v2.json (or the file PRIORS_ADDRESSES names).
+ * RPC_URL (comma-separated failover list) defaults to Robinhood Chain mainnet. The signer comes from PRIORS_KEY, or
+ * PRIVATE_KEY like the v1 tools; with neither, the client is read-only.
+ * @param {{rpc?: string, privateKey?: string, addressesFile?: string, needSigner?: boolean}} [opts]
+ */
+export async function resolveV2(opts = {}) {
+  const { PriorsV2 } = await import("./priors-v2.mjs");
+  const rpc = opts.rpc || process.env.PRIORS_RPC || process.env.RPC_URL || MAINNET_RPC;
+  const rpcs = splitRpcs(rpc);
+  const provider = makeProvider(rpcs, { cacheTimeout: -1 });
+  let chainId;
+  try {
+    chainId = Number((await provider.getNetwork()).chainId);
+  } catch (e) {
+    throw new Error(`cannot reach ${rpcs.length > 1 ? `any of ${rpcs.length} endpoints` : rpcs[0]}: ${e.shortMessage || e.message}`);
+  }
+  const file = opts.addressesFile || process.env.PRIORS_ADDRESSES;
+  let addresses;
+  if (file) addresses = JSON.parse(readFileSync(file, "utf8"));
+  else addresses = readDeploymentV2(chainId);
+  if (!addresses || !addresses.pool) {
+    throw new Error(`no v2 deployment for chain ${chainId}: deployments/${chainId}.v2.json does not exist. Set PRIORS_ADDRESSES to a v2 addresses file, or point RPC_URL at Robinhood Chain (4663).`);
+  }
+  if (addresses.chainId !== undefined && Number(addresses.chainId) !== chainId) {
+    throw new Error(`the v2 addresses are for chain ${addresses.chainId}, but the RPC is chain ${chainId}`);
+  }
+  const rawPk = opts.privateKey || process.env.PRIORS_KEY || process.env.PRIVATE_KEY;
+  const pk = rawPk && rawPk !== "0x" && rawPk !== "0x0" ? rawPk.trim() : undefined;
+  let signer = null;
+  // A plain Wallet, as the v2 client is tested with: every write waits for its receipt before the next is sent.
+  if (pk) signer = new ethers.Wallet(pk, provider);
+  else if (opts.needSigner) throw new Error("PRIORS_KEY (or PRIVATE_KEY) is not set: this command signs transactions.");
+  const priors = new PriorsV2({ provider, signer, addresses });
+  return { provider, signer, chainId, rpc, addresses, priors, address: signer ? await signer.getAddress() : null };
 }
 
 /** True when the chain answers anvil/hardhat cheat methods, i.e. we may warp time and mint mock money. */

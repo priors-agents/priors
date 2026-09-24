@@ -10,10 +10,15 @@
     "node": ">=20"
   },
   "bin": {
-    "priors": "bin/priors.mjs"
+    "priors": "bin/priors.mjs",
+    "priors-v2": "bin/priors-v2.mjs"
   },
   "exports": {
-    ".": "./sdk/priors.mjs"
+    ".": "./sdk/priors.mjs",
+    "./v2": "./sdk/priors-v2.mjs",
+    "./float": "./sdk/float.mjs",
+    "./x402": "./sdk/x402.mjs",
+    "./env": "./sdk/env.mjs"
   },
   "files": [
     "sdk",
@@ -30,7 +35,9 @@
     "priors": "node bin/priors.mjs",
     "check-public": "bash scripts/check-public.sh",
     "selfcheck": "node scripts/selfcheck.mjs",
-    "test": "node scripts/selfcheck.mjs && node scripts/test-rpc-failover.mjs && node scripts/test-sdk-invite.mjs"
+    "test": "node scripts/selfcheck.mjs && node scripts/test-rpc-failover.mjs && node scripts/test-sdk-invite.mjs && node scripts/test-sdk-v2.mjs",
+    "priors-v2": "node bin/priors-v2.mjs",
+    "test:v2": "node scripts/test-sdk-v2.mjs"
   },
   "dependencies": {
     "ethers": "^6.13.4"

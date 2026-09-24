@@ -9,5 +9,7 @@
   "treasurySponsor": "0x59f212317b42D308E81EaF8C078fc8189E2a77Df",
   "usdc": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
   "usdcIsMock": false,
-  "treasuryVersion": 3
+  "treasuryVersion": 3,
+  "status": "paused",
+  "supersededBy": "4663.v2.json"
 }

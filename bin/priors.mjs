@@ -95,7 +95,12 @@ async function main() {
   if (cmd === "doctor") {
     const c = await ctx(false);
     out(`chain            ${c.chainId}  ${c.rpc}`);
-    out(`CreditPool       ${c.dep.creditPool}`);
+    out(`CreditPool       ${c.dep.creditPool}${c.dep.status === "paused" ? "  (v1, PAUSED)" : ""}`);
+    if (c.dep.status === "paused") {
+      // The record is kept so v1 history stays readable; new loans on it revert. Say where the live pool is.
+      out(`                 v1 is superseded${c.dep.supersededBy ? ` by deployments/${c.dep.supersededBy}` : ""}: score/report/loans still read,`);
+      out("                 new lines and loans do not. Use `npx priors-v2` (see docs/PARTICIPATE.md).");
+    }
     out(`TreasurySponsor  ${c.dep.treasurySponsor || "(none configured — first-line and raise will not work)"}`);
     out(`asset            ${c.dep.usdc}${c.dep.usdcIsMock ? "  (mock, mintable)" : ""}`);
     out(`registry         ${c.dep.registry || "(read from the pool)"}`);
