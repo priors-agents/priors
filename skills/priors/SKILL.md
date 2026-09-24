@@ -1,177 +1,140 @@
 ---
 name: priors
-description: Give an AI agent a credit history on Priors — register an ERC-8004 identity, take the treasury's $5 first line, borrow, repay, and earn a public trust score on Robinhood Chain. Use when the user wants to give their agent credit, reputation, a trust score, an ERC-8004 identity, or wants to borrow, repay, or look up an agent's record on Priors (priors.trade).
+description: Give an AI agent a credit history on Priors — register an ERC-8004 identity, get a $5 line (a treasury invite or a $PRIORS seat), borrow, repay, and earn a public trust score on Robinhood Chain. Use when the user wants to give their agent credit, reputation, a trust score, an ERC-8004 identity, wants to borrow, repay, pay x402 APIs on credit, or look up an agent's record on Priors (priors.trade).
 ---
 
 # Priors: give your agent a credit history
 
 Reviews are cheap to fake. Repaid debt isn't. Priors lends unsecured stablecoin ($5 to $500) to agents
-registered on [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004), and every repayment and every default is a
-public event. From those events comes a score anyone can query before trusting an agent.
+registered on [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004). Every line is backed, dollar for dollar, by
+someone who put money behind that agent, and every repayment and every default is a public event. From those
+events comes a score anyone can query before trusting an agent.
 
-Your job in this skill is to take an agent from nothing to a real, on-chain, repaid loan. Four steps, and the
-CLI in this repo has one subcommand each.
+Your job in this skill is to take an agent from nothing to a real, on-chain, repaid loan.
 
-**Before you start, know which chain you are on.** This is the single thing that changes what you can do:
+**Priors v2 is live on Robinhood Chain mainnet (chain 4663).** The v1 pool is paused. Know which one you are
+talking to:
 
 | Situation | What works |
 |---|---|
-| Local dev chain (31337, from `npm run devnet`) | Everything, instantly. Time can be warped, mock USDG can be minted. |
-| Robinhood Chain, with a deployment record | Everything, at real speed, with real USDG. |
-| A chain with no deployment record | Nothing on-chain. Use the local chain — and do not pretend otherwise. |
+| Robinhood Chain, v2 (`npx priors-v2`, `deployments/4663.v2.json`) | Everything, at real speed, with real USDG. **This is the one to use.** |
+| Robinhood Chain, v1 (`npx priors`, `deployments/4663.json`) | Reading history only (`score`, `report`, `loans`). The pool is paused: new lines and loans revert. |
+| Local dev chain (31337, from `npm run devnet`) | The v1 flow, instantly, with mock USDG and warped time. Good for a demo; nothing there is real. |
+| A chain with no deployment record | Nothing on-chain. Say so — do not pretend otherwise. |
 
-⛔ **Check which chain you are on before claiming anything.** `npx priors doctor` resolves the pool from
-`deployments/<chainId>.json`; if there is no record for the chain you are pointed at, it tells you so and
-exits. When that happens, say it plainly and offer the local chain instead. Never invent a pool address, and
-never tell a user their agent is registered on a chain where it is not.
+⛔ **Never invent a pool address, never send an agent to the paused v1 pool, and never tell a user their agent is
+registered or has a line when it does not.** The tools resolve addresses from the deployment records and refuse to
+guess; when they refuse, say it plainly.
 
-## Step 0: is anything working?
+## Step 0: a key, and a funded wallet
 
 ```bash
 npm install
-npx priors doctor
+cp .env.example .env     # set PRIORS_KEY=0x... (the key that owns, or will own, the agent's identity)
+npx priors-v2 status
 ```
 
-`doctor` prints the chain, the pool and treasury addresses, your wallet, your balances, and the live loan
-parameters. If it cannot reach a chain, finds no deployment, or finds an unfunded wallet, it says so and names
-the fix. Read that output before running anything else — nearly every confusing failure later is visible here
-first.
+⛔ **The key goes in the environment or `.env`, never on the command line.** The CLI refuses a key passed as an
+argument (it would land in shell history) and never prints it.
 
-**No chain at all?** Start one:
-
-```bash
-npm run devnet        # local chain, pool deployed and bootstrapped so firstLine() works
-npx priors fund       # ⬅ your wallet needs gas before step 1, or `register` fails
-```
-
-⛔ **Do not skip `npx priors fund` on a dev chain.** The wallet the CLI signs with starts empty, so the very
-first transaction — `register` — dies with `insufficient funds for intrinsic transaction cost`. `doctor` warns
-you, and `fund` mints mock USDG and tops up gas. It refuses to run on any chain that is not a dev chain.
-
-Want to watch the whole thing work before touching a real agent? `npm run quickstart` does devnet, funding and
-all four steps in one command.
-
-**A real chain?** Put the key that owns (or will own) the identity in `.env`:
-
-```bash
-cp .env.example .env    # PRIVATE_KEY=0x..., RPC_URL=...
-```
-
-There, the wallet needs real native gas and, for step 3, enough USDG to cover the fee — `fund` cannot help you.
-Nothing here custodies keys: the pool only ever sees the agent id.
+The wallet needs a little native gas and, for step 3, enough USDG to pay the fee (about $0.012 on $5 for 7 days).
+`RPC_URL` defaults to Robinhood Chain's official endpoint; it takes a comma-separated failover list.
 
 ## Step 1: identity
 
 ```bash
-npx priors register --uri https://example.com/my-agent.json
-#  -> agentId 4
+npx priors-v2 join
+#  -> registered agent #6301 for 0x…
 ```
 
-⛔ **Use the id this command printed you, not the one in these examples.** Every step below writes
-`<agentId>`; substitute the real number. Calling `first-line` or `borrow` on an id you do not own is acting on
-someone else's identity, and in a protocol where one identity means one permanent record, that is not a typo
-you can undo.
+`join` registers an ERC-8004 identity for this key if it owns none, and prints its id. **Already have an
+identity?** If it was minted before the v2 deploy (for example a v1 agent), set `PRIORS_AGENT_ID=<id>`; v1 records
+were imported, so its history is already there.
 
-The agent id is an ERC-8004 NFT owned by your wallet. **Already have an identity? Skip this** — pass the id
-you have. One identity, one record, forever; there is no second chance at a clean history.
+⛔ **Use the id this command printed, not the one in these examples.** One identity, one record, forever.
 
-## Step 2: the first line
+## Step 2: a line
+
+Three ways, and every one needs the agent owner's signature (the pool consent), which `join` signs for you:
 
 ```bash
-npx priors first-line <agentId> --invite priors-invite:<id>:<expiry>:<signature>
-#  -> line $5, sponsor #1 ($PRIORS treasury)
+npx priors-v2 join --invite priors-invite:<id>:<expiry>:<signature>   # treasury v4: $5
+npx priors-v2 join --seat <stakerAddress>                             # a staker's $PRIORS seat: $5
 ```
 
-**This one needs a person.** The treasury vouches `$5` out of its own stake, but only against an invite
-signed by a key its owner named, for that exact agent id, before the code expires. Ask for one at
-[priors.trade/invite](https://priors.trade/invite); the agent's own controller is the one who redeems it.
+- **Invite.** Ask at [priors.trade/invite](https://priors.trade/invite) for an invite **for the id from step 1**.
+  An invite names one agent id, expires, and seats that agent once.
+- **Seat.** Someone offers a seat of 1,000,000 $PRIORS on your id (the Participate page on priors.trade), then you
+  accept it. The agent must have repaid at least 3 loans first. If no offer exists yet, `join --seat` exits with
+  code 3: that is "waiting on someone else", not a failure.
+- **Backer.** A root backer can vouch any size, with your signed consent (`signConsent` in the SDK).
 
-Do not try to work around this — there is no path that skips it, and a framework cannot take a line at
-registration time on a user's behalf any more. If `first-line` says `NotInvited`, the code is missing or was
-signed by the wrong key; that is the gate working, not a bug to route around. A root sponsor's `vouch()`
-still needs no invite, and is the other way onto the ledger.
+Ways it legitimately fails, and what they mean:
 
-Two ways it legitimately fails:
-
-- **`EpochCapReached`** — the treasury has spent its `$100` vouching cap for the current 7-day epoch. Wait for
-  the next epoch, or ask a root sponsor to `vouch()` a bigger line. This is not an error to retry in a loop.
-- **`AlreadyEnrolled` / `AlreadyLined`** — this identity already has a record. `npx priors report <agentId>` shows it.
+- **`EpochCapReached`** — treasury v4 has spent its $100 of new lines for this 7-day epoch. Wait, or find a seat
+  or a backer. Do not retry in a loop.
+- **`NotInvited` / `InviteExpired` / `InviteUsed`** — the code is wrong, stale, or spent. Ask for a new one. There
+  is no path around the invite; that is the gate working.
+- **`NotSeatable`** — the agent has not repaid 3 loans yet, is already backed by the seat vault, is a root, or has defaulted.
 
 ## Step 3: borrow, hold, repay
 
 ```bash
-npx priors quote 5 7          # fee $0.011666, qualifies
-npx priors borrow <agentId> 5 7   # -> loanId, and $5 lands in your wallet
+npx priors-v2 borrow 5 --days 7    # -> loan #N, $5 lands in the wallet, due date printed
 #  ... the agent does its work ...
-npx priors repay <loanId>     # principal + fee; approves USDG for exactly what is due
+npx priors-v2 repay --all          # principal + fee; approves USDG for exactly what is due
 ```
 
-**Hold it for real time, then repay at or before the due date.** The score is dollar-days: how much you
-borrowed times how long you actually held it, capped at the term you contracted for. So the term is what gets
-scored — holding *past* the due date earns you nothing and risks everything (see below). A loan shorter than
-**7 days** repays fine and still grows your earned capacity, but it does not count as a qualified loan.
-Churning one-day loans gets you nowhere; that is deliberate.
+**Hold it for real time, then repay at or before the due date.** The score is dollar-days: how much you borrowed
+times how long you held it, capped at the term you contracted for. A loan shorter than **7 days** repays fine but
+does not count as a qualified loan. Churning one-day loans gets you nowhere; that is deliberate.
 
-⛔ **Repay before the due date.** Three days past due and *anyone* can mark the loan defaulted. The score goes
-to zero forever, the identity can never borrow or vouch again, and your sponsor eats the loss. There is no
-appeal — that is the entire reason the score means anything. If the user cannot repay on time, tell them to
+⛔ **Repay before the due date.** Three days past due and *anyone* can mark the loan defaulted. The record is
+defaulted forever, the identity can never borrow again, the owner's address is marked, and the sponsor pays (its
+shares burnt, or half the staker's seat). There is no appeal. If the user cannot repay on time, tell them to
 borrow less, not to borrow later.
-
-On a dev chain, move time instead of waiting:
-
-```bash
-npx priors warp 7    # dev chain only; refuses on a real chain
-```
 
 ## Step 4: grow
 
-```bash
-npx priors raise <agentId>     # -> $50, once the record qualifies
-```
+Treasury v4's `raise(agentId)` tops a treasury line up to $50 once the record has 3 qualified loans, 14 days, a
+score of at least 100 and no default. Beyond that, v2 has no unbacked "earned" credit: lines grow by finding a
+bigger backer.
 
-Qualifies means all of: 3 qualified loans (term ≥ 7 days), 14 days since enrolling, score ≥ 100, and no
-default anywhere below it. `raise` checks first and tells you what is missing rather than reverting.
+## Paying x402 APIs on credit
 
-Repaying also earns capacity of your own — 50% of repaid principal, at most `$25` per 7-day epoch and `$250`
-total. An agent with earned capacity can `vouch()` for other agents, and their defaults become *your* recourse
-loan. Vouch carefully.
+`sdk/float.mjs` pays a `402 Payment Required` in USDG from the agent's balance and borrows only the shortfall from
+its line. Always set `maxBorrow` to what the agent can repay within the term, and never call `pay()` again for a
+purchase that came back `pending` — use `resend()`. See `docs/FLOAT.md`.
 
 ## Reading any agent's record
 
 ```bash
-npx priors score <agentId>      # 0..1000
-npx priors report <agentId>     # every input the score is computed from
-npx priors loans <agentId>      # every loan, with status
+npx priors-v2 status               # this key's agent: line, loans, record
+npx priors report <agentId>        # v1 history (paused pool)
 ```
 
-Or from any contract: `score(uint256)` on the pool. Or from JavaScript:
+On v2, `score(uint256)` and `creditReport(uint256)` are on `CreditLensV2` (address in
+`deployments/4663.v2.json`). From JavaScript:
 
 ```js
-import { Priors } from "priors";
-const s = new Priors({ rpc, pool, treasury, signer });
-await s.score(agentId);
+import { resolveV2 } from "priors/env";
+const { priors } = await resolveV2();
+await priors.status(agentId);
 ```
-
-Every input is a public event you can recompute yourself. That is the product; the score is a convenience.
 
 ## Doing it from code instead of the CLI
 
-`sdk/priors.mjs` is the whole flow in six methods on ethers v6 — `register`, `firstLine`, `quote`, `borrow`,
-`repay`, `score`, plus `report`, `loans`, `raise`. `sdk/env.mjs` resolves chain, deployment and signer the same
-way the CLI does. Prefer these over hand-rolling calls: the ABI, the 6-decimal conversions and the USDG
-approval are easy to get subtly wrong.
+`sdk/priors-v2.mjs` is the v2 client on ethers v6 — `register`, `signConsent`, `redeemInvite`, `acceptSeat`,
+`quoteFee`, `borrow`, `repay`, `openLoans`, `status`, plus `pay`/`settleLoans` for x402. `sdk/env.mjs`'s
+`resolveV2()` resolves chain, deployment and signer the same way the CLI does. Every write is simulated first and
+a revert is decoded to the contract's own error. Prefer these over hand-rolling calls.
 
 ## What not to claim
 
-Read the Status section of the repo README before telling a user anything about safety, and specifically:
-
-- A lender-loss defect in default accounting **was found and fixed**: `markDefault()` used to release an
-  agent's whole backing on its first default, so a second default from the same agent could cost lenders
-  principal. It now consumes only the liable slice per loan, and `test/DefaultAccounting.t.sol` covers the
-  surrounding cases. `forge test` is 74 passed, 0 failed.
-- But **no independent review of the economics has happened**, and the randomized invariants passed right
-  through that original bug. So: do not call this audited, do not call it proven safe, and do not tell a user
-  that lenders cannot lose principal. Launch caps are small for exactly this reason.
-
-Saying this plainly costs nothing and is the difference between a credible protocol and a rug. If a user asks
-you to deploy this to mainnet or fund it with real money, tell them about the defect first.
+- **Do not call this audited.** v2 had internal adversarial reviews and no third-party audit. Every known finding,
+  its fix and what remains is in `docs/SECURITY-v2.md`.
+- v1 shipped with a lender-loss defect that randomized invariants did not catch; it was found, fixed and migrated.
+  v2's design (every line fully backed, a default burns the backer's shares) is why no path to lender principal
+  was found — that is still not a proof.
+- Do not tell a lender they cannot lose money, and do not tell a backer or staker their stake is safe: backers and
+  stakers carry the credit risk by design.

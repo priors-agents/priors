@@ -7,7 +7,12 @@ file. Claude Code users: the same content is packaged as a skill at `skills/prio
 
 Priors is an on-chain credit pool for [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) agents. An agent
 borrows unsecured stablecoin, repays it, and earns a public trust score from that record. This repo holds the
-contracts, the SDK, a CLI, and the skill that walks an agent through getting its own credit history.
+contracts, the SDK, the CLIs, and the skill that walks an agent through getting its own credit history.
+
+**Priors v2 is live on Robinhood Chain (4663)**: `CreditPoolV2`, treasury v4 and seats v2, addresses in
+`deployments/4663.v2.json`. The v1 pool is paused; its records were imported into v2. Use the v2 tools
+(`npx priors-v2`, `sdk/priors-v2.mjs`) for anything on mainnet. The v1 tools (`npx priors`, `sdk/priors.mjs`)
+read v1 history and drive the local devnet, which still deploys v1.
 
 ## Giving an agent a credit history
 
@@ -16,48 +21,54 @@ each, with the failure modes spelled out. Short version:
 
 ```bash
 npm install
-npx priors doctor                 # which chain, what is deployed, can I sign
-npm run quickstart                # no chain? this builds one and runs the whole flow
-npx priors register               # -> agentId
-npx priors first-line <agentId> --invite <code>   # the treasury vouches $5, against a signed invite
-npx priors borrow <agentId> 5 7   # -> loanId
-npx priors repay <loanId>
-npx priors score <agentId>
+export PRIORS_KEY=0x…                      # the agent owner's key: env or .env, never argv
+npx priors-v2 join                         # registers an identity for this key if it owns none -> agentId
+npx priors-v2 join --invite <code>         # treasury v4 opens a $5 line (invite from priors.trade/invite)
+npx priors-v2 join --seat <staker>         # or: accept a staker's seat offer
+npx priors-v2 borrow 5 --days 7            # -> loanId
+npx priors-v2 repay --all
+npx priors-v2 status
+npm run quickstart                         # no mainnet? a local v1 chain and the whole flow
 ```
 
 ## Three things not to get wrong
 
-1. **Check the chain before claiming anything.** Every tool resolves the pool from
-   `deployments/<chainId>.json` and refuses to guess when there is no record for the chain you are pointed at.
-   When that happens, say so — never invent a pool address, and never report an agent as registered when it is
-   not.
+1. **Check the chain and the pool version before claiming anything.** The v2 tools resolve the pool from
+   `deployments/<chainId>.v2.json`, the v1 tools from `deployments/<chainId>.json`, and both refuse to guess when
+   there is no record for the chain you are pointed at. The v1 record on 4663 is marked `"status": "paused"`:
+   new lines and loans there revert. Never invent a pool address, never send an agent to the paused v1 pool,
+   and never report an agent as registered when it is not.
 
-2. **A lender-loss defect was found and fixed; it has not been independently reviewed.** `markDefault()` used to
-   release an agent's whole delegated backing on its first default, so a second default from the same agent could
-   cost lenders principal. It now consumes only the liable slice per loan. `forge test` is 74 passed, 0 failed.
-   ⛔ Do not delete `test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure` or `test/DefaultAccounting.t.sol`
-   — they are the evidence the fix works, and without them the guarantee is just a claim again. No independent
-   review of the economics has happened, and the randomized invariants passed right through the original bug, so
-   do not describe this as audited or as proven safe.
+2. **Nothing here has had a third-party audit.** v1 shipped with a lender-loss defect the randomized invariants
+   did not catch (fixed; `test/DefaultAccounting.t.sol`). v2 had internal adversarial reviews; every finding, fix
+   and residual is in `docs/SECURITY-v2.md`, each with a test. ⛔ Do not delete the PoC and regression tests
+   (`test/audit-v2/`, `test/audit-final/`, `test/review-v2/`, `test/DefaultAccounting.t.sol`,
+   `test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure`) — they are the evidence the fixes work. Do not
+   describe any of this as audited or as proven safe.
 
-3. **A default is permanent.** Three days past due and anyone can mark a loan defaulted: score zero forever,
-   the identity can never borrow or vouch again, and the sponsor eats the loss. Do not borrow for an agent that
-   cannot repay on time.
+3. **A default is permanent.** Three days past due and anyone can mark a loan defaulted: the record is
+   defaulted forever, the identity can never borrow or back anyone again, the owner's address is marked, and the
+   sponsor pays (its shares burnt, or half a staker's seat). Do not borrow for an agent that cannot repay on time.
 
 ## Working on the code
 
 ```bash
-forge test                  # 74 tests, all green
-npm run devnet              # local chain + deployed pool, bootstrapped so firstLine() works
+forge test                  # 404 tests, all green (fork-only tests skip)
+npm test                    # SDK, CLI, publish guard (needs Foundry)
+npm run test:v2             # v2 SDK and x402 client, network-free
+npm run devnet              # local v1 chain + deployed pool, bootstrapped so firstLine() works
 npm run quickstart          # devnet + the full agent flow
 bash scripts/check-public.sh  # fails if any credential reached a tracked file
 ```
 
-- Solidity 0.8.26, Foundry, `optimizer_runs = 200`. Contracts are non-upgradeable: a source change only reaches
-  users through a new deployment.
-- `sdk/priors.mjs` is the contract surface (ABI included) and `sdk/env.mjs` resolves chain/deployment/signer.
-  Use them rather than hand-rolling calls; the 6-decimal conversions and the USDG approval are easy to get
-  subtly wrong.
+- Solidity 0.8.26, Foundry, `optimizer_runs = 200`; `CreditPoolV2` alone compiles via-IR at `optimizer_runs = 1`
+  (a per-file restriction in `foundry.toml`) to fit 24 KB. Contracts are non-upgradeable: a source change only
+  reaches users through a new deployment. `src/` for deployed contracts must stay byte-identical to what was
+  verified on chain.
+- `sdk/priors-v2.mjs` (v2) and `sdk/priors.mjs` (v1) are the contract surfaces (ABIs included);
+  `sdk/float.mjs` is the x402 client; `sdk/env.mjs` resolves chain/deployment/signer (`resolveV2()` for v2).
+  Use them rather than hand-rolling calls; the 6-decimal conversions, the consent signature and the USDG approval
+  are easy to get subtly wrong.
 - `scripts/devnet.mjs` must never point at a real chain — it deploys mocks and mints money, and refuses any
   chain that does not answer anvil cheat methods. Keep that refusal.
 - Amounts are 6-decimal units on chain and whole dollars in the SDK. Money printed by the CLI is pinned to

@@ -1,5 +1,10 @@
 # Design: credit-backed reputation for AI agents
 
+> **This page describes v1**, the pool now paused. v2 (live since the v2 cutover) keeps the score and the fee
+> split but drops earned (unbacked) capacity and recourse loans: every line is 100% backed by a backer's locked
+> pool shares, and a default burns them. See [PARTICIPATE.md](PARTICIPATE.md) for how v2 works and
+> [SECURITY-v2.md](SECURITY-v2.md) for its attacks and fixes.
+
 ## The problem this solves
 
 Agents need to decide whether to trust other agents. ERC-8004 gives every agent an on-chain identity and a reputation registry, but the registry's feedback is rarely tied to a real interaction and is cheap to fake. Reviews cost nothing to produce, so they carry no information.

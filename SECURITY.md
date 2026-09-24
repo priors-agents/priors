@@ -43,18 +43,20 @@ the affected function and your own severity assessment. We cannot evaluate, prio
 
 | | |
 |---|---|
-| `src/CreditPool.sol` | credit lines, the sponsor tree, the default waterfall, the reserve |
-| `src/TreasurySponsor.sol` | the rule-based treasury sponsor |
-| `src/ReserveFunder.sol` | creator-fee sweep into the reserve |
-| `sdk/`, `bin/priors.mjs` | the SDK and CLI agents run, including anything that could sign or broadcast wrongly |
-| The live deployment | addresses are listed in the README's *Robinhood Chain mainnet* table |
-| `priors.trade` | the site is in scope even though its source is not in this repo |
+| `src/CreditPoolV2.sol`, `src/libraries/PoolV2Lib.sol` | the v2 pool: lenders, roots and backing, consent, handoff, fee lock, defaults, the reserve |
+| `src/CreditLensV2.sol` | the score and credit-report views |
+| `src/TreasurySponsorV4.sol` | the rule-based treasury root: invites, raises, reclaims, sweeps |
+| `src/SeatVaultV2.sol` | $PRIORS seats: offers, acceptance, burns, fees, expiry |
+| `sdk/`, `bin/` | the SDK, the x402 float client and the CLIs, including anything that could sign or broadcast wrongly |
+| The live v2 deployment | addresses are in `deployments/4663.v2.json` and the README's *Robinhood Chain* table |
+| `priors.trade` and `facilitator.priors.trade` | the site and the x402 facilitator are in scope even though their source is not in this repo |
 
 **Out of scope**
 
-- **The superseded pool** at `0xd970472b2904D5923882af034cea4067AF0AaC95`. It is paused and drained, and
-  it is listed in the README only so an old link is recognisable as dead. Findings against it are
-  interesting only where they also apply to the live pool — say so explicitly if they do.
+- **The v1 contracts** (`CreditPool`, `TreasurySponsor` v2/v3, `ReserveFunder`), including the v1 pool at
+  `0x0259889e6EBab1a18CeE7e62Bc5B9648FB6C44e5`, paused since the v2 cutover, and the older pools before it.
+  They are kept in this repo and in the README as history. Findings against them are interesting only where
+  they also apply to v2 — say so explicitly if they do.
 - The ERC-8004 identity registry at `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`. Not ours.
 - Third-party RPC endpoints. Their rate limits and archive policies are their business; how this SDK
   copes with them is ours, and that part is in scope.
@@ -66,6 +68,15 @@ the affected function and your own severity assessment. We cannot evaluate, prio
 
 So nobody spends time on ground that is already covered, and so a rediscovery is not mistaken for a new
 finding:
+
+**v2:** [`docs/SECURITY-v2.md`](docs/SECURITY-v2.md) lists every finding from the pre-launch reviews of the v2
+set, with its severity, its fix or its accepted residual, and the test that shows it. In short: the self-backing
+yield loop (N-1) is fixed by the fee lock; the utilization freeze (N-2) by a 100% cap; the farmable keeper bounty
+(F-1) is mitigated by setting it to 0; the seat vault's stale offers (X-1) and idle seats (X-2) are fixed; the
+self-seat loop (X-3) is gated by repaid history and closed economically by the seat's market value; the treasury's
+invite-to-raise path (T10) is bounded by its epoch cap. None of these reaches lender principal.
+
+**v1** (now paused; kept for the record):
 
 - **A defaulting root sponsor's earned credit was not retired**, letting backing be counted twice and
   leaving lenders exposed. Fixed in the live pool. The proof-of-concept is committed as a permanent
@@ -93,7 +104,7 @@ finding:
   and backs nothing can now recover it. Pinned by
   `test_aSettledDefaultedRootCanRecoverItsResidualStake` and its negative case.
 
-All four are live as of the 2026-09-21 cutover. Because these contracts are not upgradeable, "fixed in
+All four were live on v1 as of the 2026-09-21 cutover. Because these contracts are not upgradeable, "fixed in
 `src/`" and "fixed on chain" are different claims with a migration between them, and for about ten hours
 they were not the same thing here — see **Credits**. `scripts/verify-migration.mjs` checks the deployed
 runtime bytecode against the compiled artifact, so you can confirm which one you are looking at rather
@@ -137,7 +148,7 @@ figure we have not agreed to — we will decline, and fix it anyway.
 
 ## Please test on a fork
 
-The live pool holds real deposits. Reproduce against a local Anvil fork or a testnet deployment, never
+The live v2 pool holds real deposits. Reproduce against a local Anvil fork or a testnet deployment, never
 against mainnet:
 
 ```bash
@@ -161,11 +172,19 @@ immutable**: 130 bytes of code, an EIP-1967 implementation pointer, an empty adm
 and `owner()` is `0x547289319C3e6aedB179C0b8e8aF0B5ACd062603`, an address with **no code at all**. A
 single ordinary key can change what that registry says about who owns which agent, and this pool
 believes the registry completely. Whoever holds it could withdraw every root's stake, draw every open
-credit line, and claim every unclaimed sponsor fee.
+credit line, and claim every unclaimed sponsor fee. On v2 that is still true of roots' stake and open lines,
+while lenders' deposits stay whole (`test_X5_registryUpgradeAdminTakesEveryRootStake`).
 
 Findings *in* that registry are out of scope because we cannot fix them. Findings about **how this pool
 trusts it** are very much in scope, and we would rather hear them.
 
-The levers we do hold, and that move quickly: `setParams` and `pause` on the pool, and `setRules`,
-`retire` and `setFeeSink` on the TreasurySponsor — all owner-only, so all needing two signatures on the
-2-of-3 Safe. Expect a pause first and a migration later.
+The levers we do hold, and how fast they move:
+
+- **Fast:** the pool's guardian (the 2-of-3 Safe) can `pause` new risk for at most 14 days at a time; exits
+  never pause. The Safe owns treasury v4 (`setRules`, `setInviter`, `freeze`, `retire`) and the seat vault
+  (`setParams`, `setGates`, `pauseSeats`, `retire`) directly, so those need two signatures and no delay.
+- **Slow on purpose:** the pool's owner is a 48-hour `TimelockController` (the Safe proposes and executes, no
+  admin). `setParams`, `withdrawReserve` and the other owner calls are visible on chain for two days before they
+  can run. No owner call reaches lender deposits or a backer's locked shares.
+
+Expect a pause first and a migration later.
