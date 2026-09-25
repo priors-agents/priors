@@ -19,5 +19,7 @@
   "inviteBondBlock": 72112874,
   "seatVaultBlock": 72192188,
   "seatVaultV2": "0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F",
-  "seatVaultV2AgentId": 6229
+  "seatVaultV2AgentId": 6229,
+  "seatSizer": "0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61",
+  "seatSizerBlock": 72572884
 }

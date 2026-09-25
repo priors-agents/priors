@@ -25,7 +25,8 @@ the moment its record lands here. The v1 shape:
 (`pool`, `lens`, `timelock`, `treasuryV4`, `seatVault`, `usdg`, `registry`, `priors`, `safe`, `v1`, `deployBlock`),
 plus the two roots' agent ids (`treasuryV4AgentId` 6228, `seatVaultAgentId` 6234), `inviteBond`, the retired
 `seatVaultV2` (root `seatVaultV2AgentId` 6229), `v1Pool` and `"status": "live"`. `seatVault` is SeatVaultV3 since
-2026-09-25. `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it; `PRIORS_ADDRESSES` points them at
+2026-09-25. `seatSizer` (since block 72,572,884) owns the seat vault and keeps its seat at about 5 lines of $PRIORS;
+the Safe owns it. `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it; `PRIORS_ADDRESSES` points them at
 another file.
 
 ```json

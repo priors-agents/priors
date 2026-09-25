@@ -238,7 +238,7 @@ v2 findings.
 | Counts as a qualified loan at | 7 days |
 | `maxUtilizationBps` · `keeperBounty` | 10000 · 0 |
 | Treasury v4 | first line $5 · raise to $25 · $25 of new lines per 7-day epoch · idle after 30 days |
-| Seats (`SeatVaultV3`, root #6234) | seat ≈ $25 of $PRIORS (12,000 on 2026-09-25, resized with the price) · line $5 · 50% burnt on default · agent needs 3 repaid loans · seat expires after 30 idle days · $50 of new lines per 7-day epoch |
+| Seats (`SeatVaultV3`, root #6234) | seat ≈ $25 of $PRIORS (12,000 on 2026-09-25, resized with the price by the SeatSizer) · line $5 · 50% burnt on default · agent needs 3 repaid loans · seat expires after 30 idle days · $50 of new lines per 7-day epoch |
 | Minimum root stake | $10 |
 | Pool owner | 48 h `TimelockController` (the Safe proposes and executes, no admin); the Safe is guardian (pause ≤ 14 days, exits never pause) |
 
@@ -254,7 +254,8 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | **SeatVaultV3** (live since 2026-09-25, root `#6234`) | `0x59D155C42A9263fA7596867b992bB3e84dF680a9` |
 | SeatVaultV2 (retired and paused, root `#6229`; replaced by V3 for audit V-2) | `0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F` |
 | TimelockController (owns the pool, 48 h) | `0x5d984C274035F81BB327d532897a902C5125F87c` |
-| Safe (2-of-3; proposes to the timelock, owns treasury v4 and the seat vault) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
+| **SeatSizer** (owns the seat vault since 2026-09-26; resizes the seat from the $PRIORS price, within bounds) | `0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61` |
+| Safe (2-of-3; proposes to the timelock, owns treasury v4 and the SeatSizer, so every other vault power) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
 | InviteBond (the bond an automatic invite needs; no admin) | `0x8BE478c754D9124D11e78dB20F5bf4dA45403275` |
 | ERC-8004 Identity Registry | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
 | USDG (Robinhood's 6-decimal dollar, the pool asset) | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
@@ -311,6 +312,7 @@ src/libraries/PoolV2Lib.sol  v2 pool's linked library (hooks, consent digest)
 src/CreditLensV2.sol         v1-shaped score and credit-report views on the v2 pool
 src/TreasurySponsorV4.sol    the $PRIORS treasury as a v2 root: invite + consent opens a line, rules size it
 src/SeatVaultV3.sol          $PRIORS seats: a staker's tokens behind an agent, the vault backs its line (live)
+src/SeatSizer.sol            owns the seat vault: keeps the seat at ~5 lines of $PRIORS from the pool price (live)
 src/SeatVaultV2.sol          the previous seat vault (retired; V3 closes audit V-2)
 src/InviteBond.sol           the bond behind an automatic invite: back after seasoning, to the Safe on default
 src/CreditPool.sol           v1 pool (paused; its records were imported into v2)
