@@ -47,7 +47,7 @@ Other v2 changes:
 | Lender hold | 7 days; withdrawing sooner leaves 0.5% for the lenders who stayed |
 | Minimum root stake | $10 |
 | Treasury v4 (root #6228) | first line $5 · raise to $25 after 3 qualified loans, 14 days, score ≥ 100 · $25 of new lines per 7-day epoch · idle lines reclaimed after 30 days |
-| Seats V3 (root #6234) | seat 1,000,000 $PRIORS · line $5 · 50% of the seat burnt on a default · 10 open seats · $50 of new lines per 7-day epoch |
+| Seats V3 (root #6234) | seat ≈ $25 of $PRIORS (12,000 on 2026-09-25, resized with the price) · line $5 · 50% of the seat burnt on a default · 10 open seats · $50 of new lines per 7-day epoch |
 | Seat gates | the agent has repaid at least 3 loans; a seat idle 30 days can be expired by anyone |
 
 `npx priors-v2 status` and the Participate page read these live; if this table and the chain disagree, the chain

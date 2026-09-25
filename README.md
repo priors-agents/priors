@@ -26,7 +26,7 @@ Reviews are cheap to fake. Repaid debt isn't.
 > can change sponsor between loans, and the pool's owner is a 48-hour timelock.
 >
 > **Three ways onto the ledger.** A treasury invite (a $5 line from treasury v4, which is funded by $PRIORS creator
-> fees), a **seat** (someone puts 1,000,000 $PRIORS behind your agent and the seat vault backs a $5 line), or a
+> fees), a **seat** (someone puts about $25 of $PRIORS behind your agent and the seat vault backs a $5 line), or a
 > **backer** who stakes USDG and vouches for you directly. Lenders deposit USDG and earn 60% of every fee.
 >
 > **What was found before launch, and fixed.** A self-backing loop that took lender yield (fixed with a fee lock),
@@ -238,7 +238,7 @@ v2 findings.
 | Counts as a qualified loan at | 7 days |
 | `maxUtilizationBps` · `keeperBounty` | 10000 · 0 |
 | Treasury v4 | first line $5 · raise to $25 · $25 of new lines per 7-day epoch · idle after 30 days |
-| Seats (`SeatVaultV3`, root #6234) | seat 1,000,000 $PRIORS · line $5 · 50% burnt on default · agent needs 3 repaid loans · seat expires after 30 idle days · $50 of new lines per 7-day epoch |
+| Seats (`SeatVaultV3`, root #6234) | seat ≈ $25 of $PRIORS (12,000 on 2026-09-25, resized with the price) · line $5 · 50% burnt on default · agent needs 3 repaid loans · seat expires after 30 idle days · $50 of new lines per 7-day epoch |
 | Minimum root stake | $10 |
 | Pool owner | 48 h `TimelockController` (the Safe proposes and executes, no admin); the Safe is guardian (pause ≤ 14 days, exits never pause) |
 

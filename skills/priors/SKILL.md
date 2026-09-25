@@ -64,7 +64,7 @@ npx priors-v2 join --seat <stakerAddress>                             # a staker
 
 - **Invite.** Ask at [priors.trade/invite](https://priors.trade/invite) for an invite **for the id from step 1**.
   An invite names one agent id, expires, and seats that agent once.
-- **Seat.** Someone offers a seat of 1,000,000 $PRIORS on your id (the Participate page on priors.trade), then you
+- **Seat.** Someone offers a seat of $PRIORS (about $25) on your id (the Participate page on priors.trade), then you
   accept it. The agent must have repaid at least 3 loans first. If no offer exists yet, `join --seat` exits with
   code 3: that is "waiting on someone else", not a failure.
 - **Backer.** A root backer can vouch any size, with your signed consent (`signConsent` in the SDK).
