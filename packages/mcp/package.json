@@ -1,6 +1,6 @@
 {
   "name": "@priors/mcp",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "private": false,
   "description": "MCP server for Priors on Robinhood Chain: pay x402 URLs in USDG, read balances, credit lines and scores, borrow and repay. Key from PRIORS_KEY only.",
   "type": "module",

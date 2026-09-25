@@ -23,8 +23,9 @@ the moment its record lands here. The v1 shape:
 
 `4663.v2.json` — **Robinhood Chain mainnet, v2, live.** Written in the shape `script/DeployV2.s.sol` produces
 (`pool`, `lens`, `timelock`, `treasuryV4`, `seatVault`, `usdg`, `registry`, `priors`, `safe`, `v1`, `deployBlock`),
-plus the two roots' agent ids (`treasuryV4AgentId` 6228, `seatVaultAgentId` 6229), `v1Pool` and
-`"status": "live"`. `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it; `PRIORS_ADDRESSES` points them at
+plus the two roots' agent ids (`treasuryV4AgentId` 6228, `seatVaultAgentId` 6234), `inviteBond`, the retired
+`seatVaultV2` (root `seatVaultV2AgentId` 6229), `v1Pool` and `"status": "live"`. `seatVault` is SeatVaultV3 since
+2026-09-25. `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it; `PRIORS_ADDRESSES` points them at
 another file.
 
 ```json
@@ -36,7 +37,8 @@ another file.
   "lens": "0x9d7035722bd42C551f82FEB9FDDd17453AEF3D9B",
   "timelock": "0x5d984C274035F81BB327d532897a902C5125F87c",
   "treasuryV4": "0x0c5091235A25bBFD3F5a009cBe04120D0CBAD573",
-  "seatVault": "0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F",
+  "seatVault": "0x59D155C42A9263fA7596867b992bB3e84dF680a9",
+  "inviteBond": "0x8BE478c754D9124D11e78dB20F5bf4dA45403275",
   "…": "…"
 }
 ```

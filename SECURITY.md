@@ -46,8 +46,10 @@ the affected function and your own severity assessment. We cannot evaluate, prio
 | `src/CreditPoolV2.sol`, `src/libraries/PoolV2Lib.sol` | the v2 pool: lenders, roots and backing, consent, handoff, fee lock, defaults, the reserve |
 | `src/CreditLensV2.sol` | the score and credit-report views |
 | `src/TreasurySponsorV4.sol` | the rule-based treasury root: invites, raises, reclaims, sweeps |
-| `src/SeatVaultV2.sol` | $PRIORS seats: offers, acceptance, burns, fees, expiry |
+| `src/SeatVaultV3.sol` | $PRIORS seats: offers, acceptance, owner binding, freeze, burns, fees, expiry (SeatVaultV2 is retired) |
+| `src/InviteBond.sol` | the 5 USDG bond behind an automatic treasury invite |
 | `sdk/`, `bin/` | the SDK, the x402 float client and the CLIs, including anything that could sign or broadcast wrongly |
+| `packages/x402`, `packages/mcp` | the npm payer (`@priors/x402`) and the local MCP server (`@priors/mcp`), including anything that could pay, borrow or repay wrongly |
 | The live v2 deployment | addresses are in `deployments/4663.v2.json` and the README's *Robinhood Chain* table |
 | `priors.trade` and `facilitator.priors.trade` | the site and the x402 facilitator are in scope even though their source is not in this repo |
 
@@ -107,9 +109,11 @@ invite-to-raise path (T10) is bounded by its epoch cap. None of these reaches le
 
 All four were live on v1 as of the 2026-09-21 cutover. Because these contracts are not upgradeable, "fixed in
 `src/`" and "fixed on chain" are different claims with a migration between them, and for about ten hours
-they were not the same thing here — see **Credits**. `scripts/verify-migration.mjs` checks the deployed
+they were not the same thing here — see **Credits**. `scripts/verify-migration.mjs` checks the deployed v1
 runtime bytecode against the compiled artifact, so you can confirm which one you are looking at rather
-than trusting this file.
+than trusting this file. It does not read the v2 record: for v2, compare each address in
+`deployments/4663.v2.json` against `forge build` output the same way (immutables and the `PoolV2Lib` link
+zeroed, metadata stripped); all of them matched on 2026-09-25.
 
 An independent rediscovery of a fixed issue is still worth telling us about, and we will say so and
 credit the work. It is not a new finding.

@@ -15,7 +15,7 @@ Reviews are cheap to fake. Repaid debt isn't.
 
 > ### Status: Priors v2 is live on Robinhood Chain
 >
-> Pool v2 (`CreditPoolV2`), treasury v4 and seats v2 are **live on Robinhood Chain mainnet** (chain 4663) since
+> Pool v2 (`CreditPoolV2`), treasury v4 and the seat vault (`SeatVaultV3`) are **live on Robinhood Chain mainnet** (chain 4663) since
 > block 71,702,460. Addresses come from [`deployments/4663.v2.json`](deployments/4663.v2.json), so
 > `npx priors-v2 status` and the SDK resolve them with no configuration. The v1 pool is **paused**; every v1
 > repayment record was imported into v2, so agents kept their history.
@@ -164,7 +164,7 @@ Merchants can sign up for the facilitator themselves at `https://x402.priors.tra
 | **1** | **identity** | `register(uri)` on the ERC-8004 registry, once. Your NFT is your identity. Already have an id? Skip this (set `PRIORS_AGENT_ID` if it predates v2). The pool never sees your keys, only the id. |
 | **2** | **a line** | **Treasury invite:** at [priors.trade/invite](https://priors.trade/invite) you post a 5 USDG bond in `InviteBond` from the wallet that owns the agent, prove you own it to the Telegram bot, and the bot signs treasury v4's invite for your id on the spot; you redeem it with your pool consent → $5 (at most $25 of new treasury lines a week). The bond comes back once the agent has repaid 3 qualified loans with none open, or after 4 days if it never gets a line; a default sends it to the Safe, so taking a first line and walking away nets nothing. **Seat:** a staker offers a seat of $PRIORS on your id and you accept it → $5 (your agent needs 3 repaid loans first). **Backer:** a root vouches any size with your signed consent. |
 | **3** | **borrow, hold, repay** | `quoteFee` → about $0.011666 for $5 over 7 days. `borrow` → USDG in your wallet. Do work. `repay` → principal + fee. Under 7 days repays fine but does not count: dollar-days are the score. |
-| **4** | **grow** | Treasury v4 `raise(agentId)` → $50, after 3 qualified loans, 14 days, score ≥ 100 and a clean record. Beyond that, lines grow by finding a bigger backer: v2 has no unbacked "earned" credit. |
+| **4** | **grow** | Treasury v4 `raise(agentId)` → $25, after 3 qualified loans, 14 days, score ≥ 100 and a clean record. Beyond that, lines grow by finding a bigger backer: v2 has no unbacked "earned" credit. |
 
 ```bash
 npx priors-v2 join [--invite <code> | --seat <staker>]   # identity, then a line
@@ -237,8 +237,8 @@ v2 findings.
 | Grace before anyone can default you | 3 days |
 | Counts as a qualified loan at | 7 days |
 | `maxUtilizationBps` · `keeperBounty` | 10000 · 0 |
-| Treasury v4 | first line $5 · raise to $50 · $100 per 7-day epoch · idle after 30 days |
-| Seats v2 | seat 1,000,000 $PRIORS · line $5 · 50% burnt on default · agent needs 3 repaid loans · seat expires after 30 idle days · $50 of new lines per 7-day epoch |
+| Treasury v4 | first line $5 · raise to $25 · $25 of new lines per 7-day epoch · idle after 30 days |
+| Seats (`SeatVaultV3`, root #6234) | seat 1,000,000 $PRIORS · line $5 · 50% burnt on default · agent needs 3 repaid loans · seat expires after 30 idle days · $50 of new lines per 7-day epoch |
 | Minimum root stake | $10 |
 | Pool owner | 48 h `TimelockController` (the Safe proposes and executes, no admin); the Safe is guardian (pause ≤ 14 days, exits never pause) |
 

@@ -144,7 +144,8 @@ const fetchWithPay = wrapFetchWithPayment(fetch, createUsdgClient({ signer, maxP
 ## Credit helpers
 
 `@priors/x402/credit` has the Priors v2 pieces the MCP server uses: `creditContracts`, `creditStatus`, `quoteBorrow`,
-`borrowLine`, `repayLoan`, `settleLoans`, `balances`, `borrowGap`.
+`borrowLine`, `repayLoan`, `settleLoans`, `balances`, `borrowGap`. `repayLoan` pays only a loan of an agent the
+signer controls (owner or pool delegate); any other loan is refused with `NOT_CONTROLLER` before anything is sent.
 
 ## Source
 

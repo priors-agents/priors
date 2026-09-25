@@ -5,7 +5,7 @@
 // maxBorrow is checked against the PRICE before any transaction, the draw is max(shortfall, pool minLoan), the term
 // defaults to 7 days clamped into the pool's range (an explicit term above maxTerm is refused), the fee is bounded by
 // the pool's own quote (or maxFee), and the draw lands in the payer's wallet because EIP-3009 needs the payer to hold
-// the funds. The package carries its own copy so it installs on its own; scripts/test-packages.mjs checks it
+// the funds. The package carries its own copy so it installs on its own; the package tests check it
 // against sdk/float.mjs on the same inputs.
 import { ethers } from "ethers";
 import { robinhood, DEFAULT_TERM_SECONDS } from "./robinhood.mjs";
@@ -197,6 +197,8 @@ export async function repayLoan(c, signer, loanId) {
   if (l.status !== LOAN_ACTIVE) throw new PayError("LOAN_NOT_ACTIVE", `loan #${loanId} is not active (${LOAN_STATUS[Number(l.status)] || "unknown"})`);
   const due = l.principal + l.fee;
   const me = await signer.getAddress();
+  // The pool lets anyone repay any loan; this helper spends the signer's USDG only on an agent the signer controls.
+  if (!(await pool.isController(l.agentId, me))) throw new PayError("NOT_CONTROLLER", `loan #${loanId} belongs to agent #${l.agentId}, which ${me} does not control (neither its owner nor its pool delegate)`);
   const bal = await usdg.balanceOf(me);
   if (bal < due) throw new PayError("INSUFFICIENT_USDG", `repaying loan #${loanId} needs ${due} atomic USDG but the wallet holds ${bal}`, { due, balance: bal });
   const target = await pool.getAddress();

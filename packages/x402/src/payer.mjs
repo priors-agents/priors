@@ -104,7 +104,7 @@ export function pickV1Requirement(accepts, asset = robinhood.usdg) {
 
 /**
  * Sign a v1 X-PAYMENT for `req` (port of sdk/float.mjs `signPayment`): EIP-3009 on USDG's domain, valid from 10
- * minutes ago (clock skew) until the merchant's window capped at 600 s, base64 JSON as facilitator/verify.mjs reads.
+ * minutes ago (clock skew) until the merchant's window capped at 600 s, base64 JSON as the Priors facilitator reads it.
  */
 export async function signPaymentV1(signer, req, { now = Math.floor(Date.now() / 1000), chainId = robinhood.chainId, maxValiditySeconds = MAX_VALIDITY_SECONDS } = {}) {
   const from = await signer.getAddress();

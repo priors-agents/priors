@@ -51,15 +51,16 @@ that draws straight to the merchant would be stricter, and is not built.
 
 ## The facilitator
 
-No public x402 facilitator settled on Robinhood Chain, so Priors runs one:
-**`https://facilitator.priors.trade`**.
+Priors runs an x402 facilitator for USDG on Robinhood Chain: **`https://facilitator.priors.trade`**. It is not
+the only one on the chain (Canopy, r0x and Verge run facilitators too). The merchant picks its facilitator;
+`pay()` only signs the payment the merchant's 402 asks for.
 
 - `GET /health` is open.
-- `POST /verify` checks a payment without moving anything.
+- `POST /verify` checks a payment without moving anything. Like `/settle`, it needs a merchant API key.
 - `POST /settle` submits the transfer and pays the gas. It needs a merchant API key (`Authorization: Bearer
-  <key>`), and it settles only for allowlisted merchant `payTo` addresses, above a minimum value (0.01 USDG), never
-  payer-to-self. Merchants who want to accept USDG on Robinhood Chain through it: ask via
-  [priors.trade](https://priors.trade).
+  <key>`), and it settles only for the merchant's registered `payTo`, above a minimum value (0.01 USDG), never
+  payer-to-self. Merchants sign up for a key at
+  [x402.priors.trade/merchants](https://x402.priors.trade/merchants).
 - A settlement whose receipt did not arrive in time is answered as `pending`, not failed. The merchant must treat
   it as not yet paid, must not ask the client for a new payment, and retries `/settle` with the same `X-PAYMENT`;
   the facilitator never submits one authorization twice.

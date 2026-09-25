@@ -68,7 +68,7 @@ balance and borrows only the shortfall. See [FLOAT.md](FLOAT.md).
 ## 3. Grow
 
 After three qualified loans, fourteen days on the ledger, a score of 100 and a clean record, anyone can call
-treasury v4's `raise(agentId)` and a treasury line goes to $50. Beyond that, v2 has no unbacked "earned" credit:
+treasury v4's `raise(agentId)` and a treasury line goes to $25. Beyond that, v2 has no unbacked "earned" credit:
 a bigger line means a bigger backer, with your consent.
 
 ## Reading the record

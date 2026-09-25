@@ -86,7 +86,7 @@ export const TREASURY_ABI = [
 ];
 
 /**
- * Pull apart an invite code as `scripts/invite.mjs` prints it and the bot hands it over:
+ * Pull apart an invite code as the invite script prints it and the bot hands it over:
  * `priors-invite:<agentId>:<expiry>:<signature>`.
  *
  * Checked here rather than on chain because every one of these is a mistake a caller can fix in a second -

@@ -7,7 +7,7 @@ import {CreditPoolV2Base} from "../CreditPoolV2.t.sol";
 /// The 2026-09-24 fix for final-audit N-1 (self-default was free): a borrow locks its fee out of the backer's free
 /// backing, repay releases it, and a default burns the backer's shares worth principal + fee, so the unpaid fee
 /// accrues to the remaining shares. RED on the pre-fix pool: `feeLocked` does not exist there (compile error), and
-/// the audit PoC `test_N1_selfLoopStealsLenderYield_atZeroCost` passed (see docs/reports/2026-09-24-final-audit.md).
+/// the audit PoC `test_N1_selfLoopStealsLenderYield_atZeroCost` passed (final audit, 2026-09-24).
 contract FeeLockFixTest is CreditPoolV2Base {
     function setUp() public override {
         super.setUp();

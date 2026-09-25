@@ -9,7 +9,7 @@ Priors is an on-chain credit pool for [ERC-8004](https://eips.ethereum.org/EIPS/
 borrows unsecured stablecoin, repays it, and earns a public trust score from that record. This repo holds the
 contracts, the SDK, the CLIs, and the skill that walks an agent through getting its own credit history.
 
-**Priors v2 is live on Robinhood Chain (4663)**: `CreditPoolV2`, treasury v4 and seats v2, addresses in
+**Priors v2 is live on Robinhood Chain (4663)**: `CreditPoolV2`, treasury v4 and the seat vault (`SeatVaultV3`), addresses in
 `deployments/4663.v2.json`. The v1 pool is paused; its records were imported into v2. Use the v2 tools
 (`npx priors-v2`, `sdk/priors-v2.mjs`) for anything on mainnet. The v1 tools (`npx priors`, `sdk/priors.mjs`)
 read v1 history and drive the local devnet, which still deploys v1.
@@ -53,7 +53,7 @@ npm run quickstart                         # no mainnet? a local v1 chain and th
 ## Working on the code
 
 ```bash
-forge test                  # 404 tests, all green (fork-only tests skip)
+forge test                  # 521 tests, all green (fork-only tests skip)
 npm test                    # SDK, CLI, publish guard (needs Foundry)
 npm run test:v2             # v2 SDK and x402 client, network-free
 npm run devnet              # local v1 chain + deployed pool, bootstrapped so firstLine() works

@@ -71,7 +71,7 @@ npx priors-v2 join --seat <stakerAddress>                             # a staker
 
 Ways it legitimately fails, and what they mean:
 
-- **`EpochCapReached`** — treasury v4 has spent its $100 of new lines for this 7-day epoch. Wait, or find a seat
+- **`EpochCapReached`** — treasury v4 has spent its $25 of new lines for this 7-day epoch. Wait, or find a seat
   or a backer. Do not retry in a loop.
 - **`NotInvited` / `InviteExpired` / `InviteUsed`** — the code is wrong, stale, or spent. Ask for a new one. There
   is no path around the invite; that is the gate working.
@@ -96,7 +96,7 @@ borrow less, not to borrow later.
 
 ## Step 4: grow
 
-Treasury v4's `raise(agentId)` tops a treasury line up to $50 once the record has 3 qualified loans, 14 days, a
+Treasury v4's `raise(agentId)` tops a treasury line up to $25 once the record has 3 qualified loans, 14 days, a
 score of at least 100 and no default. Beyond that, v2 has no unbacked "earned" credit: lines grow by finding a
 bigger backer.
 

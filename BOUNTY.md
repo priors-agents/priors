@@ -43,7 +43,9 @@ The live v2 contracts on Robinhood Chain (chain 4663), deployed at block 71,702,
 | `TimelockController` (the pool's owner, 48 h) | [`0x5d984C274035F81BB327d532897a902C5125F87c`](https://robinhoodchain.blockscout.com/address/0x5d984C274035F81BB327d532897a902C5125F87c) |
 | `InviteBond` (the bond an automatic invite needs) | [`0x8BE478c754D9124D11e78dB20F5bf4dA45403275`](https://robinhoodchain.blockscout.com/address/0x8BE478c754D9124D11e78dB20F5bf4dA45403275) |
 
-Also in scope: the SDK (`sdk/priors-v2.mjs`, `sdk/float.mjs`), the CLIs, the site's wallet path and the x402
+Also in scope: the SDK (`sdk/priors-v2.mjs`, `sdk/float.mjs`), the npm packages
+[`@priors/x402`](https://www.npmjs.com/package/@priors/x402) and [`@priors/mcp`](https://www.npmjs.com/package/@priors/mcp)
+(`packages/`), the CLIs, the site's wallet path and the x402
 facilitator at `facilitator.priors.trade`, where a bug can cost a *user* money even though the contracts are
 sound — a mis-encoded call, a wrong address, a consent or an invite that redeems against the wrong agent, a
 payment settled twice. The hosted MCP server at `mcp.priors.trade` and the paid API at `api.priors.trade` are in
@@ -53,7 +55,8 @@ secret is a finding.
 **The Telegram invite bot** (`@priors_agents_bot`) is in scope for **public credit only, no payout**, whatever the
 severity. Its inviter key only signs first-line invites, and the treasury caps what those can draw each week
 ($25), so the worst a bot bug can cost is bounded by that cap. A path around the treasury's cap itself is a
-contract finding and is paid as one.
+contract finding and is paid as one, and so is a way to get a treasury line without the bond `InviteBond` is
+meant to hold.
 
 ## Out of scope
 
@@ -107,12 +110,15 @@ ones:
 - **Every line is 100% backed.** v2 has no earned or unbacked credit: a line is vouched out of a backer's locked
   pool shares, and a default burns that backer's shares worth principal and fee. Lenders are not supposed to be
   reachable at all. A path to lender principal is what "Critical" means above.
-- **How first lines are issued.** Today a treasury v4 invite is approved by an admin and signed by the treasury's
-  named inviter after a check that the requester owns the agent; redeeming it also needs the owner's pool consent.
-  New treasury lines are capped at $25 a week by treasury v4's `epochCap`. The invite bot also has a self-service
-  mode that signs for any owner who proves control of an agent; it is off today, and when it is on, one person
-  taking the week's first lines within that cap is a listed residual (AI-1), not a finding. A seat needs a
-  staker's $PRIORS and 3 repaid loans; a backer needs the owner's consent. Credit without one of those is "High".
+- **How first lines are issued.** A treasury v4 invite is signed by the treasury's named inviter after a check that
+  the requester owns the agent; redeeming it also needs the owner's pool consent. The invite bot signs
+  automatically (self-service mode, on) once the agent's owner has posted a 5 USDG bond in `InviteBond`: the bond
+  comes back once the agent has repaid 3 qualified loans (or holds no line 4 days after the deposit), and goes to
+  the Safe if the agent defaults. Without a bond,
+  an invite still needs an admin's approval. New treasury lines are capped at $25 a week by treasury v4's
+  `epochCap`; one person taking the week's first lines within that cap, bond paid, is a listed residual (AI-1), not
+  a finding. A seat needs a staker's $PRIORS and 3 repaid loans; a backer needs the owner's consent. Credit without
+  one of those is "High".
 - **Bounded, known losses.** The self-seat loop (X-3), the invite-to-raise path (T10) and self-service invites
   (AI-1) can cost a backer money, and holding stake only while marking a default (SO-1, SO-2) takes lender fees,
   within the per-epoch caps stated in SECURITY-v2.md. Beating those bounds is a finding; restating them is not.

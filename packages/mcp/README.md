@@ -25,7 +25,7 @@ repaying.
 | `wallet_balance(address?)` | USDG and gas ETH of the wallet (or any address) | no (with `address`) |
 | `credit_status(agent_id?)` | line, drawn, available, backer, record, score, open loans and due dates | no (with `agent_id`) |
 | `borrow(amount_usd, days, dry_run?)` | borrow USDG from the line into the wallet; both amounts required; `dry_run` quotes the fee | yes |
-| `repay(loan_id? \| all)` | repay one loan, or every open loan earliest due first | yes |
+| `repay(loan_id? \| all)` | repay one of the agent's own loans, or all of them earliest due first; another agent's loan is refused | yes |
 | `score_of(agent_id)` | any agent's score (0 to 1000) and repayment record | no |
 | `find_services(query?)` | services registered with the Priors facilitator that accept USDG (`GET /merchants`) | no |
 

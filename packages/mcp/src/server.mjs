@@ -28,7 +28,7 @@ async function loadX402() {
 }
 const { X, C } = await loadX402();
 
-export const VERSION = "0.1.0";
+export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const ADDRESSES = JSON.parse(readFileSync(new URL("../deployments/4663.v2.json", import.meta.url), "utf8"));
 const DEFAULT_PAY_MAX_USD = 0.1;
 
@@ -89,6 +89,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     quote: (id, amount, term) => C.quoteBorrow(contracts, id, amount, term),
     borrow: (id, amount, term) => C.borrowLine(contracts, wallet, id, amount, term),
     repay: (loanId) => C.repayLoan(contracts, wallet, loanId),
+    loanAgent: async (loanId) => (await contracts.pool.getLoan(loanId)).agentId,
     isController: (id, addr) => contracts.pool.isController(id, addr),
     agentsOf: (addr) => discoverAgents(addr),
   };
@@ -274,7 +275,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   // ---- repay ---------------------------------------------------------------------------------------------------
   tool("repay", {
     title: "Repay Priors loans",
-    description: "Repay the agent's Priors loans in full (principal + fee) from the configured wallet's USDG. Give either loan_id for one loan, or all: true to repay every open loan, earliest due first, as far as the balance covers. Moves real money: state the amounts (credit_status lists them) to the user first.",
+    description: "Repay the agent's own Priors loans in full (principal + fee) from the configured wallet's USDG; a loan of another agent is refused. Give either loan_id for one loan, or all: true to repay every open loan, earliest due first, as far as the balance covers. Moves real money: state the amounts (credit_status lists them) to the user first.",
     inputSchema: {
       loan_id: z.number().int().nonnegative().optional().describe("The loan to repay."),
       all: z.boolean().optional().describe("true: repay every open loan of the agent, earliest due first."),
@@ -283,11 +284,16 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   }, async ({ loan_id, all }) => {
     needWallet("repay");
     if ((loan_id === undefined) === (all !== true)) throw new ToolError("Give exactly one of loan_id or all: true.");
+    // Only the loans of an agent this wallet controls: the pool lets anyone repay any loan, and this wallet's USDG is
+    // not for others. PRIORS_AGENT_ID alone is not proof: a stale or mistyped id would point at someone else's agent.
+    const id = await resolveAgent();
+    await needController(id);
     if (loan_id !== undefined) {
+      const owner = BigInt(await credit.loanAgent(BigInt(loan_id)));
+      if (owner !== id) throw new ToolError(`loan #${loan_id} belongs to agent #${owner}, not to agent #${id}. This tool only repays the configured agent's own loans.`);
       const r = await credit.repay(BigInt(loan_id));
       return `Repaid loan #${r.loanId} of agent #${r.agentId}: ${usd(r.paid)} (principal + fee). Tx ${r.hash}.`;
     }
-    const id = await resolveAgent();
     const s = await credit.status(id);
     if (s.openLoans.length === 0) return `Agent #${id} has no open loan. Nothing was repaid.`;
     const done = [], left = [];
