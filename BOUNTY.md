@@ -45,7 +45,14 @@ The live v2 contracts on Robinhood Chain (chain 4663), deployed at block 71,702,
 Also in scope: the SDK (`sdk/priors-v2.mjs`, `sdk/float.mjs`), the CLIs, the site's wallet path and the x402
 facilitator at `facilitator.priors.trade`, where a bug can cost a *user* money even though the contracts are
 sound — a mis-encoded call, a wrong address, a consent or an invite that redeems against the wrong agent, a
-payment settled twice.
+payment settled twice. The hosted MCP server at `mcp.priors.trade` and the paid API at `api.priors.trade` are in
+scope on the same terms: the MCP server is read-only and holds no key, so a way to make it sign, send, or leak a
+secret is a finding.
+
+**The Telegram invite bot** (`@priors_agents_bot`) is in scope for **public credit only, no payout**, whatever the
+severity. Its inviter key only signs first-line invites, and the treasury caps what those can draw each week
+($25), so the worst a bot bug can cost is bounded by that cap. A path around the treasury's cap itself is a
+contract finding and is paid as one.
 
 ## Out of scope
 

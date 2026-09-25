@@ -1,0 +1,32 @@
+{
+  "name": "@priors/mcp",
+  "version": "0.1.0",
+  "private": false,
+  "description": "MCP server for Priors on Robinhood Chain: pay x402 URLs in USDG, read balances, credit lines and scores, borrow and repay. Key from PRIORS_KEY only.",
+  "type": "module",
+  "bin": {
+    "priors-mcp": "bin/priors-mcp.mjs"
+  },
+  "main": "./src/server.mjs",
+  "exports": {
+    ".": "./src/server.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "src",
+    "deployments",
+    "README.md"
+  ],
+  "keywords": ["mcp", "x402", "robinhood-chain", "usdg", "agents", "credit", "priors"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "@priors/x402": "0.1.0",
+    "ethers": "^6.13.4",
+    "zod": "^4.6.5"
+  }
+}

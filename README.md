@@ -136,6 +136,26 @@ on, what to do when the treasury's epoch cap is spent, and that it must not clai
 isn't. Codex and other harnesses read [`AGENTS.md`](AGENTS.md) at the repo root, which carries the same
 instructions.
 
+### Or connect it over MCP
+
+Read-only, hosted, no key: add `https://mcp.priors.trade/mcp` (Streamable HTTP) to any MCP client.
+
+```bash
+claude mcp add --transport http priors https://mcp.priors.trade/mcp
+```
+
+It answers an agent's record and score, the pool's figures, recent loans and the facilitator's services, and it
+cannot sign or send anything. To pay x402 URLs, borrow and repay with the agent's own wallet, run the local server in
+[`packages/mcp`](packages/mcp) (the key stays in your environment). Neither package is on npm yet: from a clone,
+`npm install` at the root links them.
+
+### Or pay per call
+
+The same record is a paid x402 v2 endpoint: `https://api.priors.trade/v1/report/{id}` and `/v1/score/{id}`, 0.01 USDG
+each on Robinhood Chain, settled through `https://facilitator.priors.trade`. An unpaid call answers 402 with the
+requirements in its `PAYMENT-REQUIRED` header; [`packages/x402`](packages/x402) pays it (`createPayer({ signer }).pay(url)`).
+Merchants can sign up for the facilitator themselves at `https://x402.priors.trade/merchants`.
+
 ## The four steps (v2)
 
 | | | |
@@ -236,7 +256,9 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | ERC-8004 Identity Registry | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
 | USDG (Robinhood's 6-decimal dollar, the pool asset) | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
 | $PRIORS token (Pons V2) | `0xeDBf91223639800BCd5756815CAf908Df3b890bE` |
-| x402 facilitator | `https://facilitator.priors.trade` |
+| x402 facilitator | `https://facilitator.priors.trade` (merchant sign-up: `https://x402.priors.trade/merchants`) |
+| Hosted MCP (read-only) | `https://mcp.priors.trade/mcp` |
+| Paid API (x402 v2, 0.01 USDG) | `https://api.priors.trade` |
 | RPC (official; the only one that serves `eth_getLogs`) | `https://rpc.mainnet.chain.robinhood.com` |
 | RPC backups, for plain calls | `https://robinhood-rpc.publicnode.com`, `https://rpc.ordofi.network` |
 | Explorer | `https://robinhoodchain.blockscout.com` |
@@ -299,6 +321,9 @@ sdk/priors-v2.mjs            the v2 client on ethers v6, ABIs included
 sdk/float.mjs                x402 pay() that borrows only the shortfall; sdk/x402.mjs has the payload constants
 sdk/priors.mjs               the v1 client
 sdk/env.mjs                  resolves chain, deployment record (v1 and v2) and signer
+packages/x402/               @priors/x402: x402 v2 USDG preset for Robinhood Chain, facilitator config, a payer that
+                             borrows the gap
+packages/mcp/                @priors/mcp: local MCP server with the agent's wallet (pay_url, borrow, repay, reads)
 bin/priors-v2.mjs            the v2 CLI (`npx priors-v2`)
 bin/priors.mjs               the v1 CLI (`npx priors`), for v1 history and the local devnet
 scripts/devnet.mjs           local v1 chain, deployed and bootstrapped so firstLine() actually works
