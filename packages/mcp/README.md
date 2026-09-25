@@ -97,3 +97,7 @@ or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIO
 
 "What's the Priors score of agent 6228?" · "How much USDG does my wallet hold?" · "Find services that sell token
 prices" · "Pay https://api.example.com/report, up to 5 cents" · "Borrow $5 for 7 days, show me the fee first".
+
+## Source
+
+[github.com/priors-agents/priors](https://github.com/priors-agents/priors/tree/main/packages/mcp), MIT.

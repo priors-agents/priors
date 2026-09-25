@@ -146,7 +146,7 @@ const fetchWithPay = wrapFetchWithPayment(fetch, createUsdgClient({ signer, maxP
 `@priors/x402/credit` has the Priors v2 pieces the MCP server uses: `creditContracts`, `creditStatus`, `quoteBorrow`,
 `borrowLine`, `repayLoan`, `settleLoans`, `balances`, `borrowGap`.
 
-## Tests
+## Source
 
-`npm run test:packages` in the Priors repository: unit tests with mocks, and, with `RPC_URL` set, an anvil fork of
-chain 4663 where a standard `@x402/express` server priced with `registerUsdg` is paid by `createPayer`.
+[github.com/priors-agents/priors](https://github.com/priors-agents/priors/tree/main/packages/x402), MIT. The facilitator,
+its merchant sign-up and the live settlements are at [x402.priors.trade](https://x402.priors.trade).

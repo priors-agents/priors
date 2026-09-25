@@ -1,6 +1,6 @@
 {
   "name": "@priors/x402",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "x402 v2 on Robinhood Chain (eip155:4663) in USDG: a money parser for ExactEvmScheme, the Priors facilitator config, and a payer that borrows the gap from a Priors credit line.",
   "type": "module",
@@ -24,8 +24,24 @@
     "src",
     "README.md"
   ],
-  "keywords": ["x402", "robinhood-chain", "usdg", "agents", "credit", "priors"],
+  "keywords": [
+    "x402",
+    "robinhood-chain",
+    "usdg",
+    "agents",
+    "credit",
+    "priors"
+  ],
   "license": "MIT",
+  "homepage": "https://x402.priors.trade",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/priors-agents/priors.git",
+    "directory": "packages/x402"
+  },
+  "bugs": {
+    "url": "https://github.com/priors-agents/priors/issues"
+  },
   "engines": {
     "node": ">=20"
   },
@@ -40,7 +56,11 @@
     "@x402/mcp": "^2.27.0"
   },
   "peerDependenciesMeta": {
-    "@x402/express": { "optional": true },
-    "@x402/mcp": { "optional": true }
+    "@x402/express": {
+      "optional": true
+    },
+    "@x402/mcp": {
+      "optional": true
+    }
   }
 }
