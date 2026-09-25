@@ -121,10 +121,16 @@ Amounts: a `bigint` or integer is atomic USDG (6 decimals: `100000n` = $0.10); a
   pending, the result is `{ pending: true, paymentHeaders }`: call `payer.resend(url, paymentHeaders)` later, and do
   not call `pay()` again for the same purchase.
 - **Legacy v1** 402 bodies (`network: "robinhood"`, `X-PAYMENT`) are paid the way `sdk/float.mjs` pays them.
+- **No redirects.** Requests go out with `redirect: "manual"` unless you pass another `redirect` in `init`: a signed
+  payment never travels to a host you did not name, and a 3xx comes back as the answer.
+- **Bounded.** Bodies are read up to 256 KB (`readCapped`). `timeoutMs` bounds each request and `signal` the whole
+  call; a timeout once the payment is out returns `{ pending: true, timedOut: true, paymentHeaders }`, never an error.
+- **`signed`**: every result of a signed payment carries `signed: { paymentHeaders, validBefore }`. Until
+  `validBefore` the merchant can still cash it, so a retry of the same purchase must `resend` these headers.
 
 Refusals throw a `PayError` with a `code`: `PRICE_ABOVE_MAX_PRICE`, `PRICE_ABOVE_MAX_BORROW`,
 `MIN_LOAN_ABOVE_MAX_BORROW`, `ABOVE_MAX_LOAN`, `TERM_OUT_OF_RANGE`, `FEE_TOO_HIGH`, `NO_POOL`, `NO_USDG_REQUIREMENT`,
-`BAD_402`, `BORROW_WOULD_REVERT`, `NO_SIGNER`, `NO_PROVIDER`.
+`BAD_402`, `BORROW_WOULD_REVERT`, `NO_SIGNER`, `NO_PROVIDER`, `NOT_CONTROLLER` (`repayLoan`, `settleLoans`).
 
 ### Why `pay()` is not just `@x402/fetch`'s `wrapFetchWithPayment`
 

@@ -111,6 +111,8 @@ export async function borrowGap({ signer, pool, agentId, price, balance, maxBorr
 export async function settleLoans({ signer, pool, agentId }) {
   const poolC = poolContract(pool, signer);
   const me = await signer.getAddress();
+  // Only the signer's own agent: a wrong or stale agentId would otherwise pay a stranger's loans (P-7).
+  if (!(await poolC.isController(agentId, me))) throw new PayError("NOT_CONTROLLER", `agent #${agentId} is not controlled by ${me} (neither its owner nor its pool delegate)`);
   const usdg = new ethers.Contract(await poolC.usdg(), ERC20_ABI, signer);
   const ids = await poolC.loansOf(agentId);
   const loans = (await Promise.all(ids.map(async (id) => ({ id, l: await poolC.getLoan(id) })))).filter((x) => x.l.status === LOAN_ACTIVE);

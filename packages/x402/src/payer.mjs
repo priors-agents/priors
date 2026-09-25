@@ -24,6 +24,31 @@ import { PayError, borrowGap, settleLoans, poolContract, ERC20_ABI } from "./cre
 
 const sameAddr = (a, b) => typeof a === "string" && typeof b === "string" && ethers.isAddress(a) && ethers.isAddress(b) && ethers.getAddress(a) === ethers.getAddress(b);
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Merchant bodies are read at most this far: a merchant that streams gigabytes cannot exhaust the payer's memory. */
+export const MAX_BODY_BYTES = 256 * 1024;
+
+/**
+ * A response body as text, at most `max` bytes (UTF-8); the rest is cancelled, not read. `cut` says it was.
+ * @returns {Promise<{ text: string, cut: boolean }>}
+ */
+export async function readCapped(response, max = MAX_BODY_BYTES) {
+  if (!response?.body) return { text: "", cut: false };
+  const reader = response.body.getReader();
+  const chunks = [];
+  let n = 0, cut = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (n + value.byteLength > max) { chunks.push(value.subarray(0, max - n)); n = max; cut = true; await reader.cancel().catch(() => {}); break; }
+    chunks.push(value); n += value.byteLength;
+  }
+  const buf = new Uint8Array(n);
+  let o = 0;
+  for (const c of chunks) { buf.set(c, o); o += c.byteLength; }
+  return { text: new TextDecoder().decode(buf), cut };
+}
+
+const isAbort = (e) => e?.name === "AbortError" || e?.name === "TimeoutError";
 
 /** The capped window: the merchant's maxTimeoutSeconds, at most `cap` (never above 600 s), 60 s if it names none. */
 function validityWindow(asked, cap = MAX_VALIDITY_SECONDS) {
@@ -130,7 +155,7 @@ async function isPending(response) {
     if (!h) continue;
     try { if (decodePaymentResponseHeader(h)?.errorReason === "settlement_pending") return true; } catch (_) { /* not a settle response */ }
   }
-  try { const b = await response.clone().json(); return b?.pending === true || b?.errorReason === "settlement_pending"; } catch (_) { return false; }
+  try { const b = JSON.parse((await readCapped(response.clone(), 64 * 1024)).text); return b?.pending === true || b?.errorReason === "settlement_pending"; } catch (_) { return false; }
 }
 
 function settlementOf(response) {
@@ -141,27 +166,51 @@ function settlementOf(response) {
   return undefined;
 }
 
-const asRequest = (input, init) => (input instanceof Request && !init ? input : new Request(input, init));
+// A redirect is never followed by default: a signed payment header must not travel to a host the caller did not
+// name, and a 3xx is handed back as the answer (its Location is the caller's to judge).
+const asRequest = (input, init) => new Request(input, { redirect: "manual", ...(init || {}) });
+
+/**
+ * fetchImpl with a per-request timeout (`timeoutMs`, 0 = none) and an overall `signal`, both optional.
+ * @returns {(req: Request) => Promise<Response>}
+ */
+function timedFetch(fetchImpl, { timeoutMs = 0, signal } = {}) {
+  if (!timeoutMs && !signal) return fetchImpl;
+  return (req) => {
+    const signals = [timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null, signal || null].filter(Boolean);
+    return fetchImpl(new Request(req, { signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals) }));
+  };
+}
 
 /**
  * Send an already-signed payment (`paymentHeaders`, e.g. {"PAYMENT-SIGNATURE": "…"}) and keep resending the SAME
  * one while the merchant answers 402 pending (x402 v2 `settlement_pending`, or a legacy `{pending:true}` body).
- * Never signs anything.
- * @returns {Promise<{ response: Response, pending: boolean, paymentHeaders?: Record<string,string> }>}
+ * Never signs anything. A timeout or an abort once the payment is out is reported as pending (`timedOut: true`,
+ * a synthetic 504), with the headers to resend: the merchant may still settle it, so it must not be signed again.
+ * @returns {Promise<{ response: Response, pending: boolean, timedOut?: boolean, paymentHeaders?: Record<string,string> }>}
  */
-export async function resend(input, paymentHeaders, { init, fetchImpl = globalThis.fetch, retries = 6, sleep = defaultSleep } = {}) {
+export async function resend(input, paymentHeaders, { init, fetchImpl = globalThis.fetch, retries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = 0, signal } = {}) {
   const base = asRequest(input, init);
+  const fx = timedFetch(fetchImpl, { timeoutMs, signal });
   const send = () => {
     const r = base.clone();
     for (const [k, v] of Object.entries(paymentHeaders)) r.headers.set(k, v);
     r.headers.set("Access-Control-Expose-Headers", "PAYMENT-RESPONSE,X-PAYMENT-RESPONSE");
-    return fetchImpl(r);
+    return fx(r);
   };
-  let response = await send();
-  for (let i = 0; i < retries && (await isPending(response)); i++) {
-    const after = Number(response.headers.get("retry-after"));
-    await sleep(1000 * Math.min(30, Math.max(1, Number.isFinite(after) && after > 0 ? after : 5)));
+  const timedOut = () => ({ response: new Response(null, { status: 504, statusText: "payer timeout" }), pending: true, timedOut: true, paymentHeaders });
+  let response;
+  try {
     response = await send();
+    for (let i = 0; i < retries && (await isPending(response)); i++) {
+      if (signal?.aborted) return timedOut();
+      const after = Number(response.headers.get("retry-after"));
+      await sleep(Math.min(maxSleepMs, 1000 * Math.min(30, Math.max(1, Number.isFinite(after) && after > 0 ? after : 5))));
+      response = await send();
+    }
+  } catch (e) {
+    if (isAbort(e)) return timedOut();
+    throw e;
   }
   const pending = await isPending(response);
   return { response, pending, ...(pending ? { paymentHeaders } : {}) };
@@ -173,7 +222,7 @@ export async function resend(input, paymentHeaders, { init, fetchImpl = globalTh
  * @returns {import("../index.d.ts").Payer}
  */
 export function createPayer(opts = {}) {
-  const { signer, agentId, pool, termSeconds, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxValiditySeconds = MAX_VALIDITY_SECONDS } = opts;
+  const { signer, agentId, pool, termSeconds, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = 0, signal, maxValiditySeconds = MAX_VALIDITY_SECONDS } = opts;
   if (!signer || typeof signer.getAddress !== "function" || typeof signer.signTypedData !== "function") {
     throw new PayError("NO_SIGNER", "createPayer: `signer` must be an ethers v6 Signer (a Wallet connected to a Robinhood Chain provider)");
   }
@@ -182,15 +231,18 @@ export function createPayer(opts = {}) {
   const maxBorrow = toAtomicUsdg(opts.maxBorrow ?? 0n, "maxBorrow");
   const http = new x402HTTPClient(new x402Client());
 
+  const fx = timedFetch(fetchImpl, { timeoutMs, signal });
+  const resendOpts = { fetchImpl, retries: pendingRetries, sleep, maxSleepMs, timeoutMs, signal };
+
   async function pay(input, init) {
     const base = asRequest(input, init);
-    const first = await fetchImpl(base.clone());
+    const first = await fx(base.clone()); // a timeout here throws: nothing is signed yet
     if (first.status !== 402) return { response: first, paid: 0n, borrowed: 0n, loanId: null, dueAt: null };
 
     const poolC = pool ? poolContract(pool, signer) : null;
     const usdgAddr = asset || (poolC ? await poolC.usdg() : robinhood.usdg);
     let body;
-    try { const t = await first.text(); body = t ? JSON.parse(t) : undefined; } catch (_) { body = undefined; }
+    try { const t = (await readCapped(first)).text; body = t ? JSON.parse(t) : undefined; } catch (_) { body = undefined; }
     let paymentRequired;
     try { paymentRequired = http.getPaymentRequiredResponse((n) => first.headers.get(n), body); } catch (_) {
       if (body && body.x402Version === 2 && Array.isArray(body.accepts)) paymentRequired = body;
@@ -213,22 +265,27 @@ export function createPayer(opts = {}) {
     if (balance < price) loan = await borrowGap({ signer, pool: poolC, agentId, price, balance, maxBorrow, termSeconds, maxFee, me });
 
     // Exactly one signature for this purchase, from here on only resent.
-    let paymentHeaders;
+    let paymentHeaders, validBefore;
     if (version === 2) {
       const client = createUsdgClient({ signer, maxPrice, maxValiditySeconds, asset: usdgAddr, x402Signer: toX402Signer(signer, me) });
       const payload = await client.createPaymentPayload({ ...paymentRequired, accepts: [req] });
       paymentHeaders = http.encodePaymentSignatureHeader(payload);
+      validBefore = Number(payload?.payload?.authorization?.validBefore);
     } else {
-      paymentHeaders = { "X-PAYMENT": await signPaymentV1(signer, req, { maxValiditySeconds }) };
+      const header = await signPaymentV1(signer, req, { maxValiditySeconds });
+      paymentHeaders = { "X-PAYMENT": header };
+      validBefore = Number(JSON.parse(Buffer.from(header, "base64").toString("utf8")).payload.authorization.validBefore);
     }
-    const r = await resend(base, paymentHeaders, { fetchImpl, retries: pendingRetries, sleep });
+    const r = await resend(base, paymentHeaders, resendOpts);
     const settlement = r.response.ok ? settlementOf(r.response) : undefined;
-    return { ...r, paid: r.response.ok ? price : 0n, borrowed: loan.borrowed, loanId: loan.loanId, dueAt: loan.dueAt, requirement: req, x402Version: version, ...(settlement ? { settlement } : {}) };
+    // `signed` is always returned once a payment is out: until validBefore the merchant can still cash it, so a
+    // caller that retries must resend these headers, never sign a new payment for the same purchase.
+    return { ...r, paid: r.response.ok ? price : 0n, borrowed: loan.borrowed, loanId: loan.loanId, dueAt: loan.dueAt, requirement: req, x402Version: version, signed: { paymentHeaders, validBefore }, ...(settlement ? { settlement } : {}) };
   }
 
   return {
     pay,
-    resend: (input, paymentHeaders, init) => resend(input, paymentHeaders, { init, fetchImpl, retries: pendingRetries, sleep }),
+    resend: (input, paymentHeaders, init) => resend(input, paymentHeaders, { ...resendOpts, init }),
     settleLoans: () => {
       if (!pool || agentId === undefined || agentId === null) throw new PayError("NO_POOL", "settleLoans: createPayer was given no pool/agentId");
       return settleLoans({ signer, pool, agentId });

@@ -21,6 +21,7 @@ export const POOL_V2_FLOAT_ABI = [
   "function borrow(uint256 agentId, uint256 amount, uint64 term, address to, uint256 maxFee) returns (uint256)",
   "function repay(uint256 loanId, uint256 expectedAgentId, uint256 maxDue)",
   "function loansOf(uint256 id) view returns (uint256[])",
+  "function isController(uint256 id, address who) view returns (bool)",
   `function getLoan(uint256 loanId) view returns (${LOAN})`,
   "event Borrowed(uint256 indexed loanId, uint256 indexed agentId, uint256 indexed sponsorId, uint256 principal, uint256 fee, uint64 dueAt, address to)",
 ];
@@ -176,6 +177,8 @@ export async function resend(url, paymentHeader, { init = {}, fetchImpl = fetch,
 export async function settleLoans({ signer, pool, agentId }) {
   const poolC = poolContract(pool, signer);
   const me = await signer.getAddress();
+  // Only the signer's own agent: a wrong or stale agentId would otherwise pay a stranger's loans.
+  if (!(await poolC.isController(agentId, me))) throw new FloatError("NOT_CONTROLLER", `agent #${agentId} is not controlled by ${me} (neither its owner nor its pool delegate)`);
   const usdg = new ethers.Contract(await poolC.usdg(), ERC20, signer);
   const ids = await poolC.loansOf(agentId);
   const loans = (await Promise.all(ids.map(async (id) => ({ id, l: await poolC.getLoan(id) })))).filter((x) => x.l.status === LOAN_ACTIVE);

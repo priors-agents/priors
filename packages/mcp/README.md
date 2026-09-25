@@ -21,7 +21,7 @@ repaying.
 
 | tool | what it does | needs the key |
 |---|---|---|
-| `pay_url(url, method?, body?, max_price_usd?, max_borrow_usd?)` | fetch a URL, pay its x402 402 in USDG if the price is ≤ `max_price_usd` (default **$0.10**); borrows the gap only if `max_borrow_usd` is given | yes |
+| `pay_url(url, method?, body?, max_price_usd?, max_borrow_usd?)` | fetch an https URL, pay its x402 402 in USDG if the price is ≤ `max_price_usd` (default **$0.10**); borrows the gap only if `max_borrow_usd` is given. Refuses private and local addresses, never follows a redirect, answers within 45 s, and never signs a second payment for a purchase that is still pending (a new call resends the same one) | yes |
 | `wallet_balance(address?)` | USDG and gas ETH of the wallet (or any address) | no (with `address`) |
 | `credit_status(agent_id?)` | line, drawn, available, backer, record, score, open loans and due dates | no (with `agent_id`) |
 | `borrow(amount_usd, days, dry_run?)` | borrow USDG from the line into the wallet; both amounts required; `dry_run` quotes the fee | yes |
@@ -29,8 +29,9 @@ repaying.
 | `score_of(agent_id)` | any agent's score (0 to 1000) and repayment record | no |
 | `find_services(query?)` | services registered with the Priors facilitator that accept USDG (`GET /merchants`) | no |
 
-Tools that move money state the amounts in their answer, and their descriptions tell the assistant to confirm with
-you first. They act on Robinhood Chain mainnet.
+Tools that move money state the amounts in their answer, are marked destructive for MCP clients, and their
+descriptions tell the assistant to confirm with you first. Merchant text (response bodies, listings, redirect targets)
+comes back between random `<<merchant-data …>>` markers, as data. They act on Robinhood Chain mainnet.
 
 ## Configure
 
@@ -46,6 +47,9 @@ dedicated agent wallet holding only what the agent may spend.
 | `PRIORS_FACILITATOR` | `https://facilitator.priors.trade` | where `find_services` lists merchants |
 | `PRIORS_MAX_PRICE_USD` | `1.00` | ceiling on what `pay_url` may be told to pay per call |
 | `PRIORS_MAX_BORROW_USD` | `25` | ceiling on `borrow` and on `pay_url`'s `max_borrow_usd` |
+| `PRIORS_MAX_SPEND_USD` | `5` | most `pay_url` may sign in total while the server runs (counted when signed) |
+| `PRIORS_MAX_BORROW_TOTAL_USD` | `25` | most `borrow` and `pay_url` may borrow in total while the server runs |
+| `PRIORS_ALLOW_LOCAL` | off | `1` lets `pay_url` reach `http://localhost` and private addresses (local testing only) |
 
 Contract addresses (pool, lens, registry, USDG) come from `deployments/4663.v2.json`, bundled in the package.
 
@@ -58,7 +62,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp"],
+      "args": ["-y", "@priors/mcp@0.1.5"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -80,7 +84,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp"],
+      "args": ["-y", "@priors/mcp@0.1.5"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -90,7 +94,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 }
 ```
 
-or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp`
+or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.1.5`
 (the key is expanded by your shell from the environment; do not paste it on the command line).
 
 ## Try it
