@@ -151,7 +151,17 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   // One money call at a time (pay_url, borrow, repay): MCP clients may send tool calls concurrently, and each check
   // above (an outstanding payment for this URL, the session totals) must see the previous call's result (Codex review).
   let moneyQueue = Promise.resolve();
-  const serial = (fn) => (args) => { const run = moneyQueue.then(() => fn(args)); moneyQueue = run.catch(() => {}); return run; };
+  // The time budget counts from the call's arrival, not from its turn: a call queued behind a slow one must still answer
+  // before the client gives up (a client timeout hides the "do not retry" answer and invites a retry).
+  const serial = (fn) => (args) => {
+    const deadline = Date.now() + callBudgetMs;
+    const run = moneyQueue.then(() => {
+      if (Date.now() >= deadline - Math.min(1000, callBudgetMs / 10)) throw new ToolError("another payment call was still running and this one ran out of time before it could start. Nothing was signed or paid: try again.");
+      return fn(args, deadline);
+    });
+    moneyQueue = run.catch(() => {});
+    return run;
+  };
   // The real network goes through the rebinding-proof dispatcher; an injected fetchImpl (tests, embedders) is used as given.
   const payFetch = fetchImpl === globalThis.fetch && !allowLocal ? guardedFetch() : fetchImpl;
 
@@ -270,7 +280,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       max_borrow_usd: z.number().nonnegative().optional().describe("Most to borrow from the Priors line if the wallet is short, in US dollars. Default 0: never borrow."),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  }, serial(async ({ url, method = "GET", body, max_price_usd, max_borrow_usd }) => {
+  }, serial(async ({ url, method = "GET", body, max_price_usd, max_borrow_usd }, deadline) => {
     const signer = needWallet("pay_url");
     const u = await checkTarget(url);
     if (method === "GET" && body !== undefined) throw new ToolError("A GET request cannot carry a body: use POST (or another method) with body.");
@@ -291,7 +301,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     let r;
     if (prior) {
       // A payment for this purchase is already out and still cashable: send that same one, never a second.
-      r = await X.createPayer({ signer, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(callBudgetMs), ...(sleep ? { sleep } : {}) }).resend(url, prior.paymentHeaders, init);
+      r = await X.createPayer({ signer, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}) }).resend(url, prior.paymentHeaders, init);
       r = { ...r, requirement: prior.requirement, paid: r.response.ok ? prior.price : 0n, borrowed: 0n, signed: prior, resent: true, ...(r.response.ok ? { settlement: settlementOf(r.response) } : {}) };
       lines.push("No new payment was signed: the same signed payment was sent again.");
     } else {
@@ -299,7 +309,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       if (maxBorrow > 0n && session.borrowed + maxBorrow > borrowTotalCap) throw new ToolError(`this could bring what is borrowed in this session to ${usd(session.borrowed + maxBorrow)}, above ${usd(borrowTotalCap)} (PRIORS_MAX_BORROW_TOTAL_USD).`);
       let agentId;
       if (maxBorrow > 0n) { agentId = await resolveAgent(); await needController(agentId); }
-      const payer = X.createPayer({ signer, maxPrice, maxBorrow, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(callBudgetMs), ...(sleep ? { sleep } : {}), ...(maxBorrow > 0n ? { pool: addresses.pool, agentId } : {}) });
+      const payer = X.createPayer({ signer, maxPrice, maxBorrow, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}), ...(maxBorrow > 0n ? { pool: addresses.pool, agentId } : {}) });
       try { r = await payer.pay(url, init); } catch (e) {
         if (e?.name === "TimeoutError" || e?.name === "AbortError") throw new ToolError(`${method} ${u.href} did not answer in time. Nothing was signed or paid.`);
         throw e;
