@@ -152,7 +152,7 @@ cannot sign or send anything. To pay x402 URLs, borrow and repay with the agent'
 
 ### Or pay per call
 
-The same record is a paid x402 v2 endpoint: `https://api.priors.trade/v1/report/{id}` and `/v1/score/{id}`, 0.01 USDG
+The same record is a paid x402 v2 endpoint: `https://api.priors.trade/v1/report/{id}` and `/v1/score/{id}`, 0.03 USDG
 each on Robinhood Chain, settled through `https://facilitator.priors.trade`. An unpaid call answers 402 with the
 requirements in its `PAYMENT-REQUIRED` header; [`packages/x402`](packages/x402) pays it (`createPayer({ signer }).pay(url)`).
 Merchants can sign up for the facilitator themselves at `https://x402.priors.trade/merchants`.
@@ -261,7 +261,7 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | $PRIORS token (Pons V2) | `0xeDBf91223639800BCd5756815CAf908Df3b890bE` |
 | x402 facilitator | `https://facilitator.priors.trade` (merchant sign-up: `https://x402.priors.trade/merchants`) |
 | Hosted MCP (read-only) | `https://mcp.priors.trade/mcp` |
-| Paid API (x402 v2, 0.01 USDG) | `https://api.priors.trade` |
+| Paid API (x402 v2, 0.03 USDG) | `https://api.priors.trade` |
 | RPC (official; the only one that serves `eth_getLogs`) | `https://rpc.mainnet.chain.robinhood.com` |
 | RPC backups, for plain calls | `https://robinhood-rpc.publicnode.com`, `https://rpc.ordofi.network` |
 | Explorer | `https://robinhoodchain.blockscout.com` |
