@@ -200,6 +200,55 @@ contract InviteBondTest is TreasuryV4Base {
     }
 
     // ------------------------------------------------------------------
+    // A new owner is never locked out by the old owner's bond (changes review, should_fix)
+    // ------------------------------------------------------------------
+
+    function test_newOwner_replacesStaleBond_oldDepositorRefunded() public {
+        _deposit(agentOp, AGENT);
+        _firstLine(AGENT, AGENT_PK); // a line opened under the old bond, never used
+        vm.prank(agentOp);
+        reg.transferFrom(agentOp, agentOp2, AGENT);
+
+        vm.prank(agentOp);
+        vm.expectRevert(abi.encodeWithSelector(InviteBond.NotOwner.selector, AGENT));
+        bond.deposit(AGENT); // the seller cannot post for it any more
+
+        uint256 sellerBefore = usdc.balanceOf(agentOp);
+        uint256 buyerBefore = usdc.balanceOf(agentOp2);
+        vm.warp(vm.getBlockTimestamp() + 10 days);
+        _deposit(agentOp2, AGENT);
+        assertEq(usdc.balanceOf(agentOp), sellerBefore + BOND, "the old bond went back to its depositor");
+        assertEq(usdc.balanceOf(agentOp2), buyerBefore - BOND, "the buyer posted one bond");
+        assertEq(usdc.balanceOf(address(bond)), BOND, "exactly one bond covers the agent");
+        assertEq(bond.activeCount(), 1, "still one entry");
+        InviteBond.Bond memory b = bond.bonds(AGENT);
+        assertEq(b.depositor, agentOp2);
+        assertEq(b.at, vm.getBlockTimestamp(), "a fresh date: the 4-day wait restarts");
+
+        // the buyer cannot post twice, nor take it back at once while the line exists
+        vm.prank(agentOp2);
+        vm.expectRevert(abi.encodeWithSelector(InviteBond.AlreadyBonded.selector, AGENT));
+        bond.deposit(AGENT);
+        assertFalse(bond.releasable(AGENT));
+        // and a default now forfeits the buyer's bond, not the seller's
+        uint256 loan = _borrow(agentOp2, AGENT, 5 * USDC, 7 days);
+        _default(loan);
+        bond.slash(AGENT);
+        assertEq(usdc.balanceOf(safe), BOND);
+    }
+
+    function test_superseding_restartsTheUnusedWait() public {
+        _deposit(agentOp, AGENT);
+        vm.warp(vm.getBlockTimestamp() + UNUSED + 1); // the old bond is past its wait, no line
+        vm.prank(agentOp);
+        reg.transferFrom(agentOp, agentOp2, AGENT);
+        _deposit(agentOp2, AGENT);
+        assertFalse(bond.releasable(AGENT), "a buyer cannot bond, get an invite and release at once");
+        vm.warp(vm.getBlockTimestamp() + UNUSED);
+        assertTrue(bond.releasable(AGENT));
+    }
+
+    // ------------------------------------------------------------------
     // Bookkeeping
     // ------------------------------------------------------------------
 

@@ -103,18 +103,33 @@ contract InviteBond is ReentrancyGuard {
         unusedAfter = unusedAfter_;
     }
 
-    /// @notice Lock `amount` USDG behind agent `agentId`. Only the agent's owner, once per agent at a time, and
-    ///         never for an agent that has defaulted. Needs `amount` of USDG approved to this contract.
+    /// @notice Lock `amount` USDG behind agent `agentId`. Only the agent's owner, and never for an agent that has
+    ///         defaulted. Needs `amount` of USDG approved to this contract.
+    ///
+    ///         One bond per agent. If the agent changed hands since its bond was posted, the new owner's deposit
+    ///         replaces it: the old bond goes back to its depositor in the same transaction, so the agent stays
+    ///         covered by exactly one bond and a stale bond never locks a new owner out. The new bond starts fresh
+    ///         (its own date and record baseline): inheriting the old date would let a buyer bond, get an invite,
+    ///         release at once through the no-line path and redeem the invite unbonded. Moving the agent between
+    ///         one's own wallets gains nothing: the amount locked against it never drops. The depositor itself
+    ///         cannot post twice.
     function deposit(uint256 agentId) external nonReentrant {
-        if (_bonds[agentId].depositor != address(0)) revert AlreadyBonded(agentId);
         if (registry.ownerOf(agentId) != msg.sender) revert NotOwner(agentId);
         CreditPoolV2.Agent memory a = pool.getAgent(agentId);
         if (a.defaulted) revert AgentDefaulted(agentId);
+        Bond memory old = _bonds[agentId];
+        if (old.depositor == msg.sender) revert AlreadyBonded(agentId);
         _bonds[agentId] =
             Bond({depositor: msg.sender, at: uint64(block.timestamp), amount: amount, qualifiedAt: a.qualifiedRepaid});
-        _active.push(agentId);
-        _slot[agentId] = _active.length;
+        if (old.depositor == address(0)) {
+            _active.push(agentId);
+            _slot[agentId] = _active.length;
+        }
         usdg.safeTransferFrom(msg.sender, address(this), amount);
+        if (old.depositor != address(0)) {
+            usdg.safeTransfer(old.depositor, old.amount);
+            emit Released(agentId, old.depositor, old.amount);
+        }
         emit Bonded(agentId, msg.sender, amount);
     }
 
@@ -191,6 +206,10 @@ contract InviteBond is ReentrancyGuard {
     // Internals
     // ------------------------------------------------------------------
 
+    /// The seasoning bar is the treasury's live `minQualified`, read at release time, not snapshotted at deposit:
+    /// the bond comes back when the treasury itself would trust the agent with a raise. If the Safe moves that bar,
+    /// bonds already posted follow it. This is the one input outside this contract, and it is the treasury
+    /// owner's, the same party that sizes the lines the bond covers.
     function _needed() internal view returns (uint256 n) {
         (,,,,,, n,,) = treasury.rules();
         if (n == 0) n = 1;

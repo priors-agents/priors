@@ -41,7 +41,7 @@ The live v2 contracts on Robinhood Chain (chain 4663), deployed at block 71,702,
 | `TreasurySponsorV4` (root `#6228`) | [`0x0c5091235A25bBFD3F5a009cBe04120D0CBAD573`](https://robinhoodchain.blockscout.com/address/0x0c5091235A25bBFD3F5a009cBe04120D0CBAD573) |
 | `SeatVaultV2` (root `#6229`) | [`0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F`](https://robinhoodchain.blockscout.com/address/0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F) |
 | `TimelockController` (the pool's owner, 48 h) | [`0x5d984C274035F81BB327d532897a902C5125F87c`](https://robinhoodchain.blockscout.com/address/0x5d984C274035F81BB327d532897a902C5125F87c) |
-| `InviteBond` (the bond an automatic invite needs) | [`0xd7D85590173aF18459e8D158f4E6B243837a60b8`](https://robinhoodchain.blockscout.com/address/0xd7D85590173aF18459e8D158f4E6B243837a60b8) |
+| `InviteBond` (the bond an automatic invite needs) | [`0x8BE478c754D9124D11e78dB20F5bf4dA45403275`](https://robinhoodchain.blockscout.com/address/0x8BE478c754D9124D11e78dB20F5bf4dA45403275) |
 
 Also in scope: the SDK (`sdk/priors-v2.mjs`, `sdk/float.mjs`), the CLIs, the site's wallet path and the x402
 facilitator at `facilitator.priors.trade`, where a bug can cost a *user* money even though the contracts are

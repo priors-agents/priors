@@ -253,7 +253,7 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | **SeatVaultV2** (live, root `#6229`) | `0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F` |
 | TimelockController (owns the pool, 48 h) | `0x5d984C274035F81BB327d532897a902C5125F87c` |
 | Safe (2-of-3; proposes to the timelock, owns treasury v4 and the seat vault) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
-| InviteBond (the bond an automatic invite needs; no admin) | `0xd7D85590173aF18459e8D158f4E6B243837a60b8` |
+| InviteBond (the bond an automatic invite needs; no admin) | `0x8BE478c754D9124D11e78dB20F5bf4dA45403275` |
 | ERC-8004 Identity Registry | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
 | USDG (Robinhood's 6-decimal dollar, the pool asset) | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
 | $PRIORS token (Pons V2) | `0xeDBf91223639800BCd5756815CAf908Df3b890bE` |
@@ -315,7 +315,7 @@ src/TreasurySponsor.sol      v1 treasury (v3)
 src/ReserveFunder.sol        v1 creator-fee sweep into the reserve
 src/libraries/ScoreLib.sol   the trust score (shared by v1 and the v2 lens)
 src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPonsFeeEscrow
-test/                        415 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
+test/                        417 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
                              review-v2/), and the v1 suite
 script/DeployV2.s.sol        deploys the v2 set under a 48 h timelock, writes deployments/<chainId>.v2.json
 script/Deploy.s.sol          v1 deploy (mocks on dev chains), writes deployments/<chainId>.json
@@ -347,7 +347,7 @@ small and we say so up front rather than after you have spent a week.
 ## Working on it
 
 ```bash
-forge test                     # 415 tests, all green (fork-only tests skip without FORK_RPC)
+forge test                     # 417 tests, all green (fork-only tests skip without FORK_RPC)
 npm test                       # SDK, CLI and publish-guard checks (needs Foundry for the v1 end-to-end run)
 npm run test:v2                # the v2 SDK and x402 client, network-free
 npm run devnet                 # local chain + deployed, bootstrapped v1 pool
