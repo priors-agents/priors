@@ -15,7 +15,8 @@ contract InviteBondTest is TreasuryV4Base {
 
     function setUp() public override {
         super.setUp();
-        bond = new InviteBond(pool, IERC8004Identity(address(reg)), ITreasuryRules(address(treasury)), safe, BOND, UNUSED);
+        bond =
+            new InviteBond(pool, IERC8004Identity(address(reg)), ITreasuryRules(address(treasury)), safe, BOND, UNUSED);
         _funded();
         vm.prank(agentOp);
         usdc.approve(address(bond), type(uint256).max);
@@ -272,7 +273,9 @@ contract InviteBondTest is TreasuryV4Base {
 
     function test_constructor_rejectsZero() public {
         vm.expectRevert(InviteBond.ZeroAddress.selector);
-        new InviteBond(pool, IERC8004Identity(address(reg)), ITreasuryRules(address(treasury)), address(0), BOND, UNUSED);
+        new InviteBond(
+            pool, IERC8004Identity(address(reg)), ITreasuryRules(address(treasury)), address(0), BOND, UNUSED
+        );
         vm.expectRevert(InviteBond.ZeroAmount.selector);
         new InviteBond(pool, IERC8004Identity(address(reg)), ITreasuryRules(address(treasury)), safe, 0, UNUSED);
     }

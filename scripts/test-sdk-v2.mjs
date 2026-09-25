@@ -31,14 +31,18 @@ await check("the v2 record is live on 4663 and names every contract the SDK and 
   assert.ok(d, "deployments/4663.v2.json is missing");
   assert.equal(d.chainId, 4663);
   assert.equal(d.status, "live");
-  for (const k of ["pool", "lens", "timelock", "treasuryV4", "seatVault", "usdg", "registry", "priors", "safe", "v1Pool"]) {
+  for (const k of ["pool", "lens", "timelock", "treasuryV4", "seatVault", "seatVaultV2", "inviteBond", "usdg", "registry", "priors", "safe", "v1Pool"]) {
     assert.ok(ethers.isAddress(d[k]), `${k} is not an address`);
     assert.equal(ethers.getAddress(d[k]), d[k], `${k} is not checksummed`);
   }
   assert.equal(d.pool, "0x281210097f0de7A8FB6F87310AF0f089c9C8DE21");
   assert.equal(d.usdg, USDG_MAINNET);
   assert.equal(d.treasuryV4AgentId, 6228);
-  assert.equal(d.seatVaultAgentId, 6229);
+  // the seat vault is SeatVaultV3 since 2026-09-25 (audit V-2); V2 stays in the record, retired
+  assert.equal(d.seatVault, "0x59D155C42A9263fA7596867b992bB3e84dF680a9");
+  assert.equal(d.seatVaultAgentId, 6234);
+  assert.equal(d.seatVaultV2, "0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F");
+  assert.equal(d.seatVaultV2AgentId, 6229);
 });
 await check("the v1 record is kept for history, marked paused, and points at the v2 record", () => {
   const v1 = readDeployment(4663);

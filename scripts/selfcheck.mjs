@@ -76,28 +76,35 @@ check("forge test is fully green, and the lender-loss regression is still in it 
   // was deliberately retained as a failing test. The exposure accounting is fixed now, so the assertion inverts:
   // the suite must be green, AND the test that proved the bug must still exist and pass. Deleting the regression
   // would otherwise turn a real guarantee back into an untested claim while the suite stayed reassuringly green.
-  const r = sh("forge", ["test"], { timeout: 600_000 });
-  if (r.error) throw new Error(`could not run forge: ${r.error.message} (is Foundry installed?)`);
-  const summary = /(\d+) tests passed, (\d+) failed, (\d+) skipped \((\d+) total tests\)/.exec(r.stdout);
-  if (!summary) {
-    // No summary usually means the suite never ran — a compile error, which forge reports on stderr. Showing only
-    // stdout here would print an empty diagnostic and send the reader hunting for a phantom test-count problem.
-    const detail = (r.stdout.slice(-600) + r.stderr.slice(-900)).trim();
-    throw new Error(`forge produced no test summary, so the suite did not run (compile error?):\n${detail || "(no output)"}`);
+  // On CI the full suite is the `contracts` job's (`forge test -vvv`, no time limit): running all of it again here,
+  // from a cold compile on a small runner, outgrew any sane timeout once the suite passed 500 tests (every CI run
+  // from 2026-09-23 failed on `spawnSync forge ETIMEDOUT`). There, this check keeps what only it asserts: the named
+  // regression and the DefaultAccounting suite below. Locally it still runs the whole suite first.
+  const T = 1_200_000; // a cold compile of the via-IR pool alone takes minutes on a CI runner
+  if (!process.env.CI) {
+    const r = sh("forge", ["test"], { timeout: T });
+    if (r.error) throw new Error(`could not run forge: ${r.error.message} (is Foundry installed?)`);
+    const summary = /(\d+) tests passed, (\d+) failed, (\d+) skipped \((\d+) total tests\)/.exec(r.stdout);
+    if (!summary) {
+      // No summary usually means the suite never ran — a compile error, which forge reports on stderr. Showing only
+      // stdout here would print an empty diagnostic and send the reader hunting for a phantom test-count problem.
+      const detail = (r.stdout.slice(-600) + r.stderr.slice(-900)).trim();
+      throw new Error(`forge produced no test summary, so the suite did not run (compile error?):\n${detail || "(no output)"}`);
+    }
+    const [, passed, failed] = summary;
+    eq(failed, "0", "failing tests");
+    if (Number(passed) < 74) throw new Error(`expected at least the 74 tests this repo documents, got ${passed}`);
   }
-  const [, passed, failed] = summary;
-  eq(failed, "0", "failing tests");
-  if (Number(passed) < 74) throw new Error(`expected at least the 74 tests this repo documents, got ${passed}`);
 
   // The regression must still be present and green. `forge test` prints only failures by default, so ask for it
   // by name: a green run tells you nothing about a test that no longer exists.
-  const named = sh("forge", ["test", "--match-test", "test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure", "-v"], { timeout: 600_000 });
+  const named = sh("forge", ["test", "--match-test", "test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure", "-v"], { timeout: T });
   if (!/1 passed|\[PASS\]/.test(named.stdout)) {
     throw new Error(`the lender-loss regression is missing or not passing. Do not delete it: it is the test that proved the defect this protocol had.\n${named.stdout.slice(-400)}`);
   }
   // Same for the coverage added alongside the fix: partial defaults, repay-after-default, multiple children,
   // sub-sponsor recourse, dead sponsor, root defaults, reserve lock.
-  const suite = sh("forge", ["test", "--match-contract", "DefaultAccounting"], { timeout: 600_000 });
+  const suite = sh("forge", ["test", "--match-contract", "DefaultAccounting"], { timeout: T });
   const suiteSummary = /(\d+) tests passed, (\d+) failed/.exec(suite.stdout);
   if (!suiteSummary || suiteSummary[2] !== "0" || Number(suiteSummary[1]) < 5) {
     throw new Error(`the DefaultAccounting suite is missing or not green:\n${suite.stdout.slice(-400)}`);

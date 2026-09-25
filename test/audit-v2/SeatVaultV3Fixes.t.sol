@@ -21,7 +21,12 @@ contract SeatVaultV3FixesTest is SeatVaultV3Base {
         vm.startPrank(owner);
         vault.setParams(
             SeatVaultV3.Params({
-                seatSize: LSEAT, line: 5 * USDC, burnBps: 5000, maxOpenSeats: 10, epochCap: 50 * USDC, epochLength: 7 days
+                seatSize: LSEAT,
+                line: 5 * USDC,
+                burnBps: 5000,
+                maxOpenSeats: 10,
+                epochCap: 50 * USDC,
+                epochLength: 7 days
             })
         );
         if (!vm.envOr("SEAT_GATES_OFF", false)) vault.setGates(MIN_REPAID, IDLE);
