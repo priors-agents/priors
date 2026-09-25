@@ -69,9 +69,10 @@ the affected function and your own severity assessment. We cannot evaluate, prio
 So nobody spends time on ground that is already covered, and so a rediscovery is not mistaken for a new
 finding:
 
-**v2:** [`docs/SECURITY-v2.md`](docs/SECURITY-v2.md) lists every finding from the pre-launch reviews of the v2
+**v2:** [`docs/SECURITY-v2.md`](docs/SECURITY-v2.md) lists every finding from the pre- and post-launch reviews of the v2
 set, with its severity, its fix or its accepted residual, and the test that shows it. In short: the self-backing
-yield loop (N-1) is fixed by the fee lock; the utilization freeze (N-2) by a 100% cap; the farmable keeper bounty
+yield loop (N-1) is fixed by the fee lock, with one residual path around it (SO-1, holding stake only while
+marking a default; yield only); the utilization freeze (N-2) by a 100% cap; the farmable keeper bounty
 (F-1) is mitigated by setting it to 0; the seat vault's stale offers (X-1) and idle seats (X-2) are fixed; the
 self-seat loop (X-3) is gated by repaid history and closed economically by the seat's market value; the treasury's
 invite-to-raise path (T10) is bounded by its epoch cap. None of these reaches lender principal.

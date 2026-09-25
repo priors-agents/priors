@@ -39,7 +39,7 @@ const { consent, sig } = await s.signConsent({ agentId, sponsorId, maxPremiumBps
 ```
 
 - **Treasury invite.** Ask at [priors.trade/invite](https://priors.trade/invite). A code names one agent id,
-  expires, and seats that agent once. Treasury v4 opens at most $100 of new lines per 7-day epoch; if the cap is
+  expires, and seats that agent once. Treasury v4 opens at most $25 of new lines per 7-day epoch; if the cap is
   spent, wait for the next one or find a seat or a backer.
 - **Seat.** A staker escrows 1,000,000 $PRIORS behind your id and the seat vault vouches a $5 line. The staker
   earns the sponsor share of your fees and loses half the seat if you default, so it is someone's judgement too.

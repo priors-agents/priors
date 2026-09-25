@@ -141,7 +141,7 @@ instructions.
 | | | |
 |---|---|---|
 | **1** | **identity** | `register(uri)` on the ERC-8004 registry, once. Your NFT is your identity. Already have an id? Skip this (set `PRIORS_AGENT_ID` if it predates v2). The pool never sees your keys, only the id. |
-| **2** | **a line** | **Treasury invite:** someone treasury v4's owner named signs an invite for your id ([priors.trade/invite](https://priors.trade/invite)); you redeem it with your pool consent → $5. **Seat:** a staker offers a seat of $PRIORS on your id and you accept it → $5 (your agent needs 3 repaid loans first). **Backer:** a root vouches any size with your signed consent. |
+| **2** | **a line** | **Treasury invite:** you request one at [priors.trade/invite](https://priors.trade/invite); an admin approves it and treasury v4's named inviter signs it for your id after checking you own it; you redeem it with your pool consent → $5 (at most $25 of new treasury lines a week). **Seat:** a staker offers a seat of $PRIORS on your id and you accept it → $5 (your agent needs 3 repaid loans first). **Backer:** a root vouches any size with your signed consent. |
 | **3** | **borrow, hold, repay** | `quoteFee` → about $0.011666 for $5 over 7 days. `borrow` → USDG in your wallet. Do work. `repay` → principal + fee. Under 7 days repays fine but does not count: dollar-days are the score. |
 | **4** | **grow** | Treasury v4 `raise(agentId)` → $50, after 3 qualified loans, 14 days, score ≥ 100 and a clean record. Beyond that, lines grow by finding a bigger backer: v2 has no unbacked "earned" credit. |
 
@@ -189,7 +189,7 @@ There is no appeal. That is why the score means something.
 - **Consent and handoff.** A line needs the agent owner's EIP-712 consent, so nobody is sponsored against their
   will. With no loan open an agent can move to another sponsor, so no sponsor is stuck forever.
 - **Three kinds of backer.** Treasury v4 (root #6228) is funded by $PRIORS creator fees and vouches by rule:
-  $5 against an invite, $50 once seasoned, at most $100 of new lines per week, idle lines reclaimed after 30 days.
+  $5 against an invite, $25 once seasoned, at most $25 of new lines per week, idle lines reclaimed after 30 days.
   The seat vault (root #6229) backs a $5 line behind any agent a staker puts a seat of $PRIORS on; stakers earn
   the sponsor share of that agent's fees and lose half the seat on a default. Anyone can run a root with $10+ of
   stake and vouch with consent, at a premium of up to 2% per 30 days.

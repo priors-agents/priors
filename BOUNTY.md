@@ -57,12 +57,24 @@ payment settled twice.
   A finding there counts only if it also applies to v2.
 - **Known v2 findings and their accepted residuals**, listed in [docs/SECURITY-v2.md](docs/SECURITY-v2.md). A new
   path around one of them, or a larger bound than the one stated there, is a finding.
+- **Known issues** (next section).
 - Gas optimisation, style, and "you should use a different pattern".
 - Denial of service that costs the attacker more than the target, or that needs to be sustained forever.
 - Anything about the RPC endpoint, the block explorer, or Cloudflare — not ours.
 - Social engineering, phishing, or physical access to anyone.
 - Reports from an automated scanner with no explanation of the path. Run the scanner; then tell us which
   finding is real and why.
+
+## Known issues
+
+Every issue listed in [docs/SECURITY-v2.md](docs/SECURITY-v2.md), whether fixed, mitigated, an accepted residual
+or a trust assumption, is known. A report of one is not a new finding and is not paid at any tier; if it adds
+something real (a cleaner reproduction, a tighter measurement) we will credit it in public. That includes the
+residuals added after launch: SO-1 and SO-2 (stake held only while marking a default), AI-1 (the invite bot's
+self-service mode) and V-2 (seat levers and ownership not reaching open seats).
+
+What still counts is a new root cause, or a path that beats the bound stated for a listed issue: reaching lender
+principal through it, or losing more than its stated cap. Severity for those is judged by the table above.
 
 ## Safe harbour
 
@@ -85,8 +97,12 @@ ones:
 - **Every line is 100% backed.** v2 has no earned or unbacked credit: a line is vouched out of a backer's locked
   pool shares, and a default burns that backer's shares worth principal and fee. Lenders are not supposed to be
   reachable at all. A path to lender principal is what "Critical" means above.
-- **Lines need a person.** Treasury v4 needs an invite signed by a named inviter plus the owner's consent; a seat
-  needs a staker's $PRIORS and 3 repaid loans; a backer needs the owner's consent. Credit without one of those is
-  "High".
-- **Bounded, known losses.** The self-seat loop (X-3) and the invite-to-raise path (T10) can cost a backer money,
+- **How first lines are issued.** Today a treasury v4 invite is approved by an admin and signed by the treasury's
+  named inviter after a check that the requester owns the agent; redeeming it also needs the owner's pool consent.
+  New treasury lines are capped at $25 a week by treasury v4's `epochCap`. The invite bot also has a self-service
+  mode that signs for any owner who proves control of an agent; it is off today, and when it is on, one person
+  taking the week's first lines within that cap is a listed residual (AI-1), not a finding. A seat needs a
+  staker's $PRIORS and 3 repaid loans; a backer needs the owner's consent. Credit without one of those is "High".
+- **Bounded, known losses.** The self-seat loop (X-3), the invite-to-raise path (T10) and self-service invites
+  (AI-1) can cost a backer money, and holding stake only while marking a default (SO-1, SO-2) takes lender fees,
   within the per-epoch caps stated in SECURITY-v2.md. Beating those bounds is a finding; restating them is not.
