@@ -210,7 +210,7 @@ There is no appeal. That is why the score means something.
   will. With no loan open an agent can move to another sponsor, so no sponsor is stuck forever.
 - **Three kinds of backer.** Treasury v4 (root #6228) is funded by $PRIORS creator fees and vouches by rule:
   $5 against an invite, $25 once seasoned, at most $25 of new lines per week, idle lines reclaimed after 30 days.
-  The seat vault (root #6229) backs a $5 line behind any agent a staker puts a seat of $PRIORS on; stakers earn
+  The seat vault (SeatVaultV3, root #6234) backs a $5 line behind any agent a staker puts a seat of $PRIORS on; stakers earn
   the sponsor share of that agent's fees and lose half the seat on a default. Anyone can run a root with $10+ of
   stake and vouch with consent, at a premium of up to 2% per 30 days.
 - **One money loop.** Loan fees split 60 / 25 / 15 between lenders, the sponsor, and the reserve.
@@ -250,7 +250,8 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | **CreditPoolV2** (live) | `0x281210097f0de7A8FB6F87310AF0f089c9C8DE21` |
 | **CreditLensV2** (score and report views) | `0x9d7035722bd42C551f82FEB9FDDd17453AEF3D9B` |
 | **TreasurySponsorV4** (live, root `#6228`, invite-gated) | `0x0c5091235A25bBFD3F5a009cBe04120D0CBAD573` |
-| **SeatVaultV2** (live, root `#6229`) | `0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F` |
+| **SeatVaultV3** (live since 2026-09-25, root `#6234`) | `0x59D155C42A9263fA7596867b992bB3e84dF680a9` |
+| SeatVaultV2 (retired and paused, root `#6229`; replaced by V3 for audit V-2) | `0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F` |
 | TimelockController (owns the pool, 48 h) | `0x5d984C274035F81BB327d532897a902C5125F87c` |
 | Safe (2-of-3; proposes to the timelock, owns treasury v4 and the seat vault) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
 | InviteBond (the bond an automatic invite needs; no admin) | `0x8BE478c754D9124D11e78dB20F5bf4dA45403275` |
@@ -308,14 +309,15 @@ src/CreditPoolV2.sol         v2 pool: lenders, backers (roots), consent, handoff
 src/libraries/PoolV2Lib.sol  v2 pool's linked library (hooks, consent digest)
 src/CreditLensV2.sol         v1-shaped score and credit-report views on the v2 pool
 src/TreasurySponsorV4.sol    the $PRIORS treasury as a v2 root: invite + consent opens a line, rules size it
-src/SeatVaultV2.sol          $PRIORS seats: a staker's tokens behind an agent, the vault backs its line
+src/SeatVaultV3.sol          $PRIORS seats: a staker's tokens behind an agent, the vault backs its line (live)
+src/SeatVaultV2.sol          the previous seat vault (retired; V3 closes audit V-2)
 src/InviteBond.sol           the bond behind an automatic invite: back after seasoning, to the Safe on default
 src/CreditPool.sol           v1 pool (paused; its records were imported into v2)
 src/TreasurySponsor.sol      v1 treasury (v3)
 src/ReserveFunder.sol        v1 creator-fee sweep into the reserve
 src/libraries/ScoreLib.sol   the trust score (shared by v1 and the v2 lens)
 src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPonsFeeEscrow
-test/                        417 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
+test/                        518 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
                              review-v2/), and the v1 suite
 script/DeployV2.s.sol        deploys the v2 set under a 48 h timelock, writes deployments/<chainId>.v2.json
 script/Deploy.s.sol          v1 deploy (mocks on dev chains), writes deployments/<chainId>.json
@@ -347,7 +349,7 @@ small and we say so up front rather than after you have spent a week.
 ## Working on it
 
 ```bash
-forge test                     # 417 tests, all green (fork-only tests skip without FORK_RPC)
+forge test                     # 518 tests, all green (fork-only tests skip without FORK_RPC)
 npm test                       # SDK, CLI and publish-guard checks (needs Foundry for the v1 end-to-end run)
 npm run test:v2                # the v2 SDK and x402 client, network-free
 npm run devnet                 # local chain + deployed, bootstrapped v1 pool

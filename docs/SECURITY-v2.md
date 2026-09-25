@@ -7,7 +7,7 @@ finding, so a rediscovery is not mistaken for a new one, and so you can check ea
 **How these were found.** Several internal adversarial reviews before launch (three per-contract hunts, Slither,
 invariant campaigns at twice the committed runs, a migration rehearsal on a fork of live chain state), an
 independent second-model review of the final fixes, and a second-opinion review after launch (2026-09-25; rows
-SO-1, SO-2, AI-1 and V-2, whose proofs of concept are internal). **No third-party audit firm has reviewed v2.** Treat it
+SO-1, SO-2 and AI-1, whose proofs of concept are internal; V-2's are public as V3 regression tests). **No third-party audit firm has reviewed v2.** Treat it
 accordingly; [BOUNTY.md](../BOUNTY.md) says what a new finding is worth.
 
 **The headline.** No path was found that reaches lender principal. Every loss found is bounded by a backer's own
@@ -57,14 +57,16 @@ Refuted: draining the treasury's USDG, misrouting sponsor fees, `sweep` re-entra
 contracts, chains or versions, invite malleability, strangers burning the first-line cap, `reclaim`/`retire`
 abuse, `rescue` reaching the asset or the stake.
 
-## SeatVaultV2
+## SeatVaultV2 → SeatVaultV3
+
+Since 2026-09-25 the live seat vault is **SeatVaultV3** (`0x59D155C42A9263fA7596867b992bB3e84dF680a9`), SeatVaultV2 with the V-2 fixes below and nothing else; the rows below apply to V3 unless they say otherwise. SeatVaultV2 is empty and paused.
 
 | id | sev | finding | status | evidence |
 |---|---|---|---|---|
 | X-3 | High at placeholder numbers | **Self-seat loop.** Seat a fresh identity with your own $PRIORS, borrow the $5 line, default: half the seat is burnt, the line is kept. | **Gate + economics.** Seating requires `minRepaid` = 3 repaid loans. That gate is farmable (three minimum loans cost about half a cent in fees), so it is a filter, not the fix. **What closes it is the seat's value:** a seat is 1,000,000 $PRIORS and a default burns 50% of it. At the market price on 2026-09-24 (about 0.00148 USDG per $PRIORS) a default burns about $740 to take a $5 line; the loop pays only below about 0.00001 USDG per $PRIORS, a drop of more than 99%. Losses are also capped at the vault's `epochCap` ($50 per 7-day epoch), paid from the vault's own stake; lenders are untouched. If the price collapses: a keeper price guard alerts when half a seat is worth less than about 20 lines of USDG, and the Safe can then `pauseSeats` or raise `seatSize`. **Those levers reach new seats only, not seats already open** (V-2). | `test/audit-v2/SeatVaultV2X3Mitigation.t.sol`, `SeatVaultV2Fixes.t.sol` |
 | X-1 | Medium | A stale offer could be taken by the next NFT holder after a sale, who borrowed and defaulted against someone else's seat. | **Fixed:** an offer is bound to the agent's owner at offer time and re-checked at accept. | `test/audit-v2/SeatVaultV2Fixes.t.sol` |
 | X-2 | Medium | Idle seats never expired, so self-seats could fill every slot and tie up the vault's backing. | **Fixed:** `expire(id)` is permissionless after `idleAfter` = 30 days with no loan open. The idle clock counts from the latest of seat opening, last borrow and **last repay**, so a long loan repaid today is not idle. | `SeatVaultV2Fixes.t.sol` (`test_fix_X2_aSeatIsNotIdleRightAfterALongLoanIsRepaid`) |
-| V-2 | Low | **Levers and ownership do not reach open seats.** `pauseSeats` and a new `seatSize` apply only to seats opened afterwards; an agent sold to a new owner keeps its seat; an active seat cannot be evicted, so seat capacity can be squatted (idle seats still expire, X-2). | **Residual.** The vault's backing is kept to the lines in use, and losses stay within the vault's `epochCap` and its own stake; lenders are untouched. Seat freeze, eviction and owner binding need a new vault. | internal PoC (`test_F2_…`, `test_F3_…`, `test_F4_…`) |
+| V-2 | Low | **Levers and ownership did not reach open seats** (SeatVaultV2): `pauseSeats` and a new `seatSize` applied only to seats opened afterwards; an agent sold to a new owner kept its seat; an active seat could not be evicted, so seat capacity could be squatted. | **Fixed in SeatVaultV3.** `canBorrow` refuses new loans while seats are paused, or on a seat below the current size, burn or line; a seat is bound to the owner who accepted it, so a sale stops lending and anyone may close it (every token back to the staker); the Safe's `freezeSeat` closes any seat, every token back, never a burn. Loans already open are untouched. | `test/SeatVaultV3V2Fixes.t.sol` (the three proofs of concept replayed, each failing on V3); the V2 suites ported to V3 (`test/SeatVaultV3*.t.sol`) |
 | X-4 | Low | A v1 default plus a failed hook could lock a seat forever. | **Closed by order:** v1 was paused before seats opened. | `test/SeatVaultV2V1DefaultOrder.t.sol` |
 
 Refuted: stealing or double-exiting a staker's $PRIORS, double-claiming fees across re-seats, a stranger burning a
@@ -88,9 +90,9 @@ hooks, an owner moving stakers' tokens or fees.
 forge test --match-path 'test/audit-v2/*' -vv
 forge test --match-path 'test/audit-final/*' -vv
 forge test --match-path 'test/review-v2/*' -vv
-forge test --match-contract 'CreditPoolV2Invariant|SeatVaultV2Invariant|TreasurySponsorV4Invariant'
+forge test --match-contract 'CreditPoolV2Invariant|SeatVaultV2Invariant|SeatVaultV3Invariant|TreasurySponsorV4Invariant'
 ```
 
-The proofs of concept for SO-1, SO-2, AI-1 and V-2 are internal and not in this repository; the rows above state
+The proofs of concept for SO-1, SO-2 and AI-1 are internal (V-2's are public, replayed against V3 in `test/SeatVaultV3V2Fixes.t.sol`) and not in this repository; the rows above state
 what they show. Tests named `test_X*` / `test_T*_exploit_*` pass by demonstrating the finding (and its bound); `test_R*` /
 `*_refuted_*` pass by demonstrating a refutation; `*_fixed` pass by showing the attack now fails.

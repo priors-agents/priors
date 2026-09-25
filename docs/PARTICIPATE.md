@@ -1,6 +1,6 @@
 # Taking part in Priors v2: lenders, stakers, backers, agents
 
-Pool v2 (`CreditPoolV2`), treasury v4 (`TreasurySponsorV4`) and seats v2 (`SeatVaultV2`) are **live on Robinhood
+Pool v2 (`CreditPoolV2`), treasury v4 (`TreasurySponsorV4`) and the seat vault (`SeatVaultV3` since 2026-09-25, replacing `SeatVaultV2`) are **live on Robinhood
 Chain mainnet** (chain 4663) since block 71,702,460. The v1 pool is paused; its record stays readable. Addresses are
 in [`deployments/4663.v2.json`](../deployments/4663.v2.json), and the SDK and the `priors-v2` CLI read them from
 there, so nothing below needs an address typed by hand.

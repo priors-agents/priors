@@ -39,7 +39,7 @@ The live v2 contracts on Robinhood Chain (chain 4663), deployed at block 71,702,
 | `CreditPoolV2` (with its linked `PoolV2Lib`) | [`0x281210097f0de7A8FB6F87310AF0f089c9C8DE21`](https://robinhoodchain.blockscout.com/address/0x281210097f0de7A8FB6F87310AF0f089c9C8DE21) |
 | `CreditLensV2` | [`0x9d7035722bd42C551f82FEB9FDDd17453AEF3D9B`](https://robinhoodchain.blockscout.com/address/0x9d7035722bd42C551f82FEB9FDDd17453AEF3D9B) |
 | `TreasurySponsorV4` (root `#6228`) | [`0x0c5091235A25bBFD3F5a009cBe04120D0CBAD573`](https://robinhoodchain.blockscout.com/address/0x0c5091235A25bBFD3F5a009cBe04120D0CBAD573) |
-| `SeatVaultV2` (root `#6229`) | [`0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F`](https://robinhoodchain.blockscout.com/address/0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F) |
+| `SeatVaultV3` (root `#6234`) | [`0x59D155C42A9263fA7596867b992bB3e84dF680a9`](https://robinhoodchain.blockscout.com/address/0x59D155C42A9263fA7596867b992bB3e84dF680a9) |
 | `TimelockController` (the pool's owner, 48 h) | [`0x5d984C274035F81BB327d532897a902C5125F87c`](https://robinhoodchain.blockscout.com/address/0x5d984C274035F81BB327d532897a902C5125F87c) |
 | `InviteBond` (the bond an automatic invite needs) | [`0x8BE478c754D9124D11e78dB20F5bf4dA45403275`](https://robinhoodchain.blockscout.com/address/0x8BE478c754D9124D11e78dB20F5bf4dA45403275) |
 
@@ -61,7 +61,8 @@ contract finding and is paid as one.
   the 48 h timelock for the pool; that is the design, not a finding. "The owner could set a bad parameter" is not
   a bug.
 - **The v1 contracts**, paused since the v2 cutover and kept as history: the v1 `CreditPool`
-  (`0x0259889e6EBab1a18CeE7e62Bc5B9648FB6C44e5`), `TreasurySponsor` v2 and v3, `ReserveFunder` and the older pools.
+  (`0x0259889e6EBab1a18CeE7e62Bc5B9648FB6C44e5`), `TreasurySponsor` v2 and v3, `ReserveFunder` and the older pools,
+  and `SeatVaultV2` (`0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F`, empty and paused since V3 replaced it on 2026-09-25).
   A finding there counts only if it also applies to v2.
 - **Known v2 findings and their accepted residuals**, listed in [docs/SECURITY-v2.md](docs/SECURITY-v2.md). A new
   path around one of them, or a larger bound than the one stated there, is a finding.
@@ -78,8 +79,9 @@ contract finding and is paid as one.
 Every issue listed in [docs/SECURITY-v2.md](docs/SECURITY-v2.md), whether fixed, mitigated, an accepted residual
 or a trust assumption, is known. A report of one is not a new finding and is not paid at any tier; if it adds
 something real (a cleaner reproduction, a tighter measurement) we will credit it in public. That includes the
-residuals added after launch: SO-1 and SO-2 (stake held only while marking a default), AI-1 (the invite bot's
-self-service mode) and V-2 (seat levers and ownership not reaching open seats).
+residuals added after launch: SO-1 and SO-2 (stake held only while marking a default) and AI-1 (the invite bot's
+self-service mode, now priced by `InviteBond`). V-2 (seat levers and ownership not reaching open seats) is fixed in
+`SeatVaultV3`; a path that still gets around those fixes on V3 is a new finding.
 
 What still counts is a new root cause, or a path that beats the bound stated for a listed issue: reaching lender
 principal through it, or losing more than its stated cap. Severity for those is judged by the table above.
