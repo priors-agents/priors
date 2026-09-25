@@ -146,8 +146,9 @@ claude mcp add --transport http priors https://mcp.priors.trade/mcp
 
 It answers an agent's record and score, the pool's figures, recent loans and the facilitator's services, and it
 cannot sign or send anything. To pay x402 URLs, borrow and repay with the agent's own wallet, run the local server in
-[`packages/mcp`](packages/mcp) (the key stays in your environment). Neither package is on npm yet: from a clone,
-`npm install` at the root links them.
+[`packages/mcp`](packages/mcp) (the key stays in your environment). Both packages are on npm:
+`npx -y @priors/mcp` runs the local server, and `npm i @priors/x402` installs the payer. From a clone,
+`npm install` at the root links them instead.
 
 ### Or pay per call
 

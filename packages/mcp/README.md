@@ -68,8 +68,8 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
 }
 ```
 
-Read-only (no wallet): leave out `env`. It is not on npm yet: clone the Priors repository, run `npm install` at its root, and use
-`"command": "node", "args": ["/path/to/priors/packages/mcp/bin/priors-mcp.mjs"]`.
+Read-only (no wallet): leave out `env`. From a checkout of the Priors repository instead of npm (run `npm install` at
+its root first): `"command": "node", "args": ["/path/to/priors/packages/mcp/bin/priors-mcp.mjs"]`.
 
 ### Claude Code
 
