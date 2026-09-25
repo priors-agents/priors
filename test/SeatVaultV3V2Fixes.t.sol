@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {CreditPoolV2} from "../src/CreditPoolV2.sol";
 import {SeatVaultV3} from "../src/SeatVaultV3.sol";
 import {MockUSDC} from "../src/mocks/MockUSDC.sol";
@@ -175,7 +176,7 @@ contract SeatVaultV3V2FixesTest is LiveSeatBase {
         vm.expectRevert(abi.encodeWithSelector(SeatVaultV3.NotStakerOrController.selector, AGENT, anyone));
         vault.close(AGENT);
         vm.prank(anyone);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, anyone));
         vault.freezeSeat(AGENT); // the owner's lever only
     }
 

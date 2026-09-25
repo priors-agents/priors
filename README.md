@@ -317,7 +317,7 @@ src/TreasurySponsor.sol      v1 treasury (v3)
 src/ReserveFunder.sol        v1 creator-fee sweep into the reserve
 src/libraries/ScoreLib.sol   the trust score (shared by v1 and the v2 lens)
 src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPonsFeeEscrow
-test/                        518 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
+test/                        521 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
                              review-v2/), and the v1 suite
 script/DeployV2.s.sol        deploys the v2 set under a 48 h timelock, writes deployments/<chainId>.v2.json
 script/Deploy.s.sol          v1 deploy (mocks on dev chains), writes deployments/<chainId>.json
@@ -349,7 +349,7 @@ small and we say so up front rather than after you have spent a week.
 ## Working on it
 
 ```bash
-forge test                     # 518 tests, all green (fork-only tests skip without FORK_RPC)
+forge test                     # 521 tests, all green (fork-only tests skip without FORK_RPC)
 npm test                       # SDK, CLI and publish-guard checks (needs Foundry for the v1 end-to-end run)
 npm run test:v2                # the v2 SDK and x402 client, network-free
 npm run devnet                 # local chain + deployed, bootstrapped v1 pool

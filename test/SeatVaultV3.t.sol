@@ -905,6 +905,60 @@ contract SeatVaultV3Test is SeatVaultV3Base {
         assertEq(priors.balanceOf(staker), before + SEAT / 2, "the open loan settles by the opening burn (50%)");
     }
 
+    // ------------------------------------------------------------------
+    // V3: freezeSeat, the owner's lever, never burns
+    // ------------------------------------------------------------------
+
+    /// No loan open: the seat closes at once, every token back, and the stranger path is the owner's only.
+    function test_freezeSeat_noLoan_closesEveryTokenBack() public {
+        _offerAndAccept(staker, AGENT_PK, AGENT);
+        uint256 before = priors.balanceOf(staker);
+        vm.prank(anyone);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, anyone));
+        vault.freezeSeat(AGENT);
+        vm.prank(owner);
+        vault.freezeSeat(AGENT);
+        assertEq(uint8(_status(AGENT)), uint8(SeatVaultV3.Status.Closed));
+        assertEq(priors.balanceOf(staker), before + SEAT, "every token back, nothing burnt");
+        assertEq(vault.totalBurnt(), 0);
+    }
+
+    /// A loan open: the line freezes (no new loan), the seat stays open until the loan is repaid, then closes
+    /// with every token back.
+    function test_freezeSeat_withLoanOpen_closesOnRepay() public {
+        _offerAndAccept(staker, AGENT_PK, AGENT);
+        uint256 loan = _borrow(agentOp, AGENT, 5 * USDC, 30 days);
+        uint256 before = priors.balanceOf(staker);
+        vm.prank(owner);
+        vault.freezeSeat(AGENT);
+        SeatVaultV3.Seat memory s = vault.getSeat(AGENT);
+        assertEq(uint8(s.status), uint8(SeatVaultV3.Status.Open), "open until the loan closes");
+        assertTrue(s.closing, "closing");
+        assertFalse(vault.canBorrow(VAULT_ID, AGENT, 5 * USDC, 1 days, 0, agentOp, agentOp, agentOp), "no new loan");
+        _repay(agentOp, loan);
+        assertEq(uint8(_status(AGENT)), uint8(SeatVaultV3.Status.Closed));
+        assertEq(priors.balanceOf(staker), before + SEAT, "every token back once repaid");
+        assertEq(vault.totalBurnt(), 0);
+    }
+
+    /// A freeze does not change what a default costs: a loan open when the seat was frozen that then defaults
+    /// settles the seat by its opening terms (the same burn as without the freeze), and a seat already settled by
+    /// a default cannot be frozen again. freezeSeat itself never burns.
+    function test_freezeSeat_neverBurns_defaultSettlesByTerms() public {
+        _offerAndAccept(staker, AGENT_PK, AGENT);
+        uint256 loan = _borrow(agentOp, AGENT, 5 * USDC, 1 days);
+        vm.prank(owner);
+        vault.freezeSeat(AGENT);
+        assertEq(vault.totalBurnt(), 0, "the freeze burnt nothing");
+        uint256 before = priors.balanceOf(staker);
+        _default(loan);
+        assertEq(uint8(_status(AGENT)), uint8(SeatVaultV3.Status.Settled));
+        assertEq(priors.balanceOf(staker), before + SEAT / 2, "the default's own terms: half back, half burnt");
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(SeatVaultV3.NoOpenSeat.selector, AGENT));
+        vault.freezeSeat(AGENT);
+    }
+
     function test_default_fallsBackToDeadWithoutBurn() public {
         MockNoBurn nb = new MockNoBurn();
         usdc = new MockUSDC();
