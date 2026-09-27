@@ -76,6 +76,8 @@ for the transfers from those payers to agent wallets; the transfer must be the l
 - **Whose income.** A payment counts for the agents that declared the paid wallet as their payment wallet in the
   ERC-8004 registry. The registry sets it to the owner at registration, clears it when the agent changes hands, and
   changes it only with the wallet's signature, so agents sent to someone's address can't take a share of its income.
+  A wallet that can't be read holds the scores back until it is read: a declared wallet links clusters, so scores are
+  never published without one.
 - **Netted.** USDG that any wallet of the agent's cluster sent to a payer (before or after, whole chain) is taken off
   that payer's payments: money that goes back where it came from is not income.
 - **No dust.** A payer counts once it has paid 1 USDG in the window. Below that it adds nothing and costs no scan.

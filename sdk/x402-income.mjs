@@ -226,7 +226,6 @@ export async function readRepayers(provider, pool, loans, deadline = Infinity) {
 
 export const INDEX_DEFAULTS = Object.freeze({
   walletsEvery: 6 * 3600,     // re-read every agent's declared wallet this often (new agents are read at once)
-  walletRetries: 3,           // runs a failed wallet read is retried before it is taken as "none declared"
   retentionDays: 365,         // payments kept this long (the income window is 30 days; loans look further back)
   minKeepDays: 37,            // what the size guard never prunes below
   maxStateBytes: 20_000_000,  // under Workers KV's 25 MiB value limit
@@ -243,7 +242,8 @@ const addUnique = (list, items) => { const seen = new Set(list.map((x) => x.id))
 /**
  * Keep an income index up to date, resumably. The index holds:
  *   agentWallets  every agent's declared payment wallet (re-read every `walletsEvery` seconds, new agents at once;
- *                 a failed read keeps the wallet known before)
+ *                 a failed read keeps the wallet known before; an agent never read successfully holds the index
+ *                 incomplete, so no scores are published without its wallet)
  *   payments      signed USDG payments to declared wallets since `fromBlock`
  *   transfers     USDG sent from agent-side wallets (owners, declared wallets, `extraWallets`) to those payers, over
  *                 the whole chain from `transfersFrom`, for netting
@@ -269,8 +269,9 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, snaps
     for (const [k, w] of Object.entries(read)) {
       const id = Number(k);
       if (w !== undefined) { state.agentWallets[id] = w; delete state.walletFailures[id]; continue; }
-      state.walletFailures[id] = (state.walletFailures[id] || 0) + 1; // keep what was known; unknown stays unread
-      if (!(id in state.agentWallets) && state.walletFailures[id] >= P.walletRetries) state.agentWallets[id] = null;
+      // keep what was known; unknown stays unknown, however many runs fail: a declared wallet is a cluster edge, and an
+      // index published without it could make a same-cluster payer look external. The failures are counted for health.
+      state.walletFailures[id] = (state.walletFailures[id] || 0) + 1;
     }
     if (now - state.walletsAt >= P.walletsEvery) state.walletsAt = now;
   }
@@ -384,5 +385,6 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, snaps
     wallets: uniq(state.transferBackfills.filter((bf) => bf.kind !== "payers").flatMap((bf) => bf.from)).sort(),
   };
   const complete = !walletsPending && state.paymentsTo >= head && state.transfersTo >= head && pendingRepayers <= 0;
-  return { state, complete, pending, scan: { paymentsChunk: chunk, ...scanStatus } };
+  const walletsUnread = ids.filter((id) => !(id in state.agentWallets)).length; // > 0 holds publication back
+  return { state, complete, pending, scan: { paymentsChunk: chunk, ...scanStatus, ...(walletsUnread ? { walletsUnread } : {}) } };
 }

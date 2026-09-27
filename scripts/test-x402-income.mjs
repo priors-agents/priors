@@ -309,6 +309,20 @@ await check("index: a failed wallet read keeps the wallet known before; an agent
   assert.equal(r.complete, false, "agent 2 was never read");
 });
 
+await check("index: a wallet that keeps failing to read holds the index back however many runs it fails (fail closed)", async () => {
+  // a declared wallet is a cluster edge: publishing without it could make a same-cluster payer look external
+  const failing = fakeChain({ wallets: { 1: W1, 2: W2 }, failWallets: new Set([2]) });
+  let r = { state: null };
+  for (let run = 0; run < 6; run++) r = await updateIncome(failing, r.state, opts(snapOf([agent(1, W1), agent(2, W2)]), 100));
+  assert.equal(2 in r.state.agentWallets, false, "never read is unknown, not 'none declared'");
+  assert.equal(r.complete, false, "no publication while a wallet is unknown");
+  assert.equal(r.scan.walletsUnread, 1, "and health can say why");
+  const healed = fakeChain({ wallets: { 1: W1, 2: W2 } });
+  r = await updateIncome(healed, r.state, opts(snapOf([agent(1, W1), agent(2, W2)]), 100));
+  assert.equal(r.state.agentWallets[2], W2.toLowerCase());
+  assert.equal(r.complete, true, "publishes once every wallet is read");
+});
+
 await check("index: the zero address is never a declared wallet, and a failed read is not a declaration", async () => {
   const chain = fakeChain({ wallets: { 1: ethers.ZeroAddress }, failWallets: new Set([2]) });
   const got = await readAgentWallets(chain, A(8), [1, 2]);
