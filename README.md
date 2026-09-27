@@ -221,6 +221,10 @@ There is no appeal. That is why the score means something.
   — up to 400 points. Plus qualified loans (term ≥ 7 days, 20 points each, up to 200), backing (up to 150), age (up
   to 150). Your own default is 0, always. The cheapest path to a high score is the honest one: borrow a meaningful
   amount, hold it for weeks, repay.
+- **Priors Score v2, off chain and open.** Live since 2026-09-27 at `https://priors.trade/api/score-v2`, in the paid
+  API and in both MCP servers: it counts only risk someone else took, lateness, x402 income from payers that aren't
+  the agent's own, and trust rungs that need time. Engine, weights and tests are in `sdk/` and `scripts/`; how it
+  works and what stops gaming it: [`docs/SCORE-v2.md`](docs/SCORE-v2.md). The on-chain score above is unchanged.
 
 [`docs/DESIGN.md`](docs/DESIGN.md) has the v1 math and attacks; [`docs/SECURITY-v2.md`](docs/SECURITY-v2.md) the
 v2 findings.

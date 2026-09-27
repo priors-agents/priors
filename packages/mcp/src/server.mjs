@@ -15,6 +15,7 @@
 //   PRIORS_MAX_SPEND_USD   most pay_url may sign in total per process (default 5)
 //   PRIORS_MAX_BORROW_TOTAL_USD  most borrowed in total per process (default 25)
 //   PRIORS_ALLOW_LOCAL     "1": pay_url may reach http://localhost and private addresses (testing only)
+//   PRIORS_SCORE_V2        where score_of reads Priors Score v2 (default https://priors.trade/api/score-v2; "off": v1 only)
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
@@ -376,19 +377,46 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   });
 
   // ---- score_of ------------------------------------------------------------------------------------------------
+  // Priors Score v2 (open weights, published at /api/score-v2) next to the on-chain v1: optional. Not published
+  // (404/503), slow or unreachable means v1 only, never a tool error; a defaulted agent never shows a positive v2.
+  // Same rules and wording as the hosted MCP (mcp.priors.trade).
+  const scoreV2Url = String(env.PRIORS_SCORE_V2 ?? "https://priors.trade/api/score-v2").trim();
+  async function scoreV2Line(id, defaulted) {
+    if (!scoreV2Url || scoreV2Url === "off") return null;
+    try {
+      const u = new URL(scoreV2Url);
+      u.searchParams.set("agent", String(id));
+      const r = await fetchImpl(u.href, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(5_000) });
+      if (!r.ok) return null;
+      const t = await r.text();
+      if (t.length > 65_536) return null;
+      const s = JSON.parse(t)?.score;
+      const num = (x) => (x !== null && x !== "" && Number.isFinite(Number(x)) ? Number(x) : null);
+      if (!s || Number(s.agentId) !== Number(id) || num(s.score) === null || num(s.rung) === null) return null;
+      if (defaulted && num(s.score) > 0) return null;
+      const name = String(s.rungName || "").replace(/[^\w -]/g, "").slice(0, 30);
+      const inc = Array.isArray(s.components) ? s.components.find((c) => c && c.key === "income") : null;
+      const payers = num(s.detail?.distinctPayers) ?? 0;
+      return `Priors Score v2: ${num(s.score)}/1000, rung ${num(s.rung)}${name ? ` (${name})` : ""}`
+        + (inc && num(inc.points) !== null ? `; x402 income ${num(inc.points)}/${num(inc.max)} from ${payers} distinct payer(s).` : ".");
+    } catch (_) { return null; }
+  }
+
   tool("score_of", {
     title: "Priors score of an agent",
-    description: "Look up any agent's Priors score (0 to 1000) and repayment record on Robinhood Chain: a public, on-chain credit record that cannot be faked. Useful before trusting or paying an agent. Read-only.",
+    description: "Look up any agent's Priors score (0 to 1000) and repayment record on Robinhood Chain: a public, on-chain credit record that cannot be faked, plus the open Priors Score v2 and its trust rung when published. Useful before trusting or paying an agent. Read-only.",
     inputSchema: { agent_id: z.number().int().nonnegative().describe("Priors (ERC-8004) agent id.") },
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, async ({ agent_id }) => {
     const s = await credit.status(BigInt(agent_id));
     if (!s.enrolled) return `Agent #${agent_id} has no Priors record: score 0 (never enrolled).`;
     const age = s.enrolledAt ? Math.floor((Date.now() / 1000 - s.enrolledAt) / 86400) : null;
+    const v2 = await scoreV2Line(agent_id, s.defaulted);
     return [
       `Agent #${agent_id}: score ${s.score ?? "unavailable"}/1000${s.defaulted ? ", and it has DEFAULTED on a loan" : ""}.`,
       `Record: ${s.loansRepaid} loans repaid (${s.qualifiedRepaid} qualified), ${usd(s.volumeRepaid)} repaid, ${s.openLoans.length} open now.`,
       `${s.sponsor === 0n ? "No backer now." : `Backed by root #${s.sponsor} with a ${usd(s.line)} line.`}${age !== null ? ` On Priors for ${age} days.` : ""}`,
+      ...(v2 ? [v2] : []),
     ].join("\n");
   });
 

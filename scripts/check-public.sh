@@ -84,6 +84,7 @@ forbidden=(
   "cloudflare"
   "wallet.json"
   "deployments/31337.json"
+  "deployments/score-clusters.json"  # Score v2's clusters list stays private (docs/SCORE-v2.md, "Clusters")
   "docs/plans"    # agent working state: plans, buildouts and session notes are not the product
   "docs/builds"
   "docs/prd"
