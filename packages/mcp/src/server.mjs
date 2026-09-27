@@ -388,8 +388,8 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       u.searchParams.set("agent", String(id));
       const r = await fetchImpl(u.href, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(5_000) });
       if (!r.ok) return null;
-      const t = await r.text();
-      if (t.length > 65_536) return null;
+      const { text: t, cut } = await X.readCapped(r, 65_536); // streamed: a huge body is cancelled, not buffered
+      if (cut) return null;
       const s = JSON.parse(t)?.score;
       const num = (x) => (x !== null && x !== "" && Number.isFinite(Number(x)) ? Number(x) : null);
       if (!s || Number(s.agentId) !== Number(id) || num(s.score) === null || num(s.rung) === null) return null;
