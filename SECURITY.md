@@ -166,8 +166,11 @@ public. Draining the live pool to prove a point is not good-faith research.
 
 ## One thing worth knowing before you report
 
-**Our own contracts are not upgradeable.** No proxy, no initialiser, no admin hatch in anything under
-`src/`. Fixing a real bug there means deploying a new pool and migrating state, which has been done once
+**Our own contracts are not upgradeable, except the stock vault.** No proxy, no initialiser, no admin hatch in
+anything under `src/` but `StockVault` (since 2026-09-28), which sits behind a Transparent proxy
+(`StockVaultProxy`) whose ProxyAdmin the 2-of-3 Safe owns: a bug there can be fixed by an upgrade from the Safe,
+and an upgrade could also move what the vault holds ([docs/SECURITY-v2.md](docs/SECURITY-v2.md), "StockVault").
+Everywhere else, fixing a real bug means deploying a new pool and migrating state, which has been done once
 and is not cheap — so a confirmed finding may take longer to close than a proxy-based protocol would
 need. The delay is the architecture, not us ignoring you.
 
@@ -187,7 +190,9 @@ The levers we do hold, and how fast they move:
 
 - **Fast:** the pool's guardian (the 2-of-3 Safe) can `pause` new risk for at most 14 days at a time; exits
   never pause. The Safe owns treasury v4 (`setRules`, `setInviter`, `freeze`, `retire`) and the seat vault
-  (`setParams`, `setGates`, `pauseSeats`, `retire`) directly, so those need two signatures and no delay.
+  (`setParams`, `setGates`, `pauseSeats`, `retire`) directly, so those need two signatures and no delay. The same
+  goes for the stock vault (`setAsset`, `setParams`, `pause`, `freezePosition`, `writeOff`, `retire`) and its
+  ProxyAdmin (`upgradeAndCall`).
 - **Slow on purpose:** the pool's owner is a 48-hour `TimelockController` (the Safe proposes and executes, no
   admin). `setParams`, `withdrawReserve` and the other owner calls are visible on chain for two days before they
   can run. No owner call reaches lender deposits or a backer's locked shares.

@@ -25,5 +25,8 @@
   "v1Pool": "0x0259889e6EBab1a18CeE7e62Bc5B9648FB6C44e5",
   "seatVaultV2": "0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F",
   "seatVaultV2AgentId": 6229,
-  "seatVaultBlock": 72192188
+  "seatVaultBlock": 72192188,
+  "stockVault": "0xbEcd07EC689988e16b870C121756C4c2C8cb02B6",
+  "stockVaultAgentId": 6424,
+  "stockVaultBlock": 74826641
 }

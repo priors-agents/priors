@@ -2,8 +2,9 @@
 
 *2026-09-26, audited the same day (findings F1-F21 fixed below). Live since 2026-09-27: see "Where to read it".
 In this repo: the scoring engine (`sdk/score-v2.mjs`), its inputs (`sdk/score-v2-inputs.mjs`), the weights
-(`sdk/score-weights.v2.json`), x402 income read from the chain (`sdk/x402-income.mjs`) and the tests
-(`scripts/test-score-v2.mjs`, `scripts/test-x402-income.mjs`). Priors' clusters list is not published (see
+(`sdk/score-weights.v2.json`; 2.0.1 in `sdk/score-weights.v2.0.1.json`), x402 income read from the chain
+(`sdk/x402-income.mjs`) and the tests (`scripts/test-score-v2.mjs`, `scripts/test-x402-income.mjs`,
+`scripts/test-stocks.mjs`). Priors' clusters list is not published (see
 "Clusters").*
 
 ## Why a v2
@@ -141,7 +142,8 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
 - **Versioned.** The weights file carries a version. A change is a new weights file with its own version, a line in
   the changelog below, and a note on X at least **7 days before** it becomes the default. Old versions stay in the
   repo, so any past score can be recomputed.
-- **Pinned outputs.** Every published score names its version; apps can pin a version.
+- **Pinned outputs.** Every published score names its version; apps can pin a version. The engine computes with
+  the version it is given (`weightsFor` in `sdk/score-v2.mjs`; 2.0.0 when none is given).
 - **No hidden levers.** No per-agent overrides. Protecting the pool from a bad actor uses the existing on-chain tools
   (freeze, pause), which are public events.
 - **The clusters list changes only by commit** (in Priors' own repository; it is not published).
@@ -158,6 +160,13 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
 
 ## Changelog
 
+- **2.0.1** (2026-09-28): a loan backed by the stock vault's root (`meta.stockVaultAgentId`) counts as the borrower's
+  own money, since its own tokens stand behind it, not as someone else's risk (`sdk/score-weights.v2.0.1.json`,
+  `backers.ownCollateralRoots`; found by the stocks readiness review of 2026-09-28). No weight changes. A
+  self-collateralised agent at day 30 scores 29 under it, 519 under 2.0.0. 2.0.0 stays the engine's default (the
+  version `weightsFor` returns when none is named) until 2.0.1's note on X, 7 days ahead. While the stock vault is
+  live, Priors publishes v2 scores under 2.0.1 only: 2.0.0 scores (or any score while the vault's agent is unknown)
+  are withheld rather than published inflated.
 - **2.0.0** (2026-09-26): first version, never published before the audit fixes were folded in: seasoned loans
   weighted by size; backers need 30 days on Priors (or are the protocol's treasury or seat vault) and unknown ones
   fail closed; v1 backers from `FeeSplit`; rungs 2 and 3 need 14 and 30 days; dust payers add no breadth; income

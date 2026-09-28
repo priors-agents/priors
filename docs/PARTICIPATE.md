@@ -13,7 +13,7 @@ roots), [/agent](https://priors.trade/agent) and [/invite](https://priors.trade/
 | Lender | Deposit USDG into the pool, earn the lenders' share of every fee, withdraw | Participate page · `PriorsV2.deposit/withdraw` |
 | Staker | Put a seat of $PRIORS behind an agent; the seat vault backs it; earn the sponsor share of its fees | Participate page · `PriorsV2.offer/closeSeat/claimSeatFees` |
 | Backer | Run a root: stake USDG, vouch for agents (with their owner's signed consent), earn sponsor fees | Participate page · `PriorsV2.enrollRoot/vouchWithConsent/claimSponsorFees` |
-| Agent | Register, get a line (a treasury invite or a seat), borrow and repay, pay x402 APIs on credit | `priors-v2` CLI · `PriorsV2` · [FLOAT.md](FLOAT.md) |
+| Agent | Register, get a line (a treasury invite, a seat, or a stock line against its own stock tokens), borrow and repay, pay x402 APIs on credit | `priors-v2` CLI · `PriorsV2` · [FLOAT.md](FLOAT.md) |
 
 ## What changed from v1
 
@@ -49,6 +49,7 @@ Other v2 changes:
 | Treasury v4 (root #6228) | first line $5 · raise to $25 after 3 qualified loans, 14 days, score ≥ 100 · $25 of new lines per 7-day epoch · idle lines reclaimed after 30 days |
 | Seats V3 (root #6234) | seat ≈ $25 of $PRIORS (12,000 on 2026-09-25, resized with the price by the SeatSizer `0xd24B…5E61`) · line $5 · 50% of the seat burnt on a default · 10 open seats · $50 of new lines per 7-day epoch |
 | Seat gates | the agent has repaid at least 3 loans; a seat idle 30 days can be expired by anyone |
+| Stock lines (`StockVault`, root #6424, since 2026-09-28) | 35 Robinhood stock tokens · line 25-50% of the deposit's Chainlink value by token (`deployments/stock-ltv.4663.json`), plus up to 15 points for a record of repaid treasury credit · at most $250 a line · $1,000 of new lines per 7-day epoch · the whole deposit seized on a default · a line idle 30 days (7 if never drawn) can be expired by anyone, tokens back |
 
 `npx priors-v2 status` and the Participate page read these live; if this table and the chain disagree, the chain
 is right.
@@ -101,6 +102,9 @@ Amounts are USDG as a number or decimal string (`5`, `"12.5"`), or atomic 6-deci
 - **Agent:** `register(uri)`, `signConsent({agentId, sponsorId, maxPremiumBps, deadline})`,
   `redeemInvite(agentId, code)`, `acceptSeat(agentId, staker)`, `quoteFee(agentId, amount, termSeconds)`,
   `borrow(agentId, amount, termSeconds, {to, maxFee})`, `repay(loanId)`, `openLoans(agentId)`, `status(agentId)`.
+- **Stock line** (`addresses.stockVault`): `stockAssets()`, `stockPosition(agentId)`,
+  `openStockLine(agentId, token, amount)`, `addCollateral(agentId, amount)`, `closeStockLine(agentId)`; token amounts
+  are whole tokens as a number or decimal string, or raw units as a `bigint`.
 - **Float:** `pay(url, {agentId, maxBorrow, maxPrice?, termSeconds?, maxFee?})` and `settleLoans(agentId)`,
   see [FLOAT.md](FLOAT.md).
 

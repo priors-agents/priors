@@ -26,8 +26,10 @@ the moment its record lands here. The v1 shape:
 plus the two roots' agent ids (`treasuryV4AgentId` 6228, `seatVaultAgentId` 6234), `inviteBond`, the retired
 `seatVaultV2` (root `seatVaultV2AgentId` 6229), `v1Pool` and `"status": "live"`. `seatVault` is SeatVaultV3 since
 2026-09-25. `seatSizer` (since block 72,572,884) owns the seat vault and keeps its seat at about 5 lines of $PRIORS;
-the Safe owns it. `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it; `PRIORS_ADDRESSES` points them at
-another file.
+the Safe owns it. `stockVault` (root `stockVaultAgentId` 6424, since block `stockVaultBlock` 74,826,641) is the stock
+vault: the proxy address, the one to call and the one that holds the tokens; its implementation and ProxyAdmin are in
+the README's address table. `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it (the SDK's stock-line calls
+use `stockVault` from it); `PRIORS_ADDRESSES` points them at another file.
 
 ```json
 {
@@ -43,6 +45,13 @@ another file.
   "…": "…"
 }
 ```
+
+`stock-assets.4663.json` — the 35 Robinhood stock tokens the stock vault accepts, each with its Chainlink feed
+(address, decimals, heartbeat), from Robinhood's token list and Chainlink's feed list (both named in its `sources`).
+`sdk/stock-vault.mjs` and `@priors/mcp` (a copy in `packages/mcp/deployments/`) read it for symbols and feeds.
+`stock-ltv.4663.json` — each token's loan-to-value and the record bonus, as set on the vault at deployment. The
+owner can change both on chain (`setAsset`, `setRecordBonus`); if this file and the vault disagree, the vault is
+right.
 
 `4663.json` — **Robinhood Chain mainnet, v1, paused.** The v1 CreditPool, TreasurySponsor v3 (ERC-8004 identity
 `#486`), the ReserveFunder, and the block the pool was deployed at. It carries `"status": "paused"` and

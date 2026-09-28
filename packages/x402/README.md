@@ -153,6 +153,13 @@ const fetchWithPay = wrapFetchWithPayment(fetch, createUsdgClient({ signer, maxP
 `borrowLine`, `repayLoan`, `settleLoans`, `balances`, `borrowGap`. `repayLoan` pays only a loan of an agent the
 signer controls (owner or pool delegate); any other loan is refused with `NOT_CONTROLLER` before anything is sent.
 
+Stock lines (the Priors stock vault backs a line with the agent's own stock tokens; pass `addresses.stockVault` to
+`creditContracts` once it is deployed): `creditStatus` then carries `collateral` { `token`, `amount`, `value` (what
+the vault prices them at, null while it will not), `ltvBps`, `borrowRoom`, `hold` (0, or why new loans wait:
+`STOCK_HOLDS`), `holdReason`, `status`, `closing` } for a stock line (null for any other), and its `available` is the
+smaller of the pool's figure and `borrowRoom`. `stockPosition(c, id, assets?)` and `stockAssets(c, assets)` read one
+position and the accepted tokens (price, whether the vault lends now, LTV).
+
 ## Source
 
 [github.com/priors-agents/priors](https://github.com/priors-agents/priors/tree/main/packages/x402), MIT. The facilitator,

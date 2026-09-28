@@ -1,5 +1,6 @@
 // @priors/mcp: an MCP server that lets an AI assistant pay x402 URLs in USDG on Robinhood Chain and run a Priors
-// credit line. Tools: pay_url, wallet_balance, credit_status, borrow, repay, score_of, find_services.
+// credit line. Tools: pay_url, wallet_balance, credit_status, stock_assets, stock_position, borrow, repay, score_of,
+// find_services.
 //
 // The private key comes from the environment (PRIORS_KEY) only. It is never read from argv, never logged, and never
 // part of any tool result or error: every text this server returns passes through `redact()`, which removes the key
@@ -16,6 +17,7 @@
 //   PRIORS_MAX_BORROW_TOTAL_USD  most borrowed in total per process (default 25)
 //   PRIORS_ALLOW_LOCAL     "1": pay_url may reach http://localhost and private addresses (testing only)
 //   PRIORS_SCORE_V2        where score_of reads Priors Score v2 (default https://priors.trade/api/score-v2; "off": v1 only)
+//   PRIORS_STOCK_VAULT     the stock vault's address (default: deployments/4663.v2.json `stockVault`, once deployed)
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
@@ -39,6 +41,8 @@ const { X, C } = await loadX402();
 
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const ADDRESSES = JSON.parse(readFileSync(new URL("../deployments/4663.v2.json", import.meta.url), "utf8"));
+/** The stock tokens the stock vault accepts (a copy of the repository's deployments/stock-assets.4663.json). */
+const STOCK_ASSETS = JSON.parse(readFileSync(new URL("../deployments/stock-assets.4663.json", import.meta.url), "utf8")).assets;
 const DEFAULT_PAY_MAX_USD = 0.1;
 
 /** A private key (64 hex, optional 0x) anywhere in a string: refused on the command line. */
@@ -105,6 +109,14 @@ export function guardedFetch(resolve = dnsLookupCb) {
 
 const usd = (units) => `${X.formatUsdg(units)} USDG`;
 const when = (t) => new Date(Number(t) * 1000).toISOString().replace(".000Z", "Z");
+/** A token amount (bigint base units) with `decimals` places, trailing zeros trimmed. */
+const tokens = (units, decimals) => (Number.isInteger(decimals) ? ethers.formatUnits(units, decimals).replace(/\.0$/, "") : String(units));
+/** One line for the stock collateral behind a line (creditStatus.collateral, or a stockPosition). */
+export function collateralText(c, symbol = c.symbol, decimals = c.decimals) {
+  const what = symbol ? `${tokens(c.amount, decimals)} ${symbol}` : `${c.amount} base units of ${c.token}`;
+  return `Backed by ${what}${c.value !== null ? ` worth ${usd(c.value)} to the vault` : " (not priced for new loans right now)"}, at ${Number(c.ltvBps) / 100}% loan-to-value: ${usd(c.borrowRoom)} can be drawn now.`
+    + (c.hold ? ` New loans wait: ${c.holdReason || "a lending hold"}.` : "") + (c.closing ? " Closing: no new loans." : "");
+}
 const short = (s, n) => (s.length > n ? `${s.slice(0, n)}… (${s.length - n} more characters cut)` : s);
 const clean = (s, n) => short(String(s ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ""), n);
 
@@ -188,7 +200,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     for (const n of ["PAYMENT-RESPONSE", "X-PAYMENT-RESPONSE"]) { const h = res.headers.get(n); if (h) { try { return JSON.parse(Buffer.from(h, "base64").toString("utf8")); } catch (_) { /* not ours to read */ } } }
     return undefined;
   };
-  const addresses = { ...ADDRESSES, ...(deps.addresses || {}) };
+  const addresses = { ...ADDRESSES, ...(env.PRIORS_STOCK_VAULT ? { stockVault: env.PRIORS_STOCK_VAULT } : {}), ...(deps.addresses || {}) };
 
   // Everything returned passes through here: the key (with or without 0x, any case) and a private RPC URL are cut.
   const secrets = [];
@@ -198,12 +210,14 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
 
   const provider = deps.provider || new ethers.JsonRpcProvider(rpc, ethers.Network.from(X.robinhood.chainId), { staticNetwork: true, cacheTimeout: -1 });
   const wallet = key ? new ethers.Wallet(key, provider) : null;
-  const contracts = C.creditContracts({ runner: provider, addresses: { pool: addresses.pool, lens: addresses.lens, usdg: addresses.usdg, registry: addresses.registry } });
+  const contracts = C.creditContracts({ runner: provider, addresses: { pool: addresses.pool, lens: addresses.lens, usdg: addresses.usdg, registry: addresses.registry, stockVault: addresses.stockVault || null } });
 
   // The chain, behind one facade (tests replace it).
   const credit = deps.credit || {
     balances: (addr) => C.balances(contracts, provider, addr),
     status: (id) => C.creditStatus(contracts, id),
+    stockAssets: () => C.stockAssets(contracts, STOCK_ASSETS),
+    stockPosition: (id) => C.stockPosition(contracts, id, STOCK_ASSETS),
     quote: (id, amount, term) => C.quoteBorrow(contracts, id, amount, term),
     borrow: (id, amount, term) => C.borrowLine(contracts, wallet, id, amount, term),
     repay: (loanId) => C.repayLoan(contracts, wallet, loanId),
@@ -244,7 +258,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
 
   function needWallet(action) {
     if (keyProblem) throw new ToolError(`${action} needs a wallet, but ${keyProblem}. Fix PRIORS_KEY in the MCP server's environment.`);
-    if (!wallet) throw new ToolError(`${action} moves money and needs a wallet: set PRIORS_KEY in the MCP server's environment (never pass a key as a tool argument or on the command line). Read-only tools (wallet_balance with an address, credit_status, score_of, find_services) work without it.`);
+    if (!wallet) throw new ToolError(`${action} moves money and needs a wallet: set PRIORS_KEY in the MCP server's environment (never pass a key as a tool argument or on the command line). Read-only tools (wallet_balance with an address, credit_status, stock_assets, stock_position, score_of, find_services) work without it.`);
     return wallet;
   }
   async function needController(id) {
@@ -369,11 +383,39 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       `Agent #${id}${s.owner ? ` (owner ${s.owner})` : ""}${s.defaulted ? " — DEFAULTED" : ""}${s.frozen ? " — frozen" : ""}${s.isRoot ? " — a backer (root)" : ""}`,
       s.sponsor === 0n ? "Backed by: nobody yet, so no line." : `Backed by: root #${s.sponsor}${s.premiumBps > 0n ? `, premium ${Number(s.premiumBps) / 100}%` : ""}.`,
       `Line ${usd(s.line)}: drawn ${usd(s.drawn)}, available ${usd(s.available)}.`,
+      ...(s.collateral ? [collateralText(s.collateral)] : []),
       `Record: ${s.loansRepaid} loans repaid (${s.qualifiedRepaid} qualified), ${usd(s.volumeRepaid)} repaid in total, ${usd(s.feesPaid)} in fees.${s.score !== null ? ` Score ${s.score}/1000.` : ""}`,
     ];
     if (s.openLoans.length === 0) lines.push("Open loans: none.");
     for (const l of s.openLoans) lines.push(`Open loan #${l.loanId}: ${usd(l.principal)} + fee ${usd(l.fee)} = ${usd(l.due)}, due ${when(l.dueAt)}${Date.now() / 1000 > l.dueAt ? " (PAST DUE: repay now)" : ""}.`);
     return lines.join("\n");
+  });
+
+  // ---- stock_assets / stock_position -----------------------------------------------------------------------------
+  tool("stock_assets", {
+    title: "Stock tokens Priors lends against",
+    description: "List the Robinhood stock tokens the Priors stock vault accepts as collateral on Robinhood Chain: each token's live Chainlink price, whether the vault lends against it right now (and if not, why: a sharp price move, a multiplier change such as a split, a paused or blocked token), and its loan-to-value. Read-only.",
+    inputSchema: { symbol: z.string().max(12).optional().describe("One ticker, e.g. SPY. Omit for all.") },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  }, async ({ symbol }) => {
+    const want = symbol ? String(symbol).trim().toUpperCase() : null;
+    const all = await credit.stockAssets();
+    const list = all.filter((a) => !want || a.symbol.toUpperCase() === want);
+    if (want && list.length === 0) throw new ToolError(`${oneLine(symbol, 12)} is not among the ${all.length} stock tokens the vault accepts.`);
+    const rows = list.map((a) => `- ${a.symbol} (${a.name}): ${a.price === null ? "no price" : `$${a.price.toFixed(2)}`}${a.updatedAt ? ` as of ${when(a.updatedAt)}` : ""}; ${a.usable ? `lends at ${Number(a.ltvBps) / 100}% of value` : `no new loans (${a.holdReason || "price not usable now"})`}`);
+    return `The Priors stock vault accepts ${all.length} stock tokens; ${list.filter((a) => a.usable).length} of those shown take new lines now:\n${rows.join("\n")}`;
+  });
+
+  tool("stock_position", {
+    title: "Stock collateral behind an agent's line",
+    description: "Show the stock tokens behind a Priors agent's stock line on Robinhood Chain: the token and amount the vault holds, what the vault values them at, the loan-to-value, what the line can draw now, whether new loans wait on a lending hold, and whether the line is closing. agent_id defaults to the configured wallet's agent. Read-only.",
+    inputSchema: { agent_id: z.number().int().nonnegative().optional().describe("Priors (ERC-8004) agent id; default: the configured wallet's agent.") },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  }, async ({ agent_id }) => {
+    const id = await resolveAgent(agent_id);
+    const p = await credit.stockPosition(id);
+    if (!p) return `Agent #${id} has no stock position: its line (if any) is not backed by stock tokens.`;
+    return [`Agent #${id}: stock line of ${usd(p.line)}, ${p.status}.`, collateralText(p)].join("\n");
   });
 
   // ---- score_of ------------------------------------------------------------------------------------------------

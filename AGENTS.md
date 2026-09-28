@@ -9,7 +9,8 @@ Priors is an on-chain credit pool for [ERC-8004](https://eips.ethereum.org/EIPS/
 borrows unsecured stablecoin, repays it, and earns a public trust score from that record. This repo holds the
 contracts, the SDK, the CLIs, and the skill that walks an agent through getting its own credit history.
 
-**Priors v2 is live on Robinhood Chain (4663)**: `CreditPoolV2`, treasury v4 and the seat vault (`SeatVaultV3`), addresses in
+**Priors v2 is live on Robinhood Chain (4663)**: `CreditPoolV2`, treasury v4, the seat vault (`SeatVaultV3`) and the
+stock vault (`StockVault`, lines against Robinhood stock tokens), addresses in
 `deployments/4663.v2.json`. The v1 pool is paused; its records were imported into v2. Use the v2 tools
 (`npx priors-v2`, `sdk/priors-v2.mjs`) for anything on mainnet. The v1 tools (`npx priors`, `sdk/priors.mjs`)
 read v1 history and drive the local devnet, which still deploys v1.
@@ -53,7 +54,7 @@ npm run quickstart                         # no mainnet? a local v1 chain and th
 ## Working on the code
 
 ```bash
-forge test                  # 521 tests, all green (fork-only tests skip)
+forge test                  # 642 tests, all green (fork-only tests skip)
 npm test                    # SDK, CLI, publish guard (needs Foundry)
 npm run test:v2             # v2 SDK and x402 client, network-free
 npm run devnet              # local v1 chain + deployed pool, bootstrapped so firstLine() works
@@ -62,9 +63,10 @@ bash scripts/check-public.sh  # fails if any credential reached a tracked file
 ```
 
 - Solidity 0.8.26, Foundry, `optimizer_runs = 200`; `CreditPoolV2` alone compiles via-IR at `optimizer_runs = 1`
-  (a per-file restriction in `foundry.toml`) to fit 24 KB. Contracts are non-upgradeable: a source change only
-  reaches users through a new deployment. `src/` for deployed contracts must stay byte-identical to what was
-  verified on chain.
+  (a per-file restriction in `foundry.toml`) to fit 24 KB. Contracts are non-upgradeable, except `StockVault`
+  (behind `StockVaultProxy`, upgraded only by the Safe through its ProxyAdmin): a source change only reaches users
+  through a new deployment or that upgrade. `src/` for deployed contracts must stay byte-identical to what was
+  verified on chain (`forge fmt` skips `src/StockVault.sol` for that reason; never format it).
 - `sdk/priors-v2.mjs` (v2) and `sdk/priors.mjs` (v1) are the contract surfaces (ABIs included);
   `sdk/float.mjs` is the x402 client; `sdk/env.mjs` resolves chain/deployment/signer (`resolveV2()` for v2).
   Use them rather than hand-rolling calls; the 6-decimal conversions, the consent signature and the USDG approval

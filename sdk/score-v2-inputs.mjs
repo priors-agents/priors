@@ -25,6 +25,10 @@
 //
 // Fails closed: a backer the snapshot doesn't know, or one enrolled for less than `backers.minAgeDays` when the loan
 // was issued, counts as the agent's own money.
+//
+// Own collateral (weights 2.0.1, `backers.ownCollateralRoots`): the stock vault's root (snapshot meta.stockVaultAgentId)
+// counts as the borrower's own money too. The vault backs a line with the borrower's own stock tokens, which it seizes
+// on a default: loans on them are no risk someone else took.
 import { scoreV2, payerWeight, DEFAULT_WEIGHTS } from "./score-v2.mjs";
 
 const lc = (a) => String(a || "").toLowerCase();
@@ -119,6 +123,8 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
   const minBackerAge = weights.backers.minAgeDays * DAY;
   // the pool's treasury and seat vault count as backers from day one (public ids in the snapshot's meta)
   const protocolBackers = new Set([snapshot.meta?.treasuryAgentId, snapshot.meta?.seatVaultAgentId, snapshot.meta?.archive?.treasuryAgentId].filter((x) => x != null).map(Number));
+  // roots that lend against the borrower's own collateral: never someone else's risk
+  const ownRoots = new Set((weights.backers.ownCollateralRoots || []).includes("stockVault") && Number(snapshot.meta?.stockVaultAgentId) > 0 ? [Number(snapshot.meta.stockVaultAgentId)] : []);
   // v1 loans predate the loan's own sponsorId: their backer is in the FeeSplit event of the repayment
   const v1Backer = new Map();
   for (const e of snapshot.events || []) if (e.kind === "FeeSplit" && e.era === "v1") v1Backer.set(Number(e.loanId), Number(e.sponsor));
@@ -137,6 +143,7 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
   const backerCounts = (backerId, issuedAt, borrowerCluster) => {
     const b = K.byId.get(Number(backerId));
     if (!b || !(Number(backerId) > 0)) return false;               // unknown backer: fail closed
+    if (ownRoots.has(Number(backerId))) return false;              // the borrower's own collateral
     if (K.clusterOfAgent(backerId) === borrowerCluster) return false;
     if (protocolBackers.has(Number(backerId))) return true;
     return Number(b.enrolledAt) > 0 && Number(issuedAt) - Number(b.enrolledAt) >= minBackerAge;

@@ -2,7 +2,8 @@
 
 This page covers the v2 set live on Robinhood Chain since block 71,702,460: `CreditPoolV2` (+ `PoolV2Lib`,
 `CreditLensV2`), `TreasurySponsorV4`, `SeatVaultV3` (which replaced `SeatVaultV2` on 2026-09-25), the
-`SeatSizer` that owns it since 2026-09-26, and `InviteBond`, plus the SDK's x402 float client and the `@priors/x402` and `@priors/mcp` packages. It lists every known
+`SeatSizer` that owns it since 2026-09-26, `InviteBond`, and the `StockVault` since 2026-09-28 (the one upgradeable
+Priors contract), plus the SDK's x402 float client and the `@priors/x402` and `@priors/mcp` packages. It lists every known
 finding, so a rediscovery is not mistaken for a new one, and so you can check each ruling against a test.
 
 **How these were found.** Several internal adversarial reviews before launch (three per-contract hunts, Slither,
@@ -92,6 +93,47 @@ Reviewed before deployment by an internal review and an adversarial pass; **no t
 | SZ-6 | Info | `renounceOwnership` (on the SeatSizer, or on the vault through `execute`) would strand the vault for good. | **Fixed before deployment:** both revert `NoRenounce`. | `test_renounceIsRefused_onTheSizerAndOnTheVault` |
 | SZ-7 | Info | With a burn share under 30% (the vault allows 25%), a seat at the 5-line target burns under 1.5 lines, so every resize would pause seats. | **Accepted:** the live burn share is 50%; lowering it means raising `LINES` in a new SeatSizer first. | `test_poc_burnUnder30pct_everyResizeOnTargetPauses` |
 
+## StockVault
+
+Since 2026-09-28 (block 74,826,641) the **stock vault** (`0xbEcd07EC689988e16b870C121756C4c2C8cb02B6`, `src/StockVault.sol`, root `#6424`) backs lines with the agent's own Robinhood stock tokens. An agent's owner deposits one of the 35 accepted tokens and the vault vouches a line of that token's loan-to-value (25-50%, plus a record bonus) of the deposit's Chainlink value, at most $250, out of its own USDG stake in the pool. Every new loan asks the vault (`canBorrow`): a fresh price, no lending hold, the owner who opened the position, and the drawn principal within the loan-to-value of the collateral's value now. A default seizes the whole deposit to `seizeTo` (the Safe) and burns the vault's stake for the loan, as for any root: lenders never carry it.
+
+**Upgradeable, unlike every other Priors contract.** The vault's address is a Transparent ERC-1967 proxy (`src/StockVaultProxy.sol`) to the implementation `0xF781b2634254d7819E9E17BfFc9D18C54C32008b`. Its ProxyAdmin (`0x5174A18550a295cd25aF59416a56B7e4c38C8Afc`) is owned by the Safe (2-of-3, no timelock), and only the Safe, through `ProxyAdmin.upgradeAndCall`, can point the vault at a new implementation. An upgrade can change anything the vault does, including moving the deposits and the stake it holds: depositors trust the Safe for that, on top of the rules below. `test/StockVaultUpgrade.t.sol` checks that only the ProxyAdmin's owner upgrades, that the implementation cannot be initialized and holds nothing, and that an upgrade keeps positions, stake, settings and tokens.
+
+**The owner's powers.** The vault's owner is the same Safe (`Ownable2Step`; `renounceOwnership` reverts). Short of an upgrade, it can never take a depositor's tokens except through a default:
+
+| call | what it does | bounds in the code |
+|---|---|---|
+| `setAsset(token, feed, maxAge, enabled, ltvBps, lineCap)` | accepts a token (or stops accepting it for new positions) with its Chainlink feed, the oldest price it uses, its loan-to-value and the USDG of open lines it may back | LTV 10-70%; `maxAge` at most 7 days; a held token's feed cannot change; a lower LTV shrinks what open lines can still draw, never the line vouched |
+| `setParams` | the reference LTV the record bonus scales against, `maxLine` per position, `epochCap` of new lines per epoch, the epoch's length | LTV at most 70%; epoch at most 365 days |
+| `setRecordBonus(roots, feeStep, bpsPerStep, maxBonus)` | which roots' repaid loans make an agent's record (the pool's `feesFrom`), and how fees paid under them add loan-to-value | at most 4 roots, never the vault's own; at most 20 points; a position never above 70% |
+| `setPriceGuard`, `setSessionMaxAge`, `setIdleAfter`, `setIdleUndrawnAfter` | the lending holds' bounds, the price age while the market trades, the idle windows | a hold on a 5-50% move, windows at most 14 days; price age 1 h to 7 days; idle 1 to 365 days |
+| `pause(bool)` | stops new positions and new loans | closing, settling, expiring, reclaiming and repaying never pause |
+| `freezePosition(id)` | closes a position as its depositor could, every token back to the depositor | never seizes |
+| `writeOff(id)` | for a position whose token cannot be sent back, with no loan open: its line ends and its stake is free | the tokens stay owed to the depositor; anyone can `reclaim` them once they move |
+| `retire(shares, to)` | takes stake out | only stake that backs nothing, keeping every open line's fee room |
+| `setSeizeTo`, `setFeeSink` | where seized tokens and sponsor fees go | – |
+| `rescue(token, to)`, `rescueUsdg(to, amount)` | sends on a token sent by mistake; sends on USDG the vault received for someone else (a cash distribution on the tokens it holds) | `rescue` never reaches collateral held for positions, nor USDG; `rescueUsdg` is logged |
+| `adopt(id)` | binds the vault's ERC-8004 identity | once |
+
+The live settings (35 tokens, 25-50% loan-to-value, $1,000 of open lines per token and $500 for six, a record bonus from treasury v4's loans only) are in `deployments/stock-ltv.4663.json` and README's parameters table; the chain is right if they disagree.
+
+Reviewed before deployment by an internal audit (2026-09-27) and a readiness review (2026-09-28); **no third-party audit**. Tests: `test/StockVault*.t.sol`, and `test/StockVaultFork.t.sol` against live chain state (`FORK_RPC=…`).
+
+| id | sev | finding | status | evidence |
+|---|---|---|---|---|
+| SV-1 | Medium | **No price-jump guard.** The feeds' multiplier can lag a corporate action by days; on a 1:N reverse split the same lag overstates collateral N times ($25 of stock opened a $125 line in the PoC). Bounded by `maxLine` and the weekly cap. | **Fixed before deployment:** lending holds on new lines and new loans: a move over 25% against any round of the last 14 days (widened from 5 days once SGOV's feed was found to have lagged 7), a price history that cannot be read, a multiplier change pending or under a day old, a multiplier that took effect after the feed's latest answer. | `test/StockVaultAuditFixes.t.sol` (`test_priceJump_*`, `test_multiplierChange_pendingOrRecent_holds`), `test/StockVaultReadinessFixes.t.sol` (`test_priceJump_heldThroughASevenDayLag`, `test_multiplierTakenEffectAfterTheFeedsLatestAnswer_holds`) |
+| SV-2 | Medium | **A paused token was still lent against.** Paused by its issuer with an old price, it could be borrowed on and defaulted, and the seizure failed until it was unpaused. | **Fixed before deployment:** a hold while the token or its registry is paused, or the registry blocks the vault or `seizeTo`. | `test_pausedToken_holdsNewLinesAndLoans_butRepayStillWorks`, `test_pausedRegistry_holds`, `test_blockedVaultOrSeizeTo_holds` |
+| SV-3 | Medium | **`skim` sent every USDG the vault held to the fee sink**, including cash paid to it for its depositors. | **Fixed before deployment:** `skim` sends only the sponsor fees it claims; any other USDG leaves only through the owner's logged `rescueUsdg`. | `test_skim_sendsOnlyTheFees_otherUsdgStays`, `test_rescueUsdg_ownerOnly_andLogged` |
+| SV-4 | Low | An issuer burn from the vault left its last depositor short, and a token that cannot move stranded its line. | **Fixed before deployment:** a burn is shared pro rata across every position of that token; `writeOff` and `reclaim` for tokens that cannot move. | `test_adminBurn_*`, `test_writeOff_*` |
+| SV-5 | Low | `expire` counted from the last borrow, so a 30-day loan repaid on time could be expired at once; a line never drawn held the weekly cap and the stake for 30 days. | **Fixed before deployment:** `expire` counts from the last loan or repayment; a line never drawn expires after 7 days. | `test_expire_*` |
+| SV-6 | Medium | **A written-off position was overwritten by a new `open`**, locking its tokens for good. | **Fixed before deployment:** `open` reverts `TokensOwed` until they are reclaimed. | `test_open_refusedOnAWrittenOffPosition`, `test_open_refusedForTheAgentsNewOwner_whileTokensAreOwed` |
+| SV-7 | Medium | **One loan-to-value for all 35 names** under-priced the default on the most volatile. | **Fixed before deployment:** each token's own loan-to-value and cap on open lines, set with `setAsset`. | `test/StockVaultLtv.t.sol`, `test_perTokenLtv_*`, `test_lineCap_*` |
+| SV-8 | Info | `renounceOwnership` was inherited: renouncing would lock the funder's stake behind the open lines (`retire` and `writeOff` need an owner). | **Fixed before deployment:** it reverts. | `test_renounceOwnership_reverts` |
+| SV-9 | Medium | **Loans on the agent's own stock read as risk someone else took.** The vault is a root, so a self-collateralised agent built a Score v2 record (and rung) nobody else risked anything for. | **Fixed in Score v2 2.0.1** ([SCORE-v2.md](SCORE-v2.md)): a loan the vault backs is the borrower's own money. **Residual:** the on-chain record and `CreditLensV2` do not look at who backed a loan, so such a record counts toward treasury v4's `raise`, as a root the agent's owner funds itself already could (T10's bound: $25 of treasury exposure per 7-day epoch). The record bonus never counts the vault's own loans. | `scripts/test-stocks.mjs`; `test_recordBonus_ignoresLoansOnTheVaultsOwnLines`, `test_recordBonus_ignoresARootTheOwnerFundsItself` |
+| SV-10 | Info (trust) | The token's issuer can pause, block, burn and upgrade the 35 stock tokens, including the vault's. | **Trust assumption**, as for the registry and USDG (X5). A burn is shared pro rata; a token that cannot move is written off and reclaimed later (SV-4). The stake, never lenders, pays a default whose collateral turns out worthless. | SV-2, SV-4 tests |
+| SV-11 | Info | A default seizes the whole deposit, even when it is worth more than the loan; there is no liquidation. A cash or token distribution paid to the vault is not credited to depositors (it leaves only through the owner's `rescue` / `rescueUsdg`). | **By design.** | – |
+| SV-12 | Info | Prices: a price older than 26 hours stops new loans while the market trades; the week's last price (a Friday or Saturday, UTC) stays usable until Tuesday 06:00 UTC, never beyond the token's `maxAge` (4 days). A mid-week holiday stops new loans until trading resumes. Robinhood Chain has no sequencer-uptime feed to check. | **Accepted.** Repaying, closing and settling never wait on a price. | `test/StockVault.t.sol` (price age) |
+
 ## SDK and x402 float
 
 | id | sev | finding | status |
@@ -118,6 +160,8 @@ forge test --match-path 'test/audit-v2/*' -vv
 forge test --match-path 'test/audit-final/*' -vv
 forge test --match-path 'test/review-v2/*' -vv
 forge test --match-contract 'CreditPoolV2Invariant|SeatVaultV2Invariant|SeatVaultV3Invariant|TreasurySponsorV4Invariant'
+forge test --match-path 'test/StockVault*' -vv
+FORK_RPC=https://rpc.mainnet.chain.robinhood.com forge test --match-path test/StockVaultFork.t.sol -vv
 ```
 
 The proofs of concept for SO-1, SO-2 and AI-1 are internal (V-2's are public, replayed against V3 in `test/SeatVaultV3V2Fixes.t.sol`) and not in this repository; the rows above state

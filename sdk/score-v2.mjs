@@ -17,13 +17,24 @@
 //     backingByOthers, loans: [{ principal, issuedAt, dueAt, closedAt, status, backedByOthers }],
 //     income: [{ payer, amount, at, payerScore? }] }   // income already filtered to payers outside the cluster
 import WEIGHTS from "./score-weights.v2.json" with { type: "json" };
+import WEIGHTS_2_0_1 from "./score-weights.v2.0.1.json" with { type: "json" };
 
 const DAY = 86400;
 const USDG = 1e6;
 const PPM = 1_000_000n;
 const round1 = (x) => Math.round(x * 10) / 10;
 
+/** The default weights (2.0.0). A newer version becomes the default only once announced (docs/SCORE-v2.md). */
 export const DEFAULT_WEIGHTS = WEIGHTS;
+/** Every published weights version, so a past score can be recomputed and a new one run before it is the default. */
+export const WEIGHTS_BY_VERSION = Object.freeze({ [WEIGHTS.version]: WEIGHTS, [WEIGHTS_2_0_1.version]: WEIGHTS_2_0_1 });
+/** The weights of `version` (the default when empty); an unknown version throws. */
+export function weightsFor(version) {
+  if (version == null || String(version).trim() === "") return DEFAULT_WEIGHTS;
+  const w = WEIGHTS_BY_VERSION[String(version).trim()];
+  if (!w) throw new Error(`score-v2: unknown weights version ${version} (known: ${Object.keys(WEIGHTS_BY_VERSION).join(", ")})`);
+  return w;
+}
 
 /** How much a payer's USDG counts (0..1): unknown wallets at `unknownPayerWeight`, scored ones by their own score. */
 export function payerWeight(score, W = WEIGHTS) {

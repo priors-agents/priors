@@ -21,5 +21,8 @@
   "seatVaultV2": "0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F",
   "seatVaultV2AgentId": 6229,
   "seatSizer": "0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61",
-  "seatSizerBlock": 72572884
+  "seatSizerBlock": 72572884,
+  "stockVault": "0xbEcd07EC689988e16b870C121756C4c2C8cb02B6",
+  "stockVaultAgentId": 6424,
+  "stockVaultBlock": 74826641
 }

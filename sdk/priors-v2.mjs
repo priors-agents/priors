@@ -15,6 +15,9 @@
 //            await p.acceptSeat(agentId, staker)                                  // a staker's seat offer
 //            const { loanId } = await p.borrow(agentId, 5, 7 * 86400)             // $5 for 7 days
 //            await p.repay(loanId); await p.openLoans(agentId); await p.status(agentId)
+//   stocks   (addresses.stockVault) await p.stockAssets(); await p.stockPosition(agentId)
+//            await p.openStockLine(agentId, token, "0.05")                        // deposit and open the line
+//            await p.addCollateral(agentId, "0.01"); await p.closeStockLine(agentId)
 //
 // Amounts: a number or a decimal string is whole USDG ("5", 5.5); a bigint is raw 6-decimal units. Every write
 // simulates first (a revert is explained with the contracts' own custom errors, before any gas is spent) and
@@ -26,6 +29,7 @@
 import { ethers } from "ethers";
 import { parseInvite, explainRevert } from "./priors.mjs";
 import { pay as floatPay, settleLoans as floatSettleLoans } from "./float.mjs";
+import { STOCK_VAULT_ABI, stockAssets as readStockAssets, stockPosition as readStockPosition, collateralOf, borrowable } from "./stock-vault.mjs";
 
 export { parseInvite, explainRevert };
 
@@ -245,7 +249,7 @@ const consentTuple = (c) => [BigInt(c.agentId), BigInt(c.sponsorId), c.owner, Bi
 export class PriorsV2 {
   /**
    * @param {{ signer?: any, provider?: any, rpc?: string,
-   *           addresses: { pool: string, treasuryV4?: string, seatVault?: string, usdg?: string, registry?: string, priors?: string } }} opts
+   *           addresses: { pool: string, treasuryV4?: string, seatVault?: string, usdg?: string, registry?: string, priors?: string, stockVault?: string } }} opts
    */
   constructor(opts = {}) {
     const a = opts.addresses || {};
@@ -261,8 +265,9 @@ export class PriorsV2 {
     this.usdg = a.usdg ? new ethers.Contract(a.usdg, ERC20_ABI, run) : null;
     this.token = a.priors ? new ethers.Contract(a.priors, ERC20_ABI, run) : null;
     this.registry = a.registry ? new ethers.Contract(a.registry, REGISTRY_ABI, run) : null;
+    this.stockVault = a.stockVault ? new ethers.Contract(a.stockVault, STOCK_VAULT_ABI, run) : null;
     // every interface a call here can revert with: a vault or treasury call bubbles the pool's errors up
-    this._ifaces = [this.pool.interface, ...(this.vault ? [this.vault.interface] : []), ...(this.treasury ? [this.treasury.interface] : []), new ethers.Interface(ERC20_ABI), new ethers.Interface(REGISTRY_ABI)];
+    this._ifaces = [this.pool.interface, ...(this.vault ? [this.vault.interface] : []), ...(this.treasury ? [this.treasury.interface] : []), ...(this.stockVault ? [this.stockVault.interface] : []), new ethers.Interface(ERC20_ABI), new ethers.Interface(REGISTRY_ABI)];
     this.toUnits = toUnits;
   }
 
@@ -531,15 +536,18 @@ export class PriorsV2 {
     return { loanId: Number(id), agentId: Number(l.agentId), sponsorId: Number(l.sponsorId), principal: l.principal, fee: l.fee, due: l.principal + l.fee, issuedAt: Number(l.issuedAt), dueAt: Number(l.dueAt), defaultableAt: Number(l.defaultableAt), status: LOAN_STATUS[Number(l.status)] };
   }
 
-  /** Where an agent stands: identity, sponsor (which kind), line, loans, seat, and the owner's USDG. */
+  /** Where an agent stands: identity, sponsor (which kind), line, loans, seat, stock collateral, and the owner's USDG.
+   *  For a stock line `available` is capped by the vault's borrowRoom (collateralOf). */
   async status(agentId) {
     const reg = await this._registry();
     const owner = await reg.ownerOf(agentId).catch(() => null);
     const a = await this.pool.getAgent(agentId);
-    const [tRoot, vRoot] = await Promise.all([this.treasury ? this.treasury.agentId() : 0n, this.vault ? this.vault.agentId() : 0n]);
+    const [tRoot, vRoot, sRoot] = await Promise.all([this.treasury ? this.treasury.agentId() : 0n, this.vault ? this.vault.agentId() : 0n, this.stockVault ? this.stockVault.agentId() : 0n]);
     const sponsor = a.sponsor;
-    const sponsorKind = sponsor === 0n ? "none" : sponsor === tRoot ? "treasury v4" : sponsor === vRoot ? "seat vault" : "backer";
-    const available = a.delegatedIn > a.principalOut ? a.delegatedIn - a.principalOut : 0n;
+    const onStock = sponsor !== 0n && sponsor === sRoot;
+    const sponsorKind = sponsor === 0n ? "none" : sponsor === tRoot ? "treasury v4" : sponsor === vRoot ? "seat vault" : onStock ? "stock vault" : "backer";
+    const collateral = onStock ? collateralOf(await readStockPosition(this.stockVault, agentId)) : null;
+    const available = borrowable(a.delegatedIn > a.principalOut ? a.delegatedIn - a.principalOut : 0n, collateral);
     const seat = this.vault ? this._seat(await this.vault.getSeat(agentId)) : null;
     const usdg = await this._usdg();
     return {
@@ -549,8 +557,58 @@ export class PriorsV2 {
       loansRepaid: Number(a.loansRepaid), qualifiedRepaid: Number(a.qualifiedRepaid), volumeRepaid: a.volumeRepaid, feesPaid: a.feesPaid,
       openLoans: await this.openLoans(agentId),
       seat: seat && seat.status !== "none" ? seat : null,
+      collateral,
       ownerUsdg: owner ? await usdg.balanceOf(owner) : 0n,
     };
+  }
+
+  // ---- stock lines (addresses.stockVault) ----
+
+  /** Every accepted stock token with its price, whether the vault lends against it now, its hold and its LTV. */
+  async stockAssets() { return readStockAssets(this.provider, await this._need(this.stockVault, "stockVault").getAddress()); }
+
+  /** Agent `agentId`'s stock position (the tokens behind its line, their value, the line's room), or null. */
+  async stockPosition(agentId) { return readStockPosition(this._need(this.stockVault, "stockVault"), agentId); }
+
+  /** `amount` of `token` in its own units: a bigint is raw, a number or decimal string is whole tokens. */
+  async _tokenUnits(token, amount) {
+    if (typeof amount === "bigint") return amount;
+    const t = new ethers.Contract(token, ["function decimals() view returns (uint8)"], this.provider);
+    return ethers.parseUnits(String(amount), Number(await t.decimals()));
+  }
+
+  /**
+   * Deposit `amount` of an accepted stock `token` behind agent `agentId` and open its line (the owner signs the pool
+   * consent naming the vault's root; the signer is the depositor and gets the tokens back on close). An agent backed
+   * elsewhere moves to the vault only with no loan open (the pool's handoff).
+   */
+  async openStockLine(agentId, token, amount, { maxPremiumBps = 0, deadline } = {}) {
+    const v = this._need(this.stockVault, "stockVault");
+    const units = await this._tokenUnits(token, amount);
+    const { consent, sig } = await this.signConsent({ agentId, sponsorId: await v.agentId(), maxPremiumBps, deadline });
+    const t = new ethers.Contract(token, ERC20_ABI, this.signer);
+    await this._ensure(t, await v.getAddress(), units, `openStockLine(${agentId})`);
+    const rc = await sendChecked(v, "open", [BigInt(agentId), ethers.getAddress(token), units, consentTuple(consent), sig], this._ifaces);
+    return { hash: rc.hash, agentId: Number(agentId), position: await this.stockPosition(agentId) };
+  }
+
+  /** Add `amount` of the position's own token (the depositor only): a higher borrow limit. */
+  async addCollateral(agentId, amount) {
+    const v = this._need(this.stockVault, "stockVault");
+    const p = await v.getPosition(BigInt(agentId));
+    if (Number(p.status) !== 1) throw new Error(`agent #${agentId} has no open stock position`);
+    const units = await this._tokenUnits(p.token, amount);
+    await this._ensure(new ethers.Contract(p.token, ERC20_ABI, this.signer), await v.getAddress(), units, `addCollateral(${agentId})`);
+    const rc = await sendChecked(v, "addCollateral", [BigInt(agentId), units], this._ifaces);
+    return { hash: rc.hash, agentId: Number(agentId), position: await this.stockPosition(agentId) };
+  }
+
+  /** Close agent `agentId`'s stock line (depositor or controller): no new loans; the tokens go back to the depositor
+   *  now with no loan open, otherwise with the repayment of the last one. */
+  async closeStockLine(agentId) {
+    this._needSigner();
+    const rc = await sendChecked(this._need(this.stockVault, "stockVault"), "close", [BigInt(agentId)], this._ifaces);
+    return { hash: rc.hash, agentId: Number(agentId), position: await this.stockPosition(agentId) };
   }
 
   _event(rc, name) {

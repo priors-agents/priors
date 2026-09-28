@@ -23,7 +23,9 @@ repaying.
 |---|---|---|
 | `pay_url(url, method?, body?, max_price_usd?, max_borrow_usd?)` | fetch an https URL, pay its x402 402 in USDG if the price is ≤ `max_price_usd` (default **$0.10**); borrows the gap only if `max_borrow_usd` is given. Refuses private and local addresses, never follows a redirect, answers within 45 s, and never signs a second payment for a purchase that is still pending (a new call resends the same one) | yes |
 | `wallet_balance(address?)` | USDG and gas ETH of the wallet (or any address) | no (with `address`) |
-| `credit_status(agent_id?)` | line, drawn, available, backer, record, score, open loans and due dates | no (with `agent_id`) |
+| `credit_status(agent_id?)` | line, drawn, available, backer, record, score, open loans and due dates; on a stock line, the stock tokens behind it, and `available` capped by what the stock vault lets it draw | no (with `agent_id`) |
+| `stock_assets(symbol?)` | the stock tokens the Priors stock vault accepts: live Chainlink price, whether it lends against each now (or why not: a sharp price move, a multiplier change, a paused or blocked token), loan-to-value | no |
+| `stock_position(agent_id?)` | the stock tokens behind an agent's stock line: amount, what the vault values them at, loan-to-value, what the line can draw now, any lending hold | no (with `agent_id`) |
 | `borrow(amount_usd, days, dry_run?)` | borrow USDG from the line into the wallet; both amounts required; `dry_run` quotes the fee | yes |
 | `repay(loan_id? \| all)` | repay one of the agent's own loans, or all of them earliest due first; another agent's loan is refused | yes |
 | `score_of(agent_id)` | any agent's on-chain score (0 to 1000) and repayment record, plus its Priors Score v2 and trust rung when published | no |
@@ -51,8 +53,11 @@ dedicated agent wallet holding only what the agent may spend.
 | `PRIORS_MAX_BORROW_TOTAL_USD` | `25` | most `borrow` and `pay_url` may borrow in total while the server runs |
 | `PRIORS_ALLOW_LOCAL` | off | `1` lets `pay_url` reach `http://localhost` and private addresses (local testing only) |
 | `PRIORS_SCORE_V2` | `https://priors.trade/api/score-v2` | where `score_of` reads Priors Score v2; `off` shows the on-chain score only |
+| `PRIORS_STOCK_VAULT` | the bundled deployments file's `stockVault` | the stock vault the stock tools and `credit_status` read |
 
-Contract addresses (pool, lens, registry, USDG) come from `deployments/4663.v2.json`, bundled in the package.
+Contract addresses (pool, lens, registry, USDG) come from `deployments/4663.v2.json`, bundled in the package, and the
+accepted stock tokens from `deployments/stock-assets.4663.json`. The stock vault's address comes from the same
+deployments file once it is deployed, or from `PRIORS_STOCK_VAULT`; until then the stock tools say there is none.
 
 ### Claude Desktop
 

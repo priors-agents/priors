@@ -1,0 +1,52 @@
+{
+  "chainId": 4663,
+  "status": "live: applied at deployment (setAsset with each LTV, setRecordBonus); read back from the vault 0xbEcd07EC689988e16b870C121756C4c2C8cb02B6 on 2026-09-28. The owner (the Safe) can change any of it with setAsset and setRecordBonus; the chain is right if this file and the vault disagree.",
+  "why": "The stocks readiness review of 2026-09-28 (funder economics): at one 50% for every name the funder under-prices the default on the most volatile stocks (NBIS, RGTI, SNDK, USAR, CRWV, CRCL), and RGTI, IONQ and CLSK have the thinnest on-chain exits. Index funds, T-bills and megacaps keep 50%.",
+  "ltvBps": {
+    "AAPL": 5000,
+    "AMD": 4000,
+    "AMZN": 5000,
+    "ASML": 5000,
+    "BABA": 4000,
+    "CLSK": 2500,
+    "COIN": 4000,
+    "CRCL": 3000,
+    "CRWV": 3000,
+    "DELL": 4000,
+    "EWY": 5000,
+    "GME": 4000,
+    "GOOGL": 5000,
+    "INTC": 4000,
+    "IONQ": 2500,
+    "META": 5000,
+    "MSFT": 5000,
+    "MSTR": 4000,
+    "MU": 4000,
+    "NBIS": 3000,
+    "NVDA": 5000,
+    "ORCL": 5000,
+    "PLTR": 4000,
+    "QQQ": 5000,
+    "RGTI": 2500,
+    "RKLB": 3000,
+    "SGOV": 5000,
+    "SLV": 5000,
+    "SNDK": 3000,
+    "SPCX": 4000,
+    "SPY": 5000,
+    "TSLA": 4000,
+    "TSM": 5000,
+    "USAR": 3000,
+    "USO": 4000
+  },
+  "recordBonus": {
+    "trustedRoots": [
+      6228
+    ],
+    "trustedRootsAre": "treasury v4 only. Not the seat vaults: an owner can seat its own agent with its own $PRIORS and get the fees back, so their fees are not someone else's risk.",
+    "feeStep": 20000,
+    "bpsPerStep": 100,
+    "maxBonusBps": 1500,
+    "scale": "a step is 0.02 USDG of sponsor fees paid under the treasury: at the live pool (1% per 30 days, 25% to the sponsor) about 240 dollar-days of treasury credit repaid. +1 point per step on a 50% stock, scaled down with the stock's own loan-to-value (a 25% stock gets half), at most +15 on a 50% stock (about 3,600 dollar-days, e.g. a $25 treasury line drawn for 144 days). Never above 70% in total. Retune with the pool's fee params."
+  }
+}

@@ -36,6 +36,7 @@ for you in each of these:
 await s.redeemInvite(agentId, inviteCode);   // treasury v4: $5. inviteCode = priors-invite:<id>:<expiry>:<signature>
 await s.acceptSeat(agentId, stakerAddress);  // a staker's $PRIORS seat: $5 (the agent needs 3 repaid loans)
 const { consent, sig } = await s.signConsent({ agentId, sponsorId, maxPremiumBps }); // hand to a backer
+await s.openStockLine(agentId, token, "0.05"); // the stock vault: a line against your own stock tokens
 ```
 
 - **Treasury invite.** Ask at [priors.trade/invite](https://priors.trade/invite). A code names one agent id,
@@ -45,6 +46,10 @@ const { consent, sig } = await s.signConsent({ agentId, sponsorId, maxPremiumBps
   earns the sponsor share of your fees and loses half the seat if you default, so it is someone's judgement too.
 - **Backer.** Any root with USDG stake can vouch any size, at a premium of at most 2% per 30 days that your consent
   caps.
+- **Stock line.** Deposit one of the 35 accepted Robinhood stock tokens (`s.stockAssets()` lists them with their
+  price and loan-to-value) and the stock vault vouches 25-50% of its value, at most $250. New loans follow the
+  collateral's value now; a default seizes the whole deposit; `s.closeStockLine(agentId)` gives the tokens back. It
+  counts as your own money in Priors Score v2. See the README's "Stock lines".
 
 Why the gates exist: a fresh identity costs cents, so money handed to one unconditionally is a faucet. An invite,
 a seat or a backer is what makes a line cost someone's judgement.

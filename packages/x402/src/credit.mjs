@@ -48,6 +48,21 @@ export const ERC20_ABI = [
   "error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)",
 ];
 const REGISTRY_ABI = ["function ownerOf(uint256) view returns (address)"];
+/** The Priors stock vault (a root that backs lines with the agent's own stock tokens), the reads creditStatus needs. */
+export const STOCK_VAULT_ABI = [
+  "function agentId() view returns (uint256)",
+  "function params() view returns (uint256 ltvBps, uint256 maxLine, uint256 epochCap, uint64 epochLength)",
+  "function getPosition(uint256 id) view returns (tuple(address depositor, address owner, address token, uint64 openedAt, bool closing, uint8 status, uint128 line, uint256 amount))",
+  "function valueOf(address token, uint256 amount) view returns (bool ok, uint256 value)",
+  "function lendStatus(address token) view returns (uint8)",
+  "function ltvOf(uint256 id, address token) view returns (uint256)", // id 0: the stock's own; else with the agent's record bonus
+  "function borrowRoom(uint256 id) view returns (uint256)",
+];
+/** Why the stock vault holds new loans on a token (StockVault.lendStatus; 0: no hold). */
+export const STOCK_HOLDS = ["", "the price moved sharply", "a multiplier change", "the token is paused", "the token blocks the vault"];
+const POSITION_STATUS = ["none", "open", "closed", "seized", "written off"];
+/** The vault's own `valueOf`: on an ethers Contract, `vault.valueOf` is Object.prototype.valueOf, not the function. */
+const vaultValueOf = (vault, token, amount) => (typeof vault.getFunction === "function" ? vault.getFunction("valueOf")(token, amount) : vault.valueOf(token, amount));
 export const LOAN_STATUS = ["none", "active", "repaid", "defaulted"];
 const LOAN_ACTIVE = 1n;
 
@@ -136,36 +151,109 @@ export async function settleLoans({ signer, pool, agentId }) {
 // ---------------------------------------------------------------------------------------------------------------
 
 /**
- * @param {{ runner: any, addresses?: { pool?: string, lens?: string, usdg?: string, registry?: string } }} o
+ * @param {{ runner: any, addresses?: { pool?: string, lens?: string, usdg?: string, registry?: string, stockVault?: string | null } }} o
  */
 export function creditContracts({ runner, addresses = {} }) {
-  const a = { pool: robinhood.pool, lens: robinhood.lens, usdg: robinhood.usdg, registry: robinhood.registry, ...addresses };
+  const a = { pool: robinhood.pool, lens: robinhood.lens, usdg: robinhood.usdg, registry: robinhood.registry, stockVault: robinhood.stockVault, ...addresses };
   return {
     addresses: a,
     pool: new ethers.Contract(a.pool, POOL_ABI, runner),
     lens: new ethers.Contract(a.lens, LENS_ABI, runner),
     usdg: new ethers.Contract(a.usdg, ERC20_ABI, runner),
     registry: new ethers.Contract(a.registry, REGISTRY_ABI, runner),
+    stockVault: a.stockVault ? new ethers.Contract(a.stockVault, STOCK_VAULT_ABI, runner) : null,
+  };
+}
+
+/**
+ * The stock collateral behind agent `id`'s line, when the stock vault backs it (`sponsor` is the vault's root), else
+ * null: { token, amount (token units), value (what the vault prices it at, USDG base units; null while it will not
+ * price it for new loans), ltvBps, borrowRoom (what the line can draw now), hold (0, or why new loans wait:
+ * STOCK_HOLDS), holdReason, status, closing }.
+ */
+export async function stockCollateral(c, id, sponsor) {
+  if (!c.stockVault || !sponsor) return null;
+  if (c._stockRoot === undefined) c._stockRoot = await c.stockVault.agentId();
+  if (BigInt(sponsor) !== BigInt(c._stockRoot) || BigInt(c._stockRoot) === 0n) return null;
+  const p = await c.stockVault.getPosition(BigInt(id));
+  const [[ok, value], borrowRoom, hold, ltvBps] = await Promise.all([
+    vaultValueOf(c.stockVault, p.token, p.amount), c.stockVault.borrowRoom(BigInt(id)), c.stockVault.lendStatus(p.token).then(Number).catch(() => 0),
+    c.stockVault.ltvOf(BigInt(id), p.token).then(BigInt).catch(async () => BigInt((await c.stockVault.params()).ltvBps)),
+  ]);
+  return {
+    token: p.token, amount: p.amount, value: ok ? value : null, ltvBps, borrowRoom: BigInt(borrowRoom), hold, holdReason: STOCK_HOLDS[hold] || (hold ? `hold ${hold}` : ""),
+    status: POSITION_STATUS[Number(p.status)] || `status ${p.status}`, closing: p.closing,
   };
 }
 
 const loanView = (id, l) => ({ loanId: BigInt(id), agentId: l.agentId, sponsorId: l.sponsorId, principal: l.principal, fee: l.fee, due: l.principal + l.fee, issuedAt: Number(l.issuedAt), dueAt: Number(l.dueAt), defaultableAt: Number(l.defaultableAt), status: LOAN_STATUS[Number(l.status)] || "unknown" });
 
-/** An agent's line, record, open loans and score, from the pool and lens. */
+/** An agent's line, record, open loans and score, from the pool and lens; on a stock line, the collateral behind it
+ *  and `available` capped by what the stock vault lets it draw (borrowRoom). */
 export async function creditStatus(c, agentId) {
   const id = BigInt(agentId);
   const [a, score, owner] = await Promise.all([c.pool.getAgent(id), c.lens.score(id).catch(() => null), c.registry.ownerOf(id).catch(() => null)]);
   const ids = await c.pool.loansOf(id);
   const loans = await Promise.all(ids.map(async (lid) => loanView(lid, await c.pool.getLoan(lid))));
   const blocked = a.defaulted || a.frozen || a.sponsor === 0n;
+  const collateral = await stockCollateral(c, id, a.sponsor);
+  const pooled = blocked ? 0n : a.delegatedIn > a.principalOut ? a.delegatedIn - a.principalOut : 0n;
   return {
     agentId: id, owner, enrolled: a.enrolledAt !== 0n, isRoot: a.isRoot, defaulted: a.defaulted, frozen: a.frozen,
     sponsor: a.sponsor, premiumBps: a.premiumBps, line: a.delegatedIn, drawn: a.principalOut,
-    available: blocked ? 0n : a.delegatedIn > a.principalOut ? a.delegatedIn - a.principalOut : 0n,
+    available: collateral && collateral.borrowRoom < pooled ? collateral.borrowRoom : pooled,
+    collateral,
     loansRepaid: a.loansRepaid, qualifiedRepaid: a.qualifiedRepaid, volumeRepaid: a.volumeRepaid, feesPaid: a.feesPaid,
     enrolledAt: Number(a.enrolledAt), score: score === null ? null : Number(score),
     openLoans: loans.filter((l) => l.status === "active").sort((x, y) => x.dueAt - y.dueAt),
   };
+}
+
+const FEED_ABI = ["function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)"];
+
+/**
+ * Agent `id`'s stock position (whatever backs its line today), or null when it has none: the collateral fields plus
+ * { agentId, symbol (from `assets` when listed), depositor, line, openedAt }. Needs `c.stockVault`.
+ * @param {Array<{symbol: string, token: string, decimals: number}>} [assets]
+ */
+export async function stockPosition(c, id, assets = []) {
+  if (!c.stockVault) throw new PayError("NO_STOCK_VAULT", "Priors has no stock vault configured (not deployed yet)");
+  const p = await c.stockVault.getPosition(BigInt(id));
+  if (Number(p.status) === 0) return null;
+  const [[ok, value], borrowRoom, hold, ltvBps] = await Promise.all([
+    vaultValueOf(c.stockVault, p.token, p.amount), c.stockVault.borrowRoom(BigInt(id)), c.stockVault.lendStatus(p.token).then(Number).catch(() => 0),
+    c.stockVault.ltvOf(BigInt(id), p.token).then(BigInt).catch(async () => BigInt((await c.stockVault.params()).ltvBps)),
+  ]);
+  const a = assets.find((x) => String(x.token).toLowerCase() === String(p.token).toLowerCase()) || null;
+  return {
+    agentId: BigInt(id), token: p.token, symbol: a ? a.symbol : null, decimals: a ? a.decimals : null, amount: p.amount, value: ok ? value : null, ltvBps,
+    line: BigInt(p.line), borrowRoom: BigInt(borrowRoom), hold, holdReason: STOCK_HOLDS[hold] || (hold ? `hold ${hold}` : ""),
+    status: POSITION_STATUS[Number(p.status)] || `status ${p.status}`, closing: p.closing, depositor: p.depositor, openedAt: Number(p.openedAt),
+  };
+}
+
+/**
+ * The stock tokens in `assets` (e.g. deployments/stock-assets.4663.json's list) as the vault sees them now:
+ * [{ symbol, name, token, answer, price, updatedAt, usable, hold, holdReason, ltvBps }]; `usable` is whether the vault
+ * would open a line on it now. Needs `c.stockVault`.
+ * @param {Array<{symbol: string, name: string, token: string, decimals: number, feed: string, feedDecimals: number}>} assets
+ */
+export async function stockAssets(c, assets) {
+  if (!c.stockVault) throw new PayError("NO_STOCK_VAULT", "Priors has no stock vault configured (not deployed yet)");
+  const runner = c.stockVault.runner;
+  const defaultLtv = BigInt((await c.stockVault.params()).ltvBps);
+  return Promise.all(assets.map(async (a) => {
+    const feed = new ethers.Contract(a.feed, FEED_ABI, runner);
+    const [round, val, hold, ltv] = await Promise.all([
+      feed.latestRoundData().catch(() => null), vaultValueOf(c.stockVault, a.token, 10n ** BigInt(a.decimals)).catch(() => null),
+      c.stockVault.lendStatus(a.token).then(Number).catch(() => null), c.stockVault.ltvOf(0n, a.token).then(BigInt).catch(() => defaultLtv),
+    ]);
+    const answer = round ? BigInt(round.answer) : null;
+    return {
+      symbol: a.symbol, name: a.name, token: a.token, answer, price: answer === null ? null : Number(answer) / 10 ** a.feedDecimals,
+      updatedAt: round ? Number(round.updatedAt) : null, usable: !!(val && val[0]) && !hold, hold, holdReason: hold ? STOCK_HOLDS[hold] || `hold ${hold}` : "", ltvBps: ltv,
+    };
+  }));
 }
 
 /** Quote a borrow and check it against the pool's ranges, without sending anything. */

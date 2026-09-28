@@ -15,6 +15,8 @@ compilation_restrictions = [{ paths = "src/CreditPoolV2.sol", via_ir = true, opt
 [fmt]
 line_length = 120
 tab_width = 4
+# StockVault.sol stays byte-identical to the source verified on chain (formatting it would change that source).
+ignore = ["src/StockVault.sol"]
 
 [rpc_endpoints]
 anvil = "http://127.0.0.1:8545"

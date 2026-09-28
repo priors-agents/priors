@@ -25,9 +25,11 @@ Reviews are cheap to fake. Repaid debt isn't.
 > principal and the fee, and lenders never take a loan loss. Lines need the agent owner's signed consent, agents
 > can change sponsor between loans, and the pool's owner is a 48-hour timelock.
 >
-> **Three ways onto the ledger.** A treasury invite (a $5 line from treasury v4, which is funded by $PRIORS creator
-> fees), a **seat** (someone puts about $25 of $PRIORS behind your agent and the seat vault backs a $5 line), or a
-> **backer** who stakes USDG and vouches for you directly. Lenders deposit USDG and earn 60% of every fee.
+> **Four ways onto the ledger.** A treasury invite (a $5 line from treasury v4, which is funded by $PRIORS creator
+> fees), a **seat** (someone puts about $25 of $PRIORS behind your agent and the seat vault backs a $5 line), a
+> **backer** who stakes USDG and vouches for you directly, or, since 2026-09-28, a **stock line** (you deposit
+> Robinhood stock tokens and the stock vault backs a line against them). Lenders deposit USDG and earn 60% of every
+> fee.
 >
 > **What was found before launch, and fixed.** A self-backing loop that took lender yield (fixed with a fee lock),
 > a utilization-cap freeze (cap set to 100%), a farmable keeper bounty (set to 0), and three seat-vault issues
@@ -192,6 +194,35 @@ await priors.pay("https://merchant.example/api", { agentId, maxBorrow: 5_000000n
 [`docs/FLOAT.md`](docs/FLOAT.md) covers x402 payments on credit and the public facilitator at
 `https://facilitator.priors.trade`; [`docs/AGENTS.md`](docs/AGENTS.md) is the guide for agent builders.
 
+## Stock lines
+
+Since 2026-09-28 the stock vault (`StockVault`, root #6424) backs a line with the agent's own Robinhood stock tokens.
+The agent's owner deposits one of the 35 accepted tokens (listed with their Chainlink feeds in
+[`deployments/stock-assets.4663.json`](deployments/stock-assets.4663.json)) and the vault vouches a line of that
+token's loan-to-value: 25-50% of the deposit's value, plus up to 15 points for a record of repaying treasury credit,
+at most $250. Loans on it are ordinary pool loans, with the same fee, terms and default rules. Every new loan is
+checked against the collateral's value now, so a falling price shrinks what can be drawn, and new credit waits during
+a lending hold (a sharp price move, a multiplier change such as a split, a paused or blocked token). Closing gives
+every token back, at once with no loan open, otherwise with the last repayment; a line unused for 30 days (7 if
+never drawn) can be closed by anyone. A default seizes the whole deposit.
+
+```js
+import { resolveV2 } from "priors/env";
+const { priors } = await resolveV2();                    // the vault's address comes from deployments/4663.v2.json
+await priors.stockAssets();                              // each token's price, whether the vault lends now, its LTV
+await priors.openStockLine(agentId, spyToken, "0.05");   // deposit 0.05 SPY and open the line (signs the consent)
+const { loanId } = await priors.borrow(agentId, 5, 7 * 86400);
+await priors.repay(loanId);
+await priors.closeStockLine(agentId);                    // every token back to the depositor
+```
+
+`status(agentId)` shows the tokens behind a stock line. In this repository, `packages/mcp` (`stock_assets`,
+`stock_position`) and `@priors/x402`'s credit helpers read the vault too; the npm releases (`@priors/mcp` 0.1.8,
+`@priors/x402` 0.1.3) predate them. A stock line counts as the borrower's own money in Priors Score v2 (weights
+2.0.1). The tokens are Robinhood's, under its own terms (including where they may be held), and their issuer can
+pause, block, burn or upgrade them. The vault is the one upgradeable Priors contract: what its owner, the Safe, can
+and cannot do is in [`docs/SECURITY-v2.md`](docs/SECURITY-v2.md#stockvault).
+
 ## What ends it
 
 Miss a due date by more than **three days** and anyone can mark the loan defaulted. The record is marked defaulted
@@ -209,11 +240,12 @@ There is no appeal. That is why the score means something.
   worth principal and fee, so the share price never falls and lenders never take a loan loss.
 - **Consent and handoff.** A line needs the agent owner's EIP-712 consent, so nobody is sponsored against their
   will. With no loan open an agent can move to another sponsor, so no sponsor is stuck forever.
-- **Three kinds of backer.** Treasury v4 (root #6228) is funded by $PRIORS creator fees and vouches by rule:
+- **Four kinds of backer.** Treasury v4 (root #6228) is funded by $PRIORS creator fees and vouches by rule:
   $5 against an invite, $25 once seasoned, at most $25 of new lines per week, idle lines reclaimed after 30 days.
   The seat vault (SeatVaultV3, root #6234) backs a $5 line behind any agent a staker puts a seat of $PRIORS on; stakers earn
-  the sponsor share of that agent's fees and lose half the seat on a default. Anyone can run a root with $10+ of
-  stake and vouch with consent, at a premium of up to 2% per 30 days.
+  the sponsor share of that agent's fees and lose half the seat on a default. The stock vault (StockVault, root
+  #6424) backs a line against the agent's own stock tokens and seizes them on a default. Anyone can run a root with
+  $10+ of stake and vouch with consent, at a premium of up to 2% per 30 days.
 - **One money loop.** Loan fees split 60 / 25 / 15 between lenders, the sponsor, and the reserve.
 - **A score that is a pure function of the record.** `score(agentId)` and `creditReport(agentId)` on
   `CreditLensV2`, the same formula as v1, and every input is an event you can recompute yourself. Score v1 is
@@ -243,6 +275,7 @@ v2 findings.
 | `maxUtilizationBps` · `keeperBounty` | 10000 · 0 |
 | Treasury v4 | first line $5 · raise to $25 · $25 of new lines per 7-day epoch · idle after 30 days |
 | Seats (`SeatVaultV3`, root #6234) | seat ≈ $25 of $PRIORS (12,000 on 2026-09-25, resized with the price by the SeatSizer) · line $5 · 50% burnt on default · agent needs 3 repaid loans · seat expires after 30 idle days · $50 of new lines per 7-day epoch |
+| Stock lines (`StockVault`, root #6424) | 35 stock tokens · line 25-50% of the deposit's value by token, plus up to 15 points for a record of repaid treasury credit, never above 70% · at most $250 a line · $1,000 of new lines per 7-day epoch · $1,000 of open lines per token ($500 on CRCL, CRWV, NBIS, RGTI, SNDK, USAR) · whole deposit seized on default · idle after 30 days (7 if never drawn) |
 | Minimum root stake | $10 |
 | Pool owner | 48 h `TimelockController` (the Safe proposes and executes, no admin); the Safe is guardian (pause ≤ 14 days, exits never pause) |
 
@@ -259,7 +292,10 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | SeatVaultV2 (retired and paused, root `#6229`; replaced by V3 for audit V-2) | `0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F` |
 | TimelockController (owns the pool, 48 h) | `0x5d984C274035F81BB327d532897a902C5125F87c` |
 | **SeatSizer** (owns the seat vault since 2026-09-26; resizes the seat from the $PRIORS price, within bounds) | `0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61` |
-| Safe (2-of-3; proposes to the timelock, owns treasury v4 and the SeatSizer, so every other vault power) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
+| **StockVault** (live since 2026-09-28, root `#6424`; lines against stock tokens; a Transparent proxy, `StockVaultProxy`) | `0xbEcd07EC689988e16b870C121756C4c2C8cb02B6` |
+| StockVault implementation (behind the proxy) | `0xF781b2634254d7819E9E17BfFc9D18C54C32008b` |
+| StockVault ProxyAdmin (owned by the Safe; the only way to upgrade the vault) | `0x5174A18550a295cd25aF59416a56B7e4c38C8Afc` |
+| Safe (2-of-3; proposes to the timelock, owns treasury v4 and the SeatSizer, so every other vault power, and the stock vault and its ProxyAdmin) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
 | InviteBond (the bond an automatic invite needs; no admin) | `0x8BE478c754D9124D11e78dB20F5bf4dA45403275` |
 | ERC-8004 Identity Registry | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
 | USDG (Robinhood's 6-decimal dollar, the pool asset) | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
@@ -319,16 +355,19 @@ src/SeatVaultV3.sol          $PRIORS seats: a staker's tokens behind an agent, t
 src/SeatSizer.sol            owns the seat vault: keeps the seat at ~5 lines of $PRIORS from the pool price (live)
 src/SeatVaultV2.sol          the previous seat vault (retired; V3 closes audit V-2)
 src/InviteBond.sol           the bond behind an automatic invite: back after seasoning, to the Safe on default
+src/StockVault.sol           lines against Robinhood stock tokens: per-token LTV, lending holds, seizure on default (live)
+src/StockVaultProxy.sol      the stock vault's Transparent proxy; its ProxyAdmin (the Safe's) alone upgrades it
 src/CreditPool.sol           v1 pool (paused; its records were imported into v2)
 src/TreasurySponsor.sol      v1 treasury (v3)
 src/ReserveFunder.sol        v1 creator-fee sweep into the reserve
 src/libraries/ScoreLib.sol   the trust score (shared by v1 and the v2 lens)
 src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPonsFeeEscrow
-test/                        521 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
-                             review-v2/), and the v1 suite
+test/                        642 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
+                             review-v2/), the stock vault's (StockVault*), and the v1 suite
 script/DeployV2.s.sol        deploys the v2 set under a 48 h timelock, writes deployments/<chainId>.v2.json
 script/Deploy.s.sol          v1 deploy (mocks on dev chains), writes deployments/<chainId>.json
 sdk/priors-v2.mjs            the v2 client on ethers v6, ABIs included
+sdk/stock-vault.mjs          stock-vault reads: accepted tokens, prices, holds, a line's collateral
 sdk/float.mjs                x402 pay() that borrows only the shortfall; sdk/x402.mjs has the payload constants
 sdk/priors.mjs               the v1 client
 sdk/env.mjs                  resolves chain, deployment record (v1 and v2) and signer
@@ -356,7 +395,7 @@ small and we say so up front rather than after you have spent a week.
 ## Working on it
 
 ```bash
-forge test                     # 521 tests, all green (fork-only tests skip without FORK_RPC)
+forge test                     # 642 tests, all green (fork-only tests skip without FORK_RPC)
 npm test                       # SDK, CLI and publish-guard checks (needs Foundry for the v1 end-to-end run)
 npm run test:v2                # the v2 SDK and x402 client, network-free
 npm run devnet                 # local chain + deployed, bootstrapped v1 pool
@@ -365,8 +404,9 @@ bash scripts/check-public.sh   # fails if a credential ever reached a tracked fi
 ```
 
 `CreditPoolV2` compiles with via-IR at `optimizer_runs = 1` to fit the 24 KB limit (a per-file restriction in
-`foundry.toml`); everything else compiles as before. Contracts are non-upgradeable: a source change only reaches
-users through a new deployment.
+`foundry.toml`); everything else compiles as before. Contracts are non-upgradeable, except the stock vault: a
+source change only reaches users through a new deployment, or, for `StockVault`, an upgrade by the Safe through its
+ProxyAdmin. `src/StockVault.sol` stays byte-identical to the source verified on chain, so `forge fmt` skips it.
 
 ## Honest risks
 

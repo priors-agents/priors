@@ -24,6 +24,8 @@ export interface RobinhoodConstants {
   readonly lens: `0x${string}`;
   /** ERC-8004 identity registry. */
   readonly registry: `0x${string}`;
+  /** The Priors stock vault (lines backed by the agent's own stock tokens); null until it is deployed. */
+  readonly stockVault: `0x${string}` | null;
 }
 export declare const robinhood: RobinhoodConstants;
 export declare const ROBINHOOD_NETWORKS: ReadonlySet<string>;

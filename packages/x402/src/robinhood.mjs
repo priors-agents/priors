@@ -21,6 +21,8 @@ export const robinhood = Object.freeze({
   pool: "0x281210097f0de7A8FB6F87310AF0f089c9C8DE21",
   lens: "0x9d7035722bd42C551f82FEB9FDDd17453AEF3D9B",
   registry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+  /** The stock vault (src/StockVault.sol): null until it is deployed; pass addresses.stockVault to creditContracts. */
+  stockVault: null,
 });
 
 /** Both names a Robinhood Chain requirement can carry: v2 CAIP-2 and the v1 name. */
