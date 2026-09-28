@@ -136,4 +136,34 @@ const COL = { token: SPY.token, symbol: "SPY", decimals: 18, amount: 5n * 10n **
   ok("@priors/mcp: stock_assets and stock_position read the vault (read-only tools); credit_status shows a stock line's collateral and hold");
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// @priors/mcp over a node like the public one: single calls answered, a batch of 100 refused with HTTP 429 (which
+// ethers retries until its 5-minute timeout): the server sends one call per request, so stock_assets' ~140 reads answer
+// ---------------------------------------------------------------------------------------------------------------
+{
+  const { createServer } = await import("node:http");
+  let batches = 0, singles = 0;
+  const node = createServer(async (req, res) => {
+    let body = ""; for await (const ch of req) body += ch;
+    const msg = JSON.parse(body);
+    if (Array.isArray(msg)) { batches++; res.statusCode = 429; return res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: 429, message: "Too Many Requests" } })); }
+    singles++;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(msg.method === "eth_call" ? { jsonrpc: "2.0", id: msg.id, result: "0x" + "00".repeat(32 * 8) } : { jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: "not served here" } }));
+  });
+  await new Promise((r) => node.listen(0, "127.0.0.1", r));
+  try {
+    const server = await createPriorsMcpServer({ env: { PRIORS_RPC: `http://127.0.0.1:${node.address().port}` } });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a);
+    const client = new Client({ name: "test", version: "1" });
+    await client.connect(b);
+    await Promise.race([client.callTool({ name: "stock_assets", arguments: {} }), new Promise((_, rej) => setTimeout(() => rej(new Error("stock_assets did not answer within 15 s")), 15000))]);
+    assert.equal(batches, 0, `batches sent: ${batches}`);
+    assert.ok(singles > 35, `single calls: ${singles}`);
+    await client.close();
+  } finally { node.closeAllConnections(); node.close(); }
+  ok("@priors/mcp: one call per request (the public node answers a 100-call batch with 429): stock_assets answers in time");
+}
+
 console.log(`\n${n} checks passed`);

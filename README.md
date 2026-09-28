@@ -216,12 +216,11 @@ await priors.repay(loanId);
 await priors.closeStockLine(agentId);                    // every token back to the depositor
 ```
 
-`status(agentId)` shows the tokens behind a stock line. In this repository, `packages/mcp` (`stock_assets`,
-`stock_position`) and `@priors/x402`'s credit helpers read the vault too; the npm releases (`@priors/mcp` 0.1.8,
-`@priors/x402` 0.1.3) predate them. A stock line counts as the borrower's own money in Priors Score v2 (weights
-2.0.1). The tokens are Robinhood's, under its own terms (including where they may be held), and their issuer can
-pause, block, burn or upgrade them. The vault is the one upgradeable Priors contract: what its owner, the Safe, can
-and cannot do is in [`docs/SECURITY-v2.md`](docs/SECURITY-v2.md#stockvault).
+`status(agentId)` shows the tokens behind a stock line. `@priors/mcp` 0.2.0 (`stock_assets`, `stock_position`) and
+`@priors/x402` 0.2.0's credit helpers read the vault too. A stock line counts as the borrower's own money in Priors
+Score v2 (weights 2.0.1). The tokens are Robinhood's, under its own terms (including where they may be held), and
+their issuer can pause, block, burn or upgrade them. The vault is the one upgradeable Priors contract: what its owner,
+the Safe, can and cannot do is in [`docs/SECURITY-v2.md`](docs/SECURITY-v2.md#stockvault).
 
 ## What ends it
 

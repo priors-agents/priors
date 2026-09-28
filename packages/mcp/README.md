@@ -56,8 +56,8 @@ dedicated agent wallet holding only what the agent may spend.
 | `PRIORS_STOCK_VAULT` | the bundled deployments file's `stockVault` | the stock vault the stock tools and `credit_status` read |
 
 Contract addresses (pool, lens, registry, USDG) come from `deployments/4663.v2.json`, bundled in the package, and the
-accepted stock tokens from `deployments/stock-assets.4663.json`. The stock vault's address comes from the same
-deployments file once it is deployed, or from `PRIORS_STOCK_VAULT`; until then the stock tools say there is none.
+accepted stock tokens from `deployments/stock-assets.4663.json`. The stock vault's address (live since 2026-09-28)
+comes from the same deployments file, or from `PRIORS_STOCK_VAULT`.
 
 ### Claude Desktop
 
@@ -68,7 +68,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.1.8"],
+      "args": ["-y", "@priors/mcp@0.2.0"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -90,7 +90,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.1.8"],
+      "args": ["-y", "@priors/mcp@0.2.0"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -100,7 +100,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 }
 ```
 
-or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.1.8`
+or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.2.0`
 (the key is expanded by your shell from the environment; do not paste it on the command line).
 
 ## Try it

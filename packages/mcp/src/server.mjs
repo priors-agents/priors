@@ -208,7 +208,9 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   if (env.PRIORS_RPC && env.PRIORS_RPC !== X.robinhood.rpcUrl) secrets.push(new RegExp(env.PRIORS_RPC.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"));
   const redact = (s) => secrets.reduce((acc, re) => acc.replace(re, (m) => (m.startsWith("http") ? "<rpc>" : "<redacted>")), String(s));
 
-  const provider = deps.provider || new ethers.JsonRpcProvider(rpc, ethers.Network.from(X.robinhood.chainId), { staticNetwork: true, cacheTimeout: -1 });
+  // One call per request: ethers batches parallel reads up to 100 calls, and the public node (the default PRIORS_RPC)
+  // answers a batch that size with HTTP 429, which ethers retries until its 5-minute timeout (stock_assets' ~140 reads).
+  const provider = deps.provider || new ethers.JsonRpcProvider(rpc, ethers.Network.from(X.robinhood.chainId), { staticNetwork: true, cacheTimeout: -1, batchMaxCount: 1 });
   const wallet = key ? new ethers.Wallet(key, provider) : null;
   const contracts = C.creditContracts({ runner: provider, addresses: { pool: addresses.pool, lens: addresses.lens, usdg: addresses.usdg, registry: addresses.registry, stockVault: addresses.stockVault || null } });
 
