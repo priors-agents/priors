@@ -5,8 +5,9 @@ we will not do to you for looking.
 
 ## Read this first: the size of the thing
 
-The v2 pool holds **about $590 of assets** (lender deposits and backers' locked stake, $371 of it lent out) plus
-a reserve of about $181, read from the chain on 2026-09-25. That is the whole protocol, today. We are telling you
+The v2 pool holds **about $3,440 of assets** (lender deposits and backers' locked stake, $749 of it lent out) plus
+a reserve of about $196, read from the chain on 2026-09-29; about $1,015 of that stake is the stock vault's, which
+holds no stock deposit yet. That is the whole protocol, today. We are telling you
 that up front because a bounty page that implies millions are at stake, from a contract holding a few hundred
 dollars, is asking you to spend a week of your time under false pretences.
 
@@ -18,8 +19,8 @@ is here and the door is open. If you want it to pay rent, it will not.
 
 | Severity | What it means | Award |
 |---|---|---|
-| **Critical** | Funds leave the pool to someone not owed them, lender principal can be reached, or a backer's stake or a staker's seat can be taken. Anyone can do it, no privileged key. | **$3,000** |
-| **High** | Credit can be obtained without the invite, the consent, the seat or the backing that is supposed to gate it, or accounting can be corrupted so the ledger lies about who repaid what. | **$1,000** |
+| **Critical** | Funds leave the pool to someone not owed them, lender principal can be reached, a backer's stake or a staker's seat can be taken, or stock deposited in the stock vault can be taken other than by a default of its own position's loan. Anyone can do it, no privileged key. | **$3,000** |
+| **High** | Credit can be obtained without the invite, the consent, the seat or the backing that is supposed to gate it, a stock line can be drawn beyond its loan-to-value of the collateral's value now, or accounting can be corrupted so the ledger lies about who repaid what. | **$1,000** |
 | **Medium** | A rule can be bypassed with a privileged key that should not be able to bypass it, or a griefing path that costs others money without profiting you. | **$250** |
 | **Low / Informational** | Wrong behaviour with no path to loss: a misleading view, a revert that should not happen, a documented rule the code does not implement. | public credit and acknowledgement only, no payout |
 
@@ -44,8 +45,13 @@ The v2 contracts on Robinhood Chain (chain 4663), live since block 71,702,460, a
 | `SeatSizer` of the growth seat vault (owns it; the Safe owns the sizer) | [`0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777`](https://robinhoodchain.blockscout.com/address/0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777) |
 | `TimelockController` (the pool's owner, 48 h) | [`0x5d984C274035F81BB327d532897a902C5125F87c`](https://robinhoodchain.blockscout.com/address/0x5d984C274035F81BB327d532897a902C5125F87c) |
 | `InviteBond` (the bond an automatic invite needs) | [`0x8BE478c754D9124D11e78dB20F5bf4dA45403275`](https://robinhoodchain.blockscout.com/address/0x8BE478c754D9124D11e78dB20F5bf4dA45403275) |
+| `StockVault`, the stock vault (root `#6424`; live since 2026-09-28): the proxy users call | [`0xbEcd07EC689988e16b870C121756C4c2C8cb02B6`](https://robinhoodchain.blockscout.com/address/0xbEcd07EC689988e16b870C121756C4c2C8cb02B6) |
+| its implementation (`src/StockVault.sol`) | [`0xF781b2634254d7819E9E17BfFc9D18C54C32008b`](https://robinhoodchain.blockscout.com/address/0xF781b2634254d7819E9E17BfFc9D18C54C32008b) |
 
-Also in scope: the SDK (`sdk/priors-v2.mjs`, `sdk/float.mjs`), the npm packages
+The stock vault is the one upgradeable contract: what is in scope is the implementation its proxy points to when you
+report (the ERC-1967 implementation slot), which the table will follow after any upgrade.
+
+Also in scope: the SDK (`sdk/priors-v2.mjs`, `sdk/stock-vault.mjs`, `sdk/float.mjs`), the npm packages
 [`@priors/x402`](https://www.npmjs.com/package/@priors/x402) and [`@priors/mcp`](https://www.npmjs.com/package/@priors/mcp)
 (`packages/`), the CLIs, the site's wallet path and the x402
 facilitator at `facilitator.priors.trade`, where a bug can cost a *user* money even though the contracts are
@@ -64,7 +70,11 @@ meant to hold.
 
 - **Anything needing the owner's Safe or the timelock.** The Safe is a 2-of-3 and it can change rules, through
   the 48 h timelock for the pool; that is the design, not a finding. "The owner could set a bad parameter" is not
-  a bug.
+  a bug. That includes upgrading the stock vault: its ProxyAdmin
+  (`0x5174A18550a295cd25aF59416a56B7e4c38C8Afc`) is owned by the Safe with no timelock, and an upgrade can move what
+  the vault holds; depositors trust the Safe for that.
+- **The Robinhood stock tokens, their issuer's powers** (pause, block, burn, upgrade) **and Chainlink's price feeds.**
+  Not ours. How the stock vault copes with them (its price and pause holds, a burn shared pro rata) is in scope.
 - **The v1 contracts**, paused since the v2 cutover and kept as history: the v1 `CreditPool`
   (`0x0259889e6EBab1a18CeE7e62Bc5B9648FB6C44e5`), `TreasurySponsor` v2 and v3, `ReserveFunder` and the older pools,
   and `SeatVaultV2` (`0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F`, empty and paused since V3 replaced it on 2026-09-25).
@@ -85,8 +95,8 @@ Every issue listed in [docs/SECURITY-v2.md](docs/SECURITY-v2.md), whether fixed,
 or a trust assumption, is known. A report of one is not a new finding and is not paid at any tier; if it adds
 something real (a cleaner reproduction, a tighter measurement) we will credit it in public. That includes the
 residuals added after launch: SO-1 and SO-2 (stake held only while marking a default) and AI-1 (the invite bot's
-self-service mode, now priced by `InviteBond`). V-2 (seat levers and ownership not reaching open seats) is fixed in
-`SeatVaultV3`; a path that still gets around those fixes on V3 is a new finding.
+self-service mode, now priced by `InviteBond`), and the stock vault's SV-1 to SV-12. V-2 (seat levers and ownership
+not reaching open seats) is fixed in `SeatVaultV3`; a path that still gets around those fixes on V3 is a new finding.
 
 What still counts is a new root cause, or a path that beats the bound stated for a listed issue: reaching lender
 principal through it, or losing more than its stated cap. Severity for those is judged by the table above.
@@ -121,6 +131,11 @@ ones:
   `epochCap`; one person taking the week's first lines within that cap, bond paid, is a listed residual (AI-1), not
   a finding. A seat needs a staker's $PRIORS and 3 repaid loans; a backer needs the owner's consent. Credit without
   one of those is "High".
+- **Stock lines.** The stock vault vouches a line of the token's loan-to-value (25-50%, plus a record bonus) of the
+  deposit's Chainlink value, at most $250, out of its own stake. Every new loan asks the vault again: a fresh price,
+  no lending hold, the owner who opened the position, and the drawn principal within the loan-to-value of the
+  collateral's value now. A default seizes the whole deposit to the Safe and burns the vault's stake, never
+  lenders'. Drawing past that, or moving a depositor's tokens without a default, is a finding.
 - **Bounded, known losses.** The self-seat loop (X-3), the invite-to-raise path (T10) and self-service invites
   (AI-1) can cost a backer money, and holding stake only while marking a default (SO-1, SO-2) takes lender fees,
   within the per-epoch caps stated in SECURITY-v2.md. Beating those bounds is a finding; restating them is not.

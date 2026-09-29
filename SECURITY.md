@@ -49,6 +49,7 @@ the affected function and your own severity assessment. We cannot evaluate, prio
 | `src/SeatVaultV4.sol` | the growth seat vault (live since 2026-09-29): V3's seats plus the slash split, protocol seats and their eligibility, and the loan-term cap |
 | `src/SeatSizer.sol` | the owner of each seat vault (one for V3, one for V4): price observations, resizing within bounds, the Safe's `execute` |
 | `src/InviteBond.sol` | the 5 USDG bond behind an automatic treasury invite |
+| `src/StockVault.sol`, `src/StockVaultProxy.sol` | the stock vault (live since 2026-09-28): positions, prices and lending holds, lines and their loan-to-value, seizure, the owner's bounded powers; upgradeable only by the Safe |
 | `sdk/`, `bin/` | the SDK, the x402 float client and the CLIs, including anything that could sign or broadcast wrongly |
 | `packages/x402`, `packages/mcp` | the npm payer (`@priors/x402`) and the local MCP server (`@priors/mcp`), including anything that could pay, borrow or repay wrongly |
 | The live v2 deployment | addresses are in `deployments/4663.v2.json` and the README's *Robinhood Chain* table |
@@ -61,6 +62,8 @@ the affected function and your own severity assessment. We cannot evaluate, prio
   They are kept in this repo and in the README as history. Findings against them are interesting only where
   they also apply to v2 — say so explicitly if they do.
 - The ERC-8004 identity registry at `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`. Not ours.
+- The Robinhood stock tokens, their issuer's powers (pause, block, burn, upgrade) and Chainlink's price feeds. Not
+  ours; how the stock vault copes with them is in scope.
 - Third-party RPC endpoints. Their rate limits and archive policies are their business; how this SDK
   copes with them is ours, and that part is in scope.
 - Anything requiring a compromised owner key, a malicious chain reorg beyond finality, or control of the
