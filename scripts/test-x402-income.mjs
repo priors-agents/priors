@@ -88,6 +88,25 @@ await check("S-1 (GHSA-6f8j): each backer id's last registry transfer is read in
   assert.ok(calls.some((c) => c.fromBlock === 201) && calls.some((c) => c.fromBlock === 100), "known ids from the cursor, a new id from the start");
 });
 
+await check("S-1: the backer transfer read is resumable: out of time mid-scan it keeps its progress, and the next run finishes it", async () => {
+  const REG = A(8);
+  const nft = (id, block) => ({ transactionHash: "0x" + block.toString(16), index: 0, blockNumber: block, address: REG, topics: [TOPICS.TRANSFER, topic(A(1)), topic(A(2)), ethers.zeroPadValue(ethers.toBeHex(id), 32)], data: "0x" });
+  const logs = [nft(7, 150), nft(7, 950)];
+  let calls = 0, budget = 2; // the clock runs out after two chunks
+  const realNow = Date.now;
+  const provider = {
+    async getLogs(f) { calls++; if (--budget <= 0) Date.now = () => realNow() + 3_600_000; return logs.filter((l) => l.blockNumber >= f.fromBlock && l.blockNumber <= f.toBlock); },
+    async getBlock(n) { return { timestamp: 1000 + n }; },
+  };
+  let s;
+  try { s = await updateBackerTenure(provider, null, { registry: REG, ids: [7], fromBlock: 100, head: 1000, chunk: 100, deadline: realNow() + 60_000 }); } finally { Date.now = realNow; }
+  assert.ok(s.pending && s.pending.next === 300 && !s.ids.includes(7), `progress kept: ${JSON.stringify(s)}`);
+  assert.deepEqual(s.since, { 7: 1150 }, "what was read counts already");
+  const done = await updateBackerTenure(provider, s, { registry: REG, ids: [7], fromBlock: 100, head: 1000, chunk: 100 });
+  assert.ok(!done.pending && done.ids.includes(7) && done.scannedTo === 1000, JSON.stringify(done));
+  assert.deepEqual(done.since, { 7: 1950 });
+});
+
 // ---------------------------------------------------------------- scoring income
 const agent = (id, owner, over = {}) => ({ id, owner, sponsor: 0, isRoot: false, delegatedIn: 0, enrolledAt: NOW - 100 * DAY, defaulted: false, ...over });
 const pay = (payer, payTo, usd, daysAgo = 1) => ({ payer, payTo, amount: $(usd), at: NOW - daysAgo * DAY });
