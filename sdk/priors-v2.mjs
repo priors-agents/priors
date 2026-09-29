@@ -269,7 +269,7 @@ export class PriorsV2 {
     this.registry = a.registry ? new ethers.Contract(a.registry, REGISTRY_ABI, run) : null;
     this.stockVault = a.stockVault ? new ethers.Contract(a.stockVault, STOCK_VAULT_ABI, run) : null;
     // every interface a call here can revert with: a vault or treasury call bubbles the pool's errors up
-    this._ifaces = [this.pool.interface, ...(this.vault ? [this.vault.interface] : []), ...(this.treasury ? [this.treasury.interface] : []), ...(this.stockVault ? [this.stockVault.interface] : []), new ethers.Interface(ERC20_ABI), new ethers.Interface(REGISTRY_ABI)];
+    this._ifaces = [this.pool.interface, ...(this.vault ? [this.vault.interface] : []), ...(this.vaultV4 ? [this.vaultV4.interface] : []), ...(this.treasury ? [this.treasury.interface] : []), ...(this.stockVault ? [this.stockVault.interface] : []), new ethers.Interface(ERC20_ABI), new ethers.Interface(REGISTRY_ABI)];
     this.toUnits = toUnits;
   }
 
@@ -332,6 +332,7 @@ export class PriorsV2 {
 
   /** The seat vaults, the growth seat vault (V4) first once recorded. */
   _vaults() { return [this.vaultV4, this.vault].filter(Boolean); }
+  _needAnyVault() { if (!this.vault && !this.vaultV4) throw new Error("no seatVault address configured"); }
   /** Where new seats go: the growth seat vault (V4) once recorded, else `seatVault`. */
   _newSeatVault() { return this.vaultV4 || this._need(this.vault, "seatVault"); }
   /** The vault whose root sponsors `agentId`, else the one holding an open seat for it, else where new seats go. */
@@ -371,35 +372,41 @@ export class PriorsV2 {
   }
   /** Close a seat (staker or agent controller). With a loan open it closes when the last one is repaid. */
   async closeSeat(agentId) {
-    this._need(this.vault || this.vaultV4, "seatVault");
+    this._needAnyVault();
     const vault = await this._seatVaultOf(agentId);
     return (await sendChecked(vault, "close", [agentId], this._ifaces)).hash;
   }
   /**
    * Pay out the USDG fees credited to the caller, on every seat vault. Pokes the caller's open seats first so nothing
-   * is left behind. `hash` is the last claim's; `hashes` has one per vault that paid.
+   * is left behind. `hash` is the last claim's; `hashes` has one per vault that paid. If a later vault's claim fails,
+   * the error carries `partial` ({ hashes, amount }) for the claims already made.
    */
   async claimSeatFees(to) {
-    this._need(this.vault || this.vaultV4, "seatVault");
+    this._needAnyVault();
     const me = await this.me();
     let amount = 0n;
     const hashes = [];
     for (const vault of this._vaults()) {
-      for (const id of await vault.openSeats()) {
-        const s = await vault.getSeat(id);
-        if (s.staker.toLowerCase() === me.toLowerCase() && (await vault.pendingFees(id)) > 0n) await sendChecked(vault, "poke", [id], this._ifaces);
+      try {
+        for (const id of await vault.openSeats()) {
+          const s = await vault.getSeat(id);
+          if (s.staker.toLowerCase() === me.toLowerCase() && (await vault.pendingFees(id)) > 0n) await sendChecked(vault, "poke", [id], this._ifaces);
+        }
+        const owed = await vault.feesOwed(me);
+        if (owed === 0n) continue;
+        hashes.push((await sendChecked(vault, "claim", [to || me], this._ifaces)).hash);
+        amount += owed;
+      } catch (e) {
+        if (hashes.length) e.partial = { hashes, amount };
+        throw e;
       }
-      const owed = await vault.feesOwed(me);
-      if (owed === 0n) continue;
-      hashes.push((await sendChecked(vault, "claim", [to || me], this._ifaces)).hash);
-      amount += owed;
     }
     if (amount === 0n) throw new Error(`no seat fees owed to ${me}`);
     return { hash: hashes[hashes.length - 1], hashes, amount };
   }
   /** Fees owed to `addr`: credited, plus what its open seats would be credited now. */
   async pendingSeatFees(addr) {
-    this._need(this.vault || this.vaultV4, "seatVault");
+    this._needAnyVault();
     const who = (addr || (await this.me())).toLowerCase();
     let total = 0n;
     for (const vault of this._vaults()) {
@@ -418,7 +425,7 @@ export class PriorsV2 {
    * enumerable); filter candidate ids with `seatableAgents(ids)`.
    */
   async openSeats() {
-    this._need(this.vault || this.vaultV4, "seatVault");
+    this._needAnyVault();
     const out = [];
     for (const vault of this._vaults()) {
       const at = await vault.getAddress();
@@ -532,7 +539,7 @@ export class PriorsV2 {
 
   /** Take staker `staker`'s seat offer on `agentId` (on whichever seat vault it waits): the vault vouches its line with the owner's consent. */
   async acceptSeat(agentId, staker) {
-    this._need(this.vault || this.vaultV4, "seatVault");
+    this._needAnyVault();
     const vault = await this._offerVault(agentId, staker);
     if (!vault) throw new Error(`no seat offer from ${staker} on agent #${agentId}`);
     const sponsorId = await vault.agentId();
