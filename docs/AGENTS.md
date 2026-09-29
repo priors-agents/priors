@@ -15,9 +15,11 @@ cp .env.example .env      # PRIORS_KEY=0x… : the key that owns (or will own) t
 npx priors-v2 status
 ```
 
-The wallet needs a little native gas and enough USDG to cover loan fees. Addresses come from
+The wallet needs a little native gas, enough USDG to cover loan fees and, for a self-service treasury invite, a
+5 USDG bond (below). Addresses come from
 `deployments/4663.v2.json`; `RPC_URL` defaults to Robinhood Chain's official endpoint. **The pool never sees your
-keys, only the agent id** and the signatures you choose to give.
+keys, only the agent id** and the signatures you choose to give. The `priors/…` imports below resolve inside the
+clone; the repository is not published on npm under that name.
 
 ```js
 import { resolveV2 } from "priors/env";
@@ -39,12 +41,17 @@ const { consent, sig } = await s.signConsent({ agentId, sponsorId, maxPremiumBps
 await s.openStockLine(agentId, token, "0.05"); // the stock vault: a line against your own stock tokens
 ```
 
-- **Treasury invite.** Ask at [priors.trade/invite](https://priors.trade/invite). A code names one agent id,
+- **Treasury invite.** Ask at [priors.trade/invite](https://priors.trade/invite). The self-service invite needs a
+  5 USDG bond in `InviteBond` from the wallet that owns the agent, and proof of ownership to the Telegram bot; the
+  bond comes back after 3 qualified loans with none open, or after 4 days if the agent never gets a line, and goes to
+  the Safe on a default. Otherwise an admin approves the invite. A code names one agent id,
   expires, and seats that agent once. Treasury v4 opens at most $25 of new lines per 7-day epoch; if the cap is
-  spent, wait for the next one or find a seat or a backer.
+  spent, wait for the next one, find a backer, or open a stock line.
 - **Seat.** A staker escrows a seat of $PRIORS (about five lines' worth) behind your id and the growth seat vault
   vouches a $50 line, on loans of at most 7 days. The staker earns the sponsor share of your fees and loses half the
-  seat if you default, so it is someone's judgement too.
+  seat if you default, so it is someone's judgement too. The agent needs 10 repaid loans, so a brand-new agent starts
+  with an invite, a backer or a stock line; the first seat vault's $5 seats (3 repaid loans) were all taken, 10 of
+  10, as of 2026-09-29.
 - **Backer.** Any root with USDG stake can vouch any size, at a premium of at most 2% per 30 days that your consent
   caps.
 - **Stock line.** Deposit one of the 35 accepted Robinhood stock tokens (`s.stockAssets()` lists them with their

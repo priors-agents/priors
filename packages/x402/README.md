@@ -8,12 +8,15 @@ when an agent is short, it can borrow the gap from its [Priors](https://priors.t
   `https://facilitator.priors.trade`, with your merchant key as `Authorization: Bearer …` on verify/settle/supported.
 - `createPayer({ signer, … }).pay(url, init)`: a fetch that pays x402 USDG (v2, and legacy v1 `robinhood` bodies)
   and borrows the gap when you allow it.
-- `robinhood`: the constants (network, chain id, USDG address and decimals, EIP-712 domain, facilitator URL, Priors
-  pool/lens addresses).
+- `robinhood`: the constants (network and its legacy v1 name, chain id, USDG address and decimals, EIP-712 domain,
+  facilitator URL, public RPC URL, Priors pool, lens, identity registry and stock vault addresses).
 
 ```sh
 npm i @priors/x402 @x402/core @x402/evm ethers
 ```
+
+The examples below also use optional packages: `@x402/express` (Express), `@x402/hono` (Hono), and `@x402/mcp` with
+`@modelcontextprotocol/sdk` (the paid MCP tool). Install the ones you use.
 
 ## Merchant: Express
 
@@ -106,6 +109,11 @@ await payer.settleLoans(); // repays open loans, earliest due first; do it befor
 
 Amounts: a `bigint` or integer is atomic USDG (6 decimals: `100000n` = $0.10); a string with `$` is dollars.
 
+A result also carries the `requirement` it paid, its `x402Version` and, on success, the decoded `settlement`
+(`PAYMENT-RESPONSE`) when the merchant sent one. Other `createPayer` options: `maxValiditySeconds` (at most 600, the
+default), `asset` (a USDG address for a fork or test token; default the pool's `usdg()`, else mainnet USDG),
+`fetchImpl`, `pendingRetries` (default 6), `maxSleepMs` (longest wait between resends, default 30 s) and `sleep`.
+
 ### What `pay()` promises (the rules of `sdk/float.mjs`, unchanged)
 
 - **`maxPrice`** (default $0.10) is checked before anything is read, signed or borrowed.
@@ -113,7 +121,8 @@ Amounts: a `bigint` or integer is atomic USDG (6 decimals: `100000n` = $0.10); a
   `maxBorrow` (default 0: never). It draws `max(shortfall, pool minimum loan)`, refuses above `maxBorrow` or the
   pool's `maxLoan`, caps the fee at the pool's quote (or `maxFee`), and simulates the borrow first.
 - **Term**: 7 days by default, clamped into the pool's range; an explicit `termSeconds` above the pool's maximum is
-  refused. The result's `dueAt` is when the loan must be repaid, or the agent's record is burnt.
+  refused. The result's `dueAt` is when the loan is due; three days later anyone can mark it defaulted, and the
+  agent's record is burnt.
 - **Authorization window**: at most 600 s, whatever `maxTimeoutSeconds` the merchant asks. The payload's `accepted`
   stays the merchant's requirement verbatim.
 - **One signature per purchase.** While the merchant answers "pending" (v2 `settlement_pending`, or a legacy
@@ -134,7 +143,10 @@ Amounts: a `bigint` or integer is atomic USDG (6 decimals: `100000n` = $0.10); a
 
 Refusals throw a `PayError` with a `code`: `PRICE_ABOVE_MAX_PRICE`, `PRICE_ABOVE_MAX_BORROW`,
 `MIN_LOAN_ABOVE_MAX_BORROW`, `ABOVE_MAX_LOAN`, `TERM_OUT_OF_RANGE`, `FEE_TOO_HIGH`, `NO_POOL`, `NO_USDG_REQUIREMENT`,
-`BAD_402`, `BORROW_WOULD_REVERT`, `NO_SIGNER`, `NO_PROVIDER`, `NOT_CONTROLLER` (`repayLoan`, `settleLoans`).
+`BAD_402`, `BORROW_WOULD_REVERT`, `NO_SIGNER`, `NO_PROVIDER`, `NO_FETCH`, `UNSUPPORTED_TRANSFER_METHOD` (a requirement
+that is not EIP-3009), `NOT_CONTROLLER` (`repayLoan`, `settleLoans`). The credit helpers add
+`LOAN_SIZE_OUT_OF_RANGE` (`quoteBorrow`, `borrowLine`), `LOAN_NOT_ACTIVE`, `INSUFFICIENT_USDG`, `REPAY_WOULD_REVERT`
+(`repayLoan`) and `NO_STOCK_VAULT` (`stockPosition`, `stockAssets`).
 
 ### Why `pay()` is not just `@x402/fetch`'s `wrapFetchWithPayment`
 
@@ -154,14 +166,17 @@ const fetchWithPay = wrapFetchWithPayment(fetch, createUsdgClient({ signer, maxP
 ## Credit helpers
 
 `@priors/x402/credit` has the Priors v2 pieces the MCP server uses: `creditContracts`, `creditStatus`, `quoteBorrow`,
-`borrowLine`, `repayLoan`, `settleLoans`, `balances`, `borrowGap`. `repayLoan` pays only a loan of an agent the
-signer controls (owner or pool delegate); any other loan is refused with `NOT_CONTROLLER` before anything is sent.
+`borrowLine`, `repayLoan`, `settleLoans`, `balances`, `borrowGap`, plus `poolContract`, `explainRevert` (a revert as
+`Name(args)`), `LOAN_STATUS` and the ABIs (`POOL_ABI`, `LENS_ABI`, `ERC20_ABI`, `STOCK_VAULT_ABI`). `repayLoan` pays
+only a loan of an agent the signer controls (owner or pool delegate); any other loan is refused with `NOT_CONTROLLER`
+before anything is sent.
 
 Stock lines (the Priors stock vault, `robinhood.stockVault`, backs a line with the agent's own stock tokens;
 `creditContracts` reads it unless `addresses.stockVault` says otherwise): `creditStatus` carries `collateral` {
 `token`, `amount`, `value` (what the vault prices them at, null while it will not), `ltvBps`, `borrowRoom`, `hold`
 (0, or why new loans wait: `STOCK_HOLDS`), `holdReason`, `status`, `closing` } for a stock line (null for any other),
-and its `available` is the smaller of the pool's figure and `borrowRoom`. `stockPosition(c, id, assets?)` and
+and its `available` is the smaller of the pool's figure and `borrowRoom` (`stockCollateral(c, id, sponsor)` reads that
+object on its own). `stockPosition(c, id, assets?)` and
 `stockAssets(c, assets)` read one position and the accepted tokens (price, whether the vault lends now, LTV).
 
 ## Source

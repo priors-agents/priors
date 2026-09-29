@@ -7,7 +7,10 @@ needs a human to top up its wallet first. A small Priors v2 line covers the gap:
 earns the next ten.
 
 `sdk/float.mjs` is an [x402](https://github.com/x402-foundation/x402) client for USDG on Robinhood Chain that pays
-from the agent's balance and, only when that is short, borrows the difference from the agent's Priors v2 line.
+from the agent's balance and, only when that is short, borrows the difference from the agent's Priors v2 line. It
+pays x402 v1 `402`s; a `402` that offers only x402 v2 is refused (`BAD_402` or `NO_USDG_REQUIREMENT`) before
+anything is signed or borrowed. For x402 v2 (for example the paid API at `api.priors.trade`), `createPayer` in
+[`@priors/x402`](../packages/x402) pays the same way and borrows the gap under the same rules.
 
 ## Using it
 
@@ -59,9 +62,10 @@ that draws straight to the merchant would be stricter, and is not built.
 
 ## The facilitator
 
-Priors runs an x402 facilitator for USDG on Robinhood Chain: **`https://facilitator.priors.trade`**. It is not
-the only one on the chain (Canopy, r0x and Verge run facilitators too). The merchant picks its facilitator;
-`pay()` only signs the payment the merchant's 402 asks for.
+Priors runs an x402 facilitator for USDG on Robinhood Chain: **`https://facilitator.priors.trade`**. It settles
+x402 v1 and v2 payments. It is not the only one on the chain (Canopy, r0x and Verge run facilitators too). The
+merchant picks its facilitator; `pay()` only signs the payment the merchant's 402 asks for. The facilitator's code is
+not in this repository: what follows describes the live service.
 
 - `GET /health` is open.
 - `POST /verify` checks a payment without moving anything. Like `/settle`, it needs a merchant API key.
@@ -70,11 +74,12 @@ the only one on the chain (Canopy, r0x and Verge run facilitators too). The merc
   payer-to-self. Merchants sign up for a key at
   [x402.priors.trade/merchants](https://x402.priors.trade/merchants).
 - A settlement whose receipt did not arrive in time is answered as `pending`, not failed. The merchant must treat
-  it as not yet paid, must not ask the client for a new payment, and retries `/settle` with the same `X-PAYMENT`;
-  the facilitator never submits one authorization twice.
+  it as not yet paid, must not ask the client for a new payment, and retries `/settle` with the same signed payment
+  (`X-PAYMENT` in v1); the facilitator never submits one authorization twice.
 
-Payload format and reason codes follow the x402 reference facilitator (v1, `exact`, EVM). The constants are in
-`sdk/x402.mjs`. Only 65-byte EOA signatures are accepted for now; smart-contract payers (EIP-1271) are not.
+Payload format and reason codes follow the x402 reference facilitator (`exact`, EVM, v1 and v2). The v1 constants
+`sdk/float.mjs` uses are in `sdk/x402.mjs`; `@priors/x402` builds v2 payloads with the official `@x402/*` packages.
+Only 65-byte EOA signatures are accepted for now; smart-contract payers (EIP-1271) are not.
 
 ## The rules do not bend for float
 

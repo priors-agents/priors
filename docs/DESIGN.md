@@ -4,6 +4,10 @@
 > split but drops earned (unbacked) capacity and recourse loans: every line is 100% backed by a backer's locked
 > pool shares, and a default burns them. See [PARTICIPATE.md](PARTICIPATE.md) for how v2 works and
 > [SECURITY-v2.md](SECURITY-v2.md) for its attacks and fixes.
+>
+> It is the original v1 design, as first written. v1's default accounting was changed later (the v1 list in
+> [SECURITY.md](../SECURITY.md#already-known-already-fixed)), and the score is `ScoreLib` v1, not the version 0
+> table below (README, [How it works](../README.md#how-it-works)).
 
 ## The problem this solves
 
@@ -128,7 +132,8 @@ Sketch. An agent's exposure is `principalOut + delegatedOut ≤ capacity = stake
 
 ## The score
 
-Version 0, in `ScoreLib`. Range 0..1000. Zero if defaulted.
+The original score, version 0, since superseded by `ScoreLib` v1 (dollar-days; README,
+[How it works](../README.md#how-it-works)). Range 0..1000. Zero if defaulted.
 
 | Term | Points |
 |---|---|

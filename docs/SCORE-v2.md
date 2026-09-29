@@ -21,13 +21,13 @@ for real time. An audit (2026-09-26) found what it can't see:
 
 | layer | what | changes how | used by |
 |---|---|---|---|
-| **v1, on chain** | `ScoreLib`: simple, conservative | a new pool version, behind the 48 h timelock | contracts: treasury rules, seat gates |
+| **v1, on chain** | `ScoreLib`: simple, conservative | a new pool version, behind the 48 h timelock | contracts: treasury rules (a raise needs a score of 100); seat gates count repaid loans, not the score |
 | **v2, open and deterministic** | `scoreV2()`: a pure function of public data, with published weights | a new weights file and version, announced first (below) | people and apps: site, API, MCP; later attested on chain |
 
 v2 moves fast and in the open; v1 stays the hard floor the contracts rely on. When a v2 component has proven itself
 on data, it moves into the next on-chain version.
 
-## The score (v2.0.0, max 1000)
+## The score (v2.0.0 and 2.0.1, the same numbers; max 1000)
 
 | component | max | counts |
 |---|---|---|
@@ -40,11 +40,12 @@ on data, it moves into the next on-chain version.
 | penalties | | −10 per late repayment (and it earns nothing); −75 per vouched agent that defaulted |
 | **default** | | the score is 0, and so is every other agent of the wallet that defaulted: the loan's owner when it was taken, and the defaulted agent's declared payment wallet. Sending a defaulted agent to someone never harms them. (A v1 default, with no owner recorded, zeroes only the agent itself.) |
 
-**Backers.** A loan is "backed by someone else" when its backer is another owner's agent that had been enrolled on
-Priors for **30+ days** when the loan was issued (the protocol's treasury and seat vaults, V3 and the growth seat vault
-V4, public ids in the snapshot, count from day one). A backer the record doesn't know counts as the agent's own. v1
-loans take their backer from the repayment's `FeeSplit` event, not from today's sponsor. The same rule applies to
-backing held now.
+**Backers.** A loan is "backed by someone else" when its backer is another owner's agent that had been on Priors for
+**30+ days** when the loan was issued, counted from its enrolment or, if later, from when its current owner took the
+id (registry transfers). The protocol's treasury and seat vaults (V3 and the growth seat vault V4, public ids in the
+snapshot) count from day one. A backer the record doesn't know counts as the agent's own, and so, under 2.0.1, does
+the stock vault's root: the agent's own tokens stand behind that loan. v1 loans take their backer from the
+repayment's `FeeSplit` event, not from today's sponsor. The same rule applies to backing held now.
 
 **Rungs** (the record side of the trust ladder): 0 unproven · 1 started (one repayment backed by
 someone else) · 2 proven (3+, over 14+ days, none late) · 3 earned (proven, a record score of 300+ with income left
@@ -154,7 +155,7 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
 | phase | what | status |
 |---|---|---|
 | 1 | engine, weights, clusters, tests | **done** |
-| 2 | show it: API (`/v1/score` adds `v2` with the breakdown), MCP `score_of` (hosted and npm), agent page (breakdown and rung; every agent shown the same way) | **live** 2026-09-27 (API, MCP); the agent page with the next site deploy |
+| 2 | show it: API (`/v1/score` adds `v2` with the breakdown), MCP `score_of` (hosted and npm), agent page (breakdown and rung; every agent shown the same way) | **live** 2026-09-27 (API, MCP); the agent page (breakdown and rung) is live too |
 | 4 | income from any facilitator (USDG `AuthorizationUsed` events), declared payment wallets, netting, loans repaid from income | **built** (with phase 2) |
 | 4b | v2.1: funding-source clusters (gas and first USDG), payer graph weights, Permit2 x402 | after launch |
 | 5 | on chain: attest v2 scores to the ERC-8004 reputation registry with version and input hash; treasury rules read the rung from a signed attestation; stable components move into the next `ScoreLib` | after a month of data |

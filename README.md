@@ -15,8 +15,8 @@ Reviews are cheap to fake. Repaid debt isn't.
 
 > ### Status: Priors v2 is live on Robinhood Chain
 >
-> Pool v2 (`CreditPoolV2`), treasury v4 and the seat vault (`SeatVaultV3`) are **live on Robinhood Chain mainnet** (chain 4663) since
-> block 71,702,460. Addresses come from [`deployments/4663.v2.json`](deployments/4663.v2.json), so
+> Pool v2 (`CreditPoolV2`) and treasury v4 are **live on Robinhood Chain mainnet** (chain 4663) since block
+> 71,702,460, and the seat vault (`SeatVaultV3`) since 2026-09-25. Addresses come from [`deployments/4663.v2.json`](deployments/4663.v2.json), so
 > `npx priors-v2 status` and the SDK resolve them with no configuration. The v1 pool is **paused**; every v1
 > repayment record was imported into v2, so agents kept their history. A second seat vault for bigger lines, the
 > growth seat vault (`SeatVaultV4`, $50 lines), is live since 2026-09-29.
@@ -68,8 +68,11 @@ Run the `npx` commands inside the clone: there they run this repository's own CL
 unrelated npm package and `priors-v2` on npm is only a placeholder that prints these instructions, so never run
 them with `PRIORS_KEY` set anywhere else.
 
-The wallet needs a little native gas and enough USDG to pay the fee (about $0.012 on $5 for 7 days). No invite?
-`npx priors-v2 join --seat <staker>` takes a staker's seat offer instead, once someone has offered on your id.
+The wallet needs a little native gas, enough USDG to pay the fee (about $0.012 on $5 for 7 days) and, for a
+self-service invite, the 5 USDG bond (step 2 below). A brand-new agent cannot take a seat:
+`npx priors-v2 join --seat <staker>` takes a staker's seat offer only once the agent has repaid 10 loans (new seats go
+to the growth seat vault; SeatVaultV3's 10 seats were all taken as of 2026-09-29). Without an invite, a first line comes
+from a backer or a stock line.
 
 ### Or watch it on a throwaway local chain first
 
@@ -170,7 +173,7 @@ Merchants can sign up for the facilitator themselves at `https://x402.priors.tra
 | | | |
 |---|---|---|
 | **1** | **identity** | `register(uri)` on the ERC-8004 registry, once. Your NFT is your identity. Already have an id? Skip this (set `PRIORS_AGENT_ID` if it predates v2). The pool never sees your keys, only the id. |
-| **2** | **a line** | **Treasury invite:** at [priors.trade/invite](https://priors.trade/invite) you post a 5 USDG bond in `InviteBond` from the wallet that owns the agent, prove you own it to the Telegram bot, and the bot signs treasury v4's invite for your id on the spot; you redeem it with your pool consent → $5 (at most $25 of new treasury lines a week). The bond comes back once the agent has repaid 3 qualified loans with none open, or after 4 days if it never gets a line; a default sends it to the Safe, so taking a first line and walking away nets nothing. **Seat:** a staker offers a seat of $PRIORS on your id and you accept it → $50 on the growth seat vault, loans of at most 7 days (your agent needs 10 repaid loans first). **Backer:** a root vouches any size with your signed consent. |
+| **2** | **a line** | **Treasury invite:** at [priors.trade/invite](https://priors.trade/invite) you post a 5 USDG bond in `InviteBond` from the wallet that owns the agent, prove you own it to the Telegram bot, and the bot signs treasury v4's invite for your id on the spot; you redeem it with your pool consent → $5 (at most $25 of new treasury lines a week). The bond comes back once the agent has repaid 3 qualified loans with none open, or after 4 days if it never gets a line; a default sends it to the Safe, so taking a first line and walking away nets nothing. **Seat:** a staker offers a seat of $PRIORS on your id and you accept it → $50 on the growth seat vault, loans of at most 7 days (your agent needs 10 repaid loans first). **Backer:** a root vouches any size with your signed consent. **Stock line:** you deposit accepted Robinhood stock tokens and the stock vault backs a line against them (see "Stock lines" below). |
 | **3** | **borrow, hold, repay** | `quoteFee` → about $0.011666 for $5 over 7 days. `borrow` → USDG in your wallet. Do work. `repay` → principal + fee. Under 7 days repays fine but does not count: dollar-days are the score. |
 | **4** | **grow** | Treasury v4 `raise(agentId)` → $25, after 3 qualified loans, 14 days, score ≥ 100 and a clean record. Beyond that, lines grow by finding a bigger backer: v2 has no unbacked "earned" credit. |
 
@@ -183,7 +186,8 @@ npx priors score <agentId>        # v1 CLI, still reads the paused v1 pool's his
 npx priors report <agentId>
 ```
 
-Or from JavaScript, on ethers v6:
+Or from JavaScript, on ethers v6, inside the clone (the `priors/…` imports resolve to this repository there; it is not
+published on npm under that name):
 
 ```js
 import { resolveV2 } from "priors/env";          // deployments/<chainId>.v2.json, RPC_URL, PRIORS_KEY
@@ -222,8 +226,9 @@ await priors.repay(loanId);
 await priors.closeStockLine(agentId);                    // every token back to the depositor
 ```
 
-`status(agentId)` shows the tokens behind a stock line. `@priors/mcp` 0.2.0 (`stock_assets`, `stock_position`) and
-`@priors/x402` 0.2.0's credit helpers read the vault too. A stock line counts as the borrower's own money in Priors
+`status(agentId)` shows the tokens behind a stock line. `@priors/mcp` (`stock_assets`, `stock_position`) and
+`@priors/x402`'s credit helpers read the vault too, since 0.2.0; 0.2.1, the current release of both, carries the
+security fixes of the private reports. A stock line counts as the borrower's own money in Priors
 Score v2 (weights 2.0.1). The tokens are Robinhood's, under its own terms (including where they may be held), and
 their issuer can pause, block, burn or upgrade them. The vault is the one upgradeable Priors contract: what its owner,
 the Safe, can and cannot do is in [`docs/SECURITY-v2.md`](docs/SECURITY-v2.md#stockvault).
@@ -247,7 +252,8 @@ There is no appeal. That is why the score means something.
   will. With no loan open an agent can move to another sponsor, so no sponsor is stuck forever.
 - **Four kinds of backer.** Treasury v4 (root #6228) is funded by $PRIORS creator fees and vouches by rule:
   $5 against an invite, $25 once seasoned, at most $25 of new lines per week, idle lines reclaimed after 30 days.
-  The seat vault (SeatVaultV3, root #6234) backs a $5 line behind any agent a staker puts a seat of $PRIORS on; stakers earn
+  The seat vault (SeatVaultV3, root #6234) backs a $5 line behind an agent with 3 repaid loans that a staker puts a seat
+  of $PRIORS on; its 10 seats were all taken as of 2026-09-29, so new seats go to the growth seat vault (below). Stakers earn
   the sponsor share of that agent's fees and lose half the seat on a default. The stock vault (StockVault, root
   #6424) backs a line against the agent's own stock tokens and seizes them on a default. Anyone can run a root with
   $10+ of stake and vouch with consent, at a premium of up to 2% per 30 days. The growth seat vault (SeatVaultV4,
@@ -362,7 +368,7 @@ src/libraries/PoolV2Lib.sol  v2 pool's linked library (hooks, consent digest)
 src/CreditLensV2.sol         v1-shaped score and credit-report views on the v2 pool
 src/TreasurySponsorV4.sol    the $PRIORS treasury as a v2 root: invite + consent opens a line, rules size it
 src/SeatVaultV3.sol          $PRIORS seats: a staker's tokens behind an agent, the vault backs its line (live)
-src/SeatVaultV4.sol          growth seats: V3 plus the slash split, protocol seats, a loan-term cap (deployed, paused)
+src/SeatVaultV4.sol          growth seats: V3 plus the slash split, protocol seats, a loan-term cap (live)
 src/SeatSizer.sol            owns a seat vault: keeps the seat at ~5 lines of $PRIORS from the pool price (live)
 src/SeatVaultV2.sol          the previous seat vault (retired; V3 closes audit V-2)
 src/InviteBond.sol           the bond behind an automatic invite: back after seasoning, to the Safe on default
@@ -374,7 +380,7 @@ src/ReserveFunder.sol        v1 creator-fee sweep into the reserve
 src/libraries/ScoreLib.sol   the trust score (shared by v1 and the v2 lens)
 src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPonsFeeEscrow
 test/                        750 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
-                             review-v2/, audit-v4/, audit-r2/), the stock vault's (StockVault*), the growth seat
+                             review-v2/, audit-v4/, audit-r2/, audit-sizer/), the stock vault's (StockVault*), the growth seat
                              vault's (SeatVaultV4*), and the v1 suite
 script/DeployV2.s.sol        deploys the v2 set under a 48 h timelock, writes deployments/<chainId>.v2.json
 script/Deploy.s.sol          v1 deploy (mocks on dev chains), writes deployments/<chainId>.json

@@ -53,7 +53,10 @@ the affected function and your own severity assessment. We cannot evaluate, prio
 | `sdk/`, `bin/` | the SDK, the x402 float client and the CLIs, including anything that could sign or broadcast wrongly |
 | `packages/x402`, `packages/mcp` | the npm payer (`@priors/x402`) and the local MCP server (`@priors/mcp`), including anything that could pay, borrow or repay wrongly |
 | The live v2 deployment | addresses are in `deployments/4663.v2.json` and the README's *Robinhood Chain* table |
-| `priors.trade` and `facilitator.priors.trade` | the site and the x402 facilitator are in scope even though their source is not in this repo |
+| `priors.trade` and `facilitator.priors.trade` | the site and the x402 facilitator (including its merchant sign-up at `x402.priors.trade/merchants`) are in scope even though their source is not in this repo |
+| `mcp.priors.trade` | the hosted MCP server: read-only and holds no key, so a way to make it sign, send, or leak a secret is a finding |
+| `api.priors.trade` | the paid x402 API |
+| The Telegram invite bot (`@priors_agents_bot`) | public credit only, no payout, whatever the severity ([BOUNTY.md](BOUNTY.md)) |
 
 **Out of scope**
 
@@ -61,7 +64,9 @@ the affected function and your own severity assessment. We cannot evaluate, prio
   `0x0259889e6EBab1a18CeE7e62Bc5B9648FB6C44e5`, paused since the v2 cutover, and the older pools before it.
   They are kept in this repo and in the README as history. Findings against them are interesting only where
   they also apply to v2 — say so explicitly if they do.
-- The ERC-8004 identity registry at `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`. Not ours.
+- USDG (`0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`), the $PRIORS token
+  (`0xeDBf91223639800BCd5756815CAf908Df3b890bE`) and the ERC-8004 identity registry at
+  `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`. Not ours; how our contracts handle them is in scope.
 - The Robinhood stock tokens, their issuer's powers (pause, block, burn, upgrade) and Chainlink's price feeds. Not
   ours; how the stock vault copes with them is in scope.
 - Third-party RPC endpoints. Their rate limits and archive policies are their business; how this SDK
@@ -119,7 +124,10 @@ they were not the same thing here — see **Credits**. `scripts/verify-migration
 runtime bytecode against the compiled artifact, so you can confirm which one you are looking at rather
 than trusting this file. It does not read the v2 record: for v2, compare each address in
 `deployments/4663.v2.json` against `forge build` output the same way (immutables and the `PoolV2Lib` link
-zeroed, metadata stripped); all of them matched on 2026-09-25, and `seatVaultV4` and `seatSizerV4` on 2026-09-29.
+zeroed, metadata stripped). The v2 set matched on 2026-09-25; `seatVaultV4` and `seatSizerV4` matched on
+2026-09-29, and so did V3's `seatSizer`. For the stock vault the record holds the proxy (`StockVaultProxy`): what
+matches `forge build` of `src/StockVault.sol` is the implementation behind it,
+`0xF781b2634254d7819E9E17BfFc9D18C54C32008b` (its ERC-1967 implementation slot), which matched on 2026-09-29.
 
 An independent rediscovery of a fixed issue is still worth telling us about, and we will say so and
 credit the work. It is not a new finding.
@@ -183,9 +191,9 @@ public. Draining the live pool to prove a point is not good-faith research.
 anything under `src/` but `StockVault` (since 2026-09-28), which sits behind a Transparent proxy
 (`StockVaultProxy`) whose ProxyAdmin the 2-of-3 Safe owns: a bug there can be fixed by an upgrade from the Safe,
 and an upgrade could also move what the vault holds ([docs/SECURITY-v2.md](docs/SECURITY-v2.md), "StockVault").
-Everywhere else, fixing a real bug means deploying a new pool and migrating state, which has been done once
-and is not cheap — so a confirmed finding may take longer to close than a proxy-based protocol would
-need. The delay is the architecture, not us ignoring you.
+Everywhere else, fixing a real bug means deploying a new pool and migrating state, which has been done more than
+once (on v1, then from v1 to v2) and is not cheap — so a confirmed finding may take longer to close than a
+proxy-based protocol would need. The delay is the architecture, not us ignoring you.
 
 **The identity registry we depend on is a different story, and an earlier version of this file was
 misleading about it.** `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` is not ours and it is **not

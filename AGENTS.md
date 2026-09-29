@@ -18,15 +18,15 @@ read v1 history and drive the local devnet, which still deploys v1.
 
 ## Giving an agent a credit history
 
-**Read `skills/priors/SKILL.md` and follow it.** It is the canonical procedure: four steps, one CLI subcommand
-each, with the failure modes spelled out. Short version:
+**Read `skills/priors/SKILL.md` and follow it.** It is the canonical procedure, step by step, with the CLI commands
+and the failure modes spelled out. Short version:
 
 ```bash
 npm install
 export PRIORS_KEY=0x…                      # the agent owner's key: env or .env, never argv
 npx priors-v2 join                         # registers an identity for this key if it owns none -> agentId
 npx priors-v2 join --invite <code>         # treasury v4 opens a $5 line (invite from priors.trade/invite)
-npx priors-v2 join --seat <staker>         # or: accept a staker's seat offer
+npx priors-v2 join --seat <staker>         # or, once the agent has 10 repaid loans: accept a staker's seat offer
 npx priors-v2 borrow 5 --days 7            # -> loanId
 npx priors-v2 repay --all
 npx priors-v2 status
@@ -44,9 +44,10 @@ npm run quickstart                         # no mainnet? a local v1 chain and th
 2. **Nothing here has had a third-party audit.** v1 shipped with a lender-loss defect the randomized invariants
    did not catch (fixed; `test/DefaultAccounting.t.sol`). v2 had internal adversarial reviews; every finding, fix
    and residual is in `docs/SECURITY-v2.md`, each with a test. ⛔ Do not delete the PoC and regression tests
-   (`test/audit-v2/`, `test/audit-final/`, `test/review-v2/`, `test/audit-v4/`, `test/audit-r2/`,
-   `test/DefaultAccounting.t.sol`, `test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure`) — they are the
-   evidence the fixes work. Do not
+   (`test/audit-v2/`, `test/audit-final/`, `test/review-v2/`, `test/audit-v4/`, `test/audit-r2/`, `test/audit-sizer/`,
+   `test/SeatVaultV3V2Fixes.t.sol`, `test/SeatVaultV4Split.t.sol`, `test/StockVaultAuditFixes.t.sol`,
+   `test/StockVaultReadinessFixes.t.sol`, `test/InviteBond.t.sol`, `test/DefaultAccounting.t.sol`,
+   `test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure`) — they are the evidence the fixes work. Do not
    describe any of this as audited or as proven safe.
 
 3. **A default is permanent.** Three days past due and anyone can mark a loan defaulted: the record is
@@ -75,6 +76,7 @@ bash scripts/check-public.sh  # fails if any credential reached a tracked file
   are easy to get subtly wrong.
 - `scripts/devnet.mjs` must never point at a real chain — it deploys mocks and mints money, and refuses any
   chain that does not answer anvil cheat methods. Keep that refusal.
-- Amounts are 6-decimal units on chain and whole dollars in the SDK. Money printed by the CLI is pinned to
-  `en-US` so output is the same for everyone.
+- Amounts are 6-decimal units on chain. The v1 SDK works in whole dollars. In the v2 SDK a bigint is raw units and a
+  number or decimal string is whole dollars (`toUnits` in `sdk/priors-v2.mjs`); the amounts it returns are raw
+  6-decimal bigints. Money printed by the CLI is pinned to `en-US` so output is the same for everyone.
 - Never commit a private key, a `.env`, or a deployment record for a chain you did not deploy to.

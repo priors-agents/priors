@@ -48,17 +48,18 @@ Other v2 changes:
 | Lender hold | 7 days; withdrawing sooner leaves 0.5% for the lenders who stayed |
 | Minimum root stake | $10 |
 | Treasury v4 (root #6228) | first line $5 · raise to $25 after 3 qualified loans, 14 days, score ≥ 100 · $25 of new lines per 7-day epoch · idle lines reclaimed after 30 days |
-| Seats V3 (root #6234) | seat ≈ $25 of $PRIORS (12,000 on 2026-09-25, resized with the price by the SeatSizer `0xd24B…5E61`) · line $5 · 50% of the seat burnt on a default · 10 open seats · $50 of new lines per 7-day epoch |
+| Seats V3 (root #6234) | seat ≈ $25 of $PRIORS, resized with the price by the SeatSizer `0xd24B…5E61` within [10,000, 2,000,000] (12,000 on 2026-09-25; 10,000, the floor, on 2026-09-29) · line $5 · 50% of the seat burnt on a default · at most 10 open seats (all 10 open on 2026-09-29) · $50 of new lines per 7-day epoch |
 | Seat gates | the agent has repaid at least 3 loans; a seat idle 30 days can be expired by anyone |
 | Growth seats V4 (root #6466, live since 2026-09-29) | seat ≈ 5 lines of $PRIORS (120,000 at deployment, resized by its own SeatSizer `0x97C4…8777` within [110,000, 20,000,000]) · line $50 · 50% of the seat burnt on a default · agent has repaid at least 10 loans · loans of at most 7 days · 20 open seats · $1,000 of new lines per 7-day epoch · protocol seats closed |
-| Stock lines (`StockVault`, root #6424, since 2026-09-28) | 35 Robinhood stock tokens · line 25-50% of the deposit's Chainlink value by token (`deployments/stock-ltv.4663.json`), plus up to 15 points for a record of repaid treasury credit · at most $250 a line · $1,000 of new lines per 7-day epoch · the whole deposit seized on a default · a line idle 30 days (7 if never drawn) can be expired by anyone, tokens back |
+| Stock lines (`StockVault`, root #6424, since 2026-09-28) | 35 Robinhood stock tokens · line 25-50% of the deposit's Chainlink value by token (`deployments/stock-ltv.4663.json`), plus up to 15 points for a record of repaid treasury credit, never above 70% · at most $250 a line · $1,000 of open lines per token ($500 on CRCL, CRWV, NBIS, RGTI, SNDK, USAR) · $1,000 of new lines per 7-day epoch · the whole deposit seized on a default · a line idle 30 days (7 if never drawn) can be expired by anyone, tokens back |
+| Invite bond (`InviteBond`) | 5 USDG locked by the agent's owner before the invite bot signs an automatic invite · back once the agent has repaid 3 qualified loans with none open, or after 4 days if it holds no line · forfeited to the Safe on a default |
 
-`npx priors-v2 status` and the Participate page read these live; if this table and the chain disagree, the chain
-is right.
+The Participate page reads these live; if this table and the chain disagree, the chain is right.
 
 ## Agents: the `priors-v2` CLI
 
 ```bash
+git clone https://github.com/priors-agents/priors && cd priors
 npm install
 export PRIORS_KEY=0x…        # the agent owner's key: environment or .env only, never argv, never printed
 npx priors-v2 join                       # registers an ERC-8004 identity for this key if it owns none, prints its id
@@ -69,10 +70,16 @@ npx priors-v2 repay --all
 npx priors-v2 status
 ```
 
+Run the `npx` commands inside the clone: there they run this repository's own CLI. Outside it, `npx priors` is an
+unrelated npm package and `priors-v2` on npm is only a placeholder, so never run them with `PRIORS_KEY` set anywhere
+else.
+
 - **An invite names one agent id**, so a new key runs `join` first, gets its id, asks for an invite at
   [priors.trade/invite](https://priors.trade/invite), then redeems it. Redeeming signs the pool consent for the
   treasury's root in the same call.
-- **Addresses** come from `deployments/<chainId>.v2.json`; `PRIORS_ADDRESSES` points at another file.
+- **Addresses** come from `deployments/<chainId>.v2.json`; `PRIORS_ADDRESSES` points at another file. On a real
+  chain, a file that differs from the published deployment is refused unless `PRIORS_ALLOW_CUSTOM_ADDRESSES=1` is
+  exported in the shell (a `.env` cannot set it).
   **RPC**: `PRIORS_RPC`, else `RPC_URL` (a comma-separated failover list, as for v1), else Robinhood Chain's
   official endpoint.
 - **Identity lookup**: the key's identity minted since the v2 deploy is found automatically; an older one (for
@@ -82,8 +89,8 @@ npx priors-v2 status
 - **Exit codes**: 0 done, 1 failed, 2 usage or configuration, 3 waiting on someone else (no seat offer yet).
 
 ⛔ **Repay before the due date.** Three days past due, anyone can mark the loan defaulted: the record is
-permanently marked, the owner address is marked (`ownerDefaults`), and the sponsor's stake (or half the staker's
-seat) pays for it. Borrow only what the agent can repay on time.
+permanently marked, the owner address is marked (`ownerDefaults`), and the sponsor pays for it: its stake, half the
+staker's seat, or, on a stock line, the whole deposit. Borrow only what the agent can repay on time.
 
 ## SDK (`sdk/priors-v2.mjs`)
 
@@ -95,6 +102,8 @@ import PriorsV2 from "priors/v2";
 const p2 = new PriorsV2({ signer, addresses });    // addresses = deployments/4663.v2.json
 ```
 
+These imports resolve inside the clone (after `npm install` at its root); `priors` on npm is an unrelated package.
+
 Amounts are USDG as a number or decimal string (`5`, `"12.5"`), or atomic 6-decimal units as a `bigint`.
 
 - **Lender:** `deposit(amount)`, `withdraw(shares | "all")`, `position(addr)`.
@@ -102,7 +111,7 @@ Amounts are USDG as a number or decimal string (`5`, `"12.5"`), or atomic 6-deci
   `pendingSeatFees(addr)`, `seatable(id)`, `openSeats()`, `seatableAgents(ids)`, `seatOffer(agentId, staker)`. With
   `seatVaultV4` in the addresses (the deployments JSON has it), `offer`, `seatable` and `seatableAgents` use the
   growth seat vault; `withdrawOffer`, `acceptSeat`, `closeSeat`, the fees, `openSeats` and `status` find the offer or
-  seat on whichever vault holds it (`seatVault` in their results says which).
+  seat on whichever vault holds it (`acceptSeat`, `status` and each `openSeats` entry name it in `seatVault`).
 - **Backer:** `enrollRoot(rootId, stake)`, `addStake(rootId, amount)`,
   `vouchWithConsent(sponsorId, agentId, line, premiumBps, consent, sig)`, `claimSponsorFees(sponsorId, to)`,
   `root(rootId)`.
@@ -124,6 +133,10 @@ loan's agent and amount, so a changed premium or a wrong loan id reverts instead
 
 ## Stakers: how a seat works
 
+New seats go to the growth seat vault (V4): the agent needs 10 repaid loans, the line is $50 and loans last at most
+7 days. V3 (3 repaid loans, $5 lines) is full (10 of 10 seats open as of 2026-09-29); its open seats run until they
+close. Both vaults work the same way:
+
 1. `offer(agentId)` escrows exactly one seat of $PRIORS under the vault's current terms. The offer is bound to
    the agent's owner at that moment (X-1 fix): if the identity is sold, the new owner cannot take it.
 2. The agent's owner `accept`s it with a signed pool consent. The vault vouches the seat line out of its own USDG
@@ -135,8 +148,8 @@ loan's agent and amount, so a changed premium or a wrong loan id reverts instead
    the staker (X-2 fix).
 5. On a default, 50% of the seat is burnt and the rest returned.
 
-An agent must have repaid at least 3 loans before it can be seated (X-3 gate). That gate filters trivial abuse; the
-seat's market value is what makes a stolen $5 line a losing trade. See [SECURITY-v2.md](SECURITY-v2.md).
+An agent must have repaid at least 10 loans before it can be seated on V4 (3 on V3, the X-3 gate). That gate filters
+trivial abuse; the seat's market value is what makes a stolen line a losing trade. See [SECURITY-v2.md](SECURITY-v2.md).
 
 ## Backers: running a root
 
@@ -148,10 +161,12 @@ sponsor share. A default burns your shares worth the principal and the fee. `unl
 
 ## Deploying your own copy
 
-`script/DeployV2.s.sol` deploys the set in order: a 48 h `TimelockController` (Safe as proposer and executor, no
-admin) as the pool's owner, `CreditPoolV2` with the v1 pool's params plus `maxUtilizationBps` 10000 and
-`keeperBounty` 0 (`PoolV2Lib` is linked by forge), `CreditLensV2`, treasury v4 and the seat vault. It refuses an EOA
-as `SAFE` and writes `deployments/<chainId>.v2.json`.
+`script/DeployV2.s.sol` deploys the original v2 set in order: a 48 h `TimelockController` (Safe as proposer and
+executor, no admin) as the pool's owner, `CreditPoolV2` with the v1 pool's params plus `maxUtilizationBps` 10000 and
+`keeperBounty` 0 (`PoolV2Lib` is linked by forge), `CreditLensV2`, treasury v4 and `SeatVaultV2` (the seat vault
+retired since 2026-09-25). It refuses an EOA as `SAFE` and writes `deployments/<chainId>.v2.json`. `SeatVaultV3`,
+`SeatVaultV4`, the SeatSizers and the stock vault were deployed by separate maintainer scripts that are not in this
+repository.
 
 ```bash
 V1=0x… USDG=0x… REGISTRY=0x… PRIORS=0x… SAFE=0x… PONS_ESCROW=0x… PONS_FACTORY=0x… FEE_SINK=0x… \

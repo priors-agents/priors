@@ -8,7 +8,7 @@ we will not do to you for looking.
 The v2 pool holds **about $3,440 of assets** (lender deposits and backers' locked stake, $749 of it lent out) plus
 a reserve of about $196, read from the chain on 2026-09-29; about $1,015 of that stake is the stock vault's, which
 holds no stock deposit yet. That is the whole protocol, today. We are telling you
-that up front because a bounty page that implies millions are at stake, from a contract holding a few hundred
+that up front because a bounty page that implies millions are at stake, from a contract holding a few thousand
 dollars, is asking you to spend a week of your time under false pretences.
 
 So this is a small programme, honestly sized, and the ceiling is real. If you want to look at this because
@@ -41,6 +41,7 @@ The v2 contracts on Robinhood Chain (chain 4663), live since block 71,702,460, a
 | `CreditLensV2` | [`0x9d7035722bd42C551f82FEB9FDDd17453AEF3D9B`](https://robinhoodchain.blockscout.com/address/0x9d7035722bd42C551f82FEB9FDDd17453AEF3D9B) |
 | `TreasurySponsorV4` (root `#6228`) | [`0x0c5091235A25bBFD3F5a009cBe04120D0CBAD573`](https://robinhoodchain.blockscout.com/address/0x0c5091235A25bBFD3F5a009cBe04120D0CBAD573) |
 | `SeatVaultV3` (root `#6234`) | [`0x59D155C42A9263fA7596867b992bB3e84dF680a9`](https://robinhoodchain.blockscout.com/address/0x59D155C42A9263fA7596867b992bB3e84dF680a9) |
+| `SeatSizer` of `SeatVaultV3` (owns it; the Safe owns the sizer) | [`0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61`](https://robinhoodchain.blockscout.com/address/0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61) |
 | `SeatVaultV4`, the growth seat vault (root `#6466`; live since 2026-09-29) | [`0xb1c3a04496238D62E3c93118C297163855e22192`](https://robinhoodchain.blockscout.com/address/0xb1c3a04496238D62E3c93118C297163855e22192) |
 | `SeatSizer` of the growth seat vault (owns it; the Safe owns the sizer) | [`0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777`](https://robinhoodchain.blockscout.com/address/0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777) |
 | `TimelockController` (the pool's owner, 48 h) | [`0x5d984C274035F81BB327d532897a902C5125F87c`](https://robinhoodchain.blockscout.com/address/0x5d984C274035F81BB327d532897a902C5125F87c) |
@@ -51,7 +52,7 @@ The v2 contracts on Robinhood Chain (chain 4663), live since block 71,702,460, a
 The stock vault is the one upgradeable contract: what is in scope is the implementation its proxy points to when you
 report (the ERC-1967 implementation slot), which the table will follow after any upgrade.
 
-Also in scope: the SDK (`sdk/priors-v2.mjs`, `sdk/stock-vault.mjs`, `sdk/float.mjs`), the npm packages
+Also in scope: the SDK (`sdk/`), the npm packages
 [`@priors/x402`](https://www.npmjs.com/package/@priors/x402) and [`@priors/mcp`](https://www.npmjs.com/package/@priors/mcp)
 (`packages/`), the CLIs, the site's wallet path and the x402
 facilitator at `facilitator.priors.trade`, where a bug can cost a *user* money even though the contracts are
@@ -75,6 +76,7 @@ meant to hold.
   the vault holds; depositors trust the Safe for that.
 - **The Robinhood stock tokens, their issuer's powers** (pause, block, burn, upgrade) **and Chainlink's price feeds.**
   Not ours. How the stock vault copes with them (its price and pause holds, a burn shared pro rata) is in scope.
+- **USDG, the $PRIORS token and the ERC-8004 identity registry.** Not ours; how our contracts handle them is in scope.
 - **The v1 contracts**, paused since the v2 cutover and kept as history: the v1 `CreditPool`
   (`0x0259889e6EBab1a18CeE7e62Bc5B9648FB6C44e5`), `TreasurySponsor` v2 and v3, `ReserveFunder` and the older pools,
   and `SeatVaultV2` (`0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F`, empty and paused since V3 replaced it on 2026-09-25).
@@ -116,7 +118,7 @@ If you stay inside this, we will not pursue you and will not ask anyone else to:
 ## What has already been found
 
 [docs/SECURITY-v2.md](docs/SECURITY-v2.md) lists every known v2 finding, its fix or residual, and its test;
-[SECURITY.md](SECURITY.md) has the v1 history. Three worth knowing before you start, because they are the obvious
+[SECURITY.md](SECURITY.md) has the v1 history. Four worth knowing before you start, because they are the obvious
 ones:
 
 - **Every line is 100% backed.** v2 has no earned or unbacked credit: a line is vouched out of a backer's locked
@@ -129,13 +131,15 @@ ones:
   the Safe if the agent defaults. Without a bond,
   an invite still needs an admin's approval. New treasury lines are capped at $25 a week by treasury v4's
   `epochCap`; one person taking the week's first lines within that cap, bond paid, is a listed residual (AI-1), not
-  a finding. A seat needs a staker's $PRIORS and 3 repaid loans; a backer needs the owner's consent. Credit without
-  one of those is "High".
+  a finding. A seat needs a staker's $PRIORS and a repaid record: new seats go to the growth seat vault (V4), a $50
+  line after 10 repaid loans, since SeatVaultV3 (3 repaid loans) is full. A backer needs the owner's consent. Credit
+  without one of those is "High".
 - **Stock lines.** The stock vault vouches a line of the token's loan-to-value (25-50%, plus a record bonus) of the
   deposit's Chainlink value, at most $250, out of its own stake. Every new loan asks the vault again: a fresh price,
   no lending hold, the owner who opened the position, and the drawn principal within the loan-to-value of the
   collateral's value now. A default seizes the whole deposit to the Safe and burns the vault's stake, never
   lenders'. Drawing past that, or moving a depositor's tokens without a default, is a finding.
 - **Bounded, known losses.** The self-seat loop (X-3), the invite-to-raise path (T10) and self-service invites
-  (AI-1) can cost a backer money, and holding stake only while marking a default (SO-1, SO-2) takes lender fees,
-  within the per-epoch caps stated in SECURITY-v2.md. Beating those bounds is a finding; restating them is not.
+  (AI-1) can cost a backer money within the per-epoch caps stated in SECURITY-v2.md, and holding stake only while
+  marking a default (SO-1, SO-2) takes a share of lender fees within the bounds stated there. Beating those bounds is
+  a finding; restating them is not.

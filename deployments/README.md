@@ -8,6 +8,7 @@ the moment its record lands here. The v1 shape:
 ```json
 {
   "chainId": 31337,
+  "deployBlock": 1,
   "creditPool": "0x…",
   "treasurySponsor": "0x…",
   "treasuryAgentId": 1,
@@ -23,9 +24,11 @@ the moment its record lands here. The v1 shape:
 
 `4663.v2.json` — **Robinhood Chain mainnet, v2, live.** Written in the shape `script/DeployV2.s.sol` produces
 (`pool`, `lens`, `timelock`, `treasuryV4`, `seatVault`, `usdg`, `registry`, `priors`, `safe`, `v1`, `deployBlock`),
-plus the two roots' agent ids (`treasuryV4AgentId` 6228, `seatVaultAgentId` 6234), `inviteBond`, the retired
+plus the two roots' agent ids (`treasuryV4AgentId` 6228, `seatVaultAgentId` 6234), `inviteBond` (since block
+`inviteBondBlock` 72,112,874), the retired
 `seatVaultV2` (root `seatVaultV2AgentId` 6229), `v1Pool` and `"status": "live"`. `seatVault` is SeatVaultV3 since
-2026-09-25. `seatSizer` (since block 72,572,884) owns the seat vault and keeps its seat at about 5 lines of $PRIORS;
+2026-09-25 (block `seatVaultBlock` 72,192,188). `seatSizer` (since block 72,572,884) owns the seat vault and keeps
+its seat at about 5 lines of $PRIORS;
 the Safe owns it. `stockVault` (root `stockVaultAgentId` 6424, since block `stockVaultBlock` 74,826,641) is the stock
 vault: the proxy address, the one to call and the one that holds the tokens; its implementation and ProxyAdmin are in
 the README's address table. `seatVaultV4` (root `seatVaultV4AgentId` 6466, since block `seatVaultV4Block`
@@ -33,7 +36,8 @@ the README's address table. `seatVaultV4` (root `seatVaultV4AgentId` 6466, since
 block `seatSizerV4Block` 75,614,955) is its own SeatSizer, which owns it; the Safe owns the sizer. `seatVault` stays
 SeatVaultV3. `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it (the SDK's stock-line calls use `stockVault`
 from it; `priors-v2 join --seat` takes a staker's offer on `seatVaultV4` first, else on `seatVault`);
-`PRIORS_ADDRESSES` points them at another file.
+`PRIORS_ADDRESSES` points them at another file; on a real chain a file whose addresses differ from the published record
+is refused unless `PRIORS_ALLOW_CUSTOM_ADDRESSES=1` is exported in the shell (a `.env` cannot set it).
 
 ```json
 {
@@ -62,8 +66,9 @@ right.
 `"supersededBy": "4663.v2.json"`: the v1 tools still resolve it so v1 history stays readable, and
 `npx priors doctor` says the pool is paused and points at v2. New lines and loans on it revert.
 
-`npx priors doctor` (v1) and `npx priors-v2 status` (v2) tell you what they resolved for the chain you are
-pointed at, and say so rather than guessing when there is no record.
+`npx priors doctor` (v1) tells you what it resolved for the chain you are pointed at. It and `npx priors-v2 status`
+(v2, which needs `PRIORS_KEY` and prints the agent's line and loans, not the addresses) say so rather than guessing
+when there is no record.
 
 `31337.json` — the local dev chain — is written by `npm run devnet` and deliberately gitignored: it is a
 throwaway chain whose addresses mean nothing to anyone else.
