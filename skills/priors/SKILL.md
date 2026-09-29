@@ -35,8 +35,8 @@ npx priors-v2 status
 ```
 
 Run every `npx priors…` command from inside this repository's clone: there it runs the repository's own CLI. Outside
-it, `npx priors` is an unrelated npm package and `priors-v2` is not published, so never run them with the key set
-anywhere else.
+it, `npx priors` is an unrelated npm package and `priors-v2` on npm is only a placeholder that prints these
+instructions, so never run them with the key set anywhere else.
 
 ⛔ **The key goes in the environment or `.env`, never on the command line.** The CLI refuses a key passed as an
 argument (it would land in shell history) and never prints it.
