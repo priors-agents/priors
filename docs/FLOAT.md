@@ -41,10 +41,18 @@ from `priors/float`.
    whatever the merchant asks, and retries with it in `X-PAYMENT`.
 6. If the merchant answers 402 `{pending: true}` (the settlement was broadcast but not yet confirmed), it resends
    the **same** header, honouring `Retry-After`, up to 6 times. Still pending: it returns
-   `{pending: true, paymentHeader}` for `resend(url, paymentHeader)` later.
+   `{pending: true, paymentHeader}` for `resend(url, paymentHeader)` later. A dropped connection or a timeout
+   (`timeoutMs`, 60 s by default) once the payment is out is pending too (`transportError` or `timedOut`), never an
+   error.
+7. Once signed, every result carries `paymentHeader` and `validBefore`, whatever the merchant answered (a 500 too),
+   and an error thrown after the loan or the signature carries them with `borrowed`, `loanId` and `dueAt`.
 
-⛔ **Never call `pay()` again for a purchase that came back pending.** That signs a second payment while the first
-can still land. Use `resend()` with the header you were given.
+⛔ **Never call `pay()` again for a purchase that returned a `paymentHeader` without `paid`.** Until `validBefore`
+the merchant can still cash it, so a second `pay()` would sign a second payment. Use `resend()` with that header.
+
+No redirect is followed unless `init.redirect` says so (a signed payment never travels to a host you did not name),
+merchant bodies are read up to 256 KB, and calls from one wallet run one at a time, so two purchases never both
+borrow the same gap.
 
 The borrowed USDG lands in the agent's own wallet, because EIP-3009 needs the payer to hold the funds. A router
 that draws straight to the merchant would be stricter, and is not built.

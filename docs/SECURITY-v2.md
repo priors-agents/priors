@@ -214,6 +214,36 @@ Reviewed before deployment by an internal audit (2026-09-27) and a readiness rev
 
 `npm run test:v2` covers these client guards without a network.
 
+## Private reports, 2026-09-23 to 2026-09-29
+
+Thirty-eight private reports (GitHub advisories) and one by email, triaged against the code and the chain on
+2026-09-29. Each was reproduced (a local merchant, a unit test, or a fork of mainnet) before a ruling. One row per root
+cause; duplicates are credited with the first report. Credits are added once the reporters are answered.
+
+| id | sev | finding | status |
+|---|---|---|---|
+| P-10 | Medium | `@priors/x402` `pay()`: a connection dropped after the signed payment was sent threw, losing the signed headers, so a retry signed a second payment the merchant could settle; `pay_url` counted neither against `PRIORS_MAX_SPEND_USD` (a new path around P-1 and P-2). GHSA-r47g-9jjv-wx3j. | **Fixed (@priors/x402 0.2.1, @priors/mcp 0.2.1):** once the payment may be out, `resend()` never throws: a transport error is pending (`transportError`, the headers returned); the payer resends an unsettled payment for the same purchase (method and URL without the fragment) instead of signing, until it expires; an error after a loan or a signature carries them, and `pay_url` counts them and answers "do NOT call pay_url again". |
+| F4 | Medium | `sdk/float.mjs` `pay()` returned the signed header only on a "pending" answer: a 500, a non-pending 402, a dropped connection or an abort after signing lost it, so a retry paid twice (F2's fix covered "pending" only). GHSA-6cpq-qq3c-9539. | **Fixed:** `paymentHeader` and `validBefore` are returned on every result once signed; a transport error or a timeout after signing is pending with the header; an error after the loan carries it. |
+| F5 | Low | `sdk/float.mjs` followed redirects with the signed payment (P-3's fix was in the package only). GHSA-gj2g-xr52-v6g2. | **Fixed:** no redirect is followed unless the caller asks; the 3xx is the answer. |
+| F6 | Low | `sdk/float.mjs` had no timeout and read merchant bodies whole (P-8's fix was in the package only). GHSA-fvcv-jqc9-2f8m. | **Fixed:** 60 s per request by default, bodies read up to 256 KB. |
+| F7 | Low | Two concurrent `pay()` calls on a short wallet each borrowed the gap (payer and float). GHSA-482p-7442-6227 (F3). | **Fixed:** one payment at a time per wallet. |
+| P-11 | Low | `pay_url`'s one-payment-per-purchase key included the URL fragment, so `url#a` and `url#b` signed twice. GHSA-c683-6cg3-g8xx. | **Fixed (0.2.1):** the fragment is not part of the purchase. |
+| P-12 | Low | The SSRF guard missed NAT64 (64:ff9b::/96, 64:ff9b:1::/48), 6to4, Teredo and site-local addresses and 192.0.0.0/24 and the TEST-NETs. GHSA-mrgg-j3wr-3p2q (and the same by email). | **Fixed (0.2.1):** the embedded IPv4 is judged; Teredo, site-local and the local-use NAT64 prefix are refused. |
+| P-13 | Low | `redact()` masked the key and a private RPC URL only as literals (spaced, split or percent-encoded forms passed). No path to make a library quote them was found. GHSA-rv53-8q6x-rxjf. | **Fixed (0.2.1):** the key is masked with separators between its digits; the RPC URL by its parts, in any case, raw or percent-encoded. |
+| C-1 | Low | A `.env` in the directory the CLI runs in could point `priors-v2` at other contracts through `PRIORS_ADDRESSES`. GHSA-xw44-m4mg-h375. | **Fixed:** on a real chain an addresses file must match the published deployment unless `PRIORS_ALLOW_CUSTOM_ADDRESSES=1` is exported in the shell (a `.env` cannot set it). |
+| C-2 | Low | Outside a clone, `npx priors` runs an unrelated npm package and `priors-v2` is unpublished; the CLI said "check it from anywhere". GHSA-phq5-75g6-49p5. | **Fixed:** the hint and the docs say to run from the clone. The `priors-v2` npm name is not claimed. |
+| FAC-1 | Low | The facilitator's discovery feed listed a merchant's v1 resources on any URL, and a merchant could register a priors.trade URL; `find_services` did not say who is approved. GHSA-w47m-jmjp-hmr9. | **Fixed (facilitator.priors.trade, the MCP servers):** priors.trade and every approved merchant's origin are reserved; a listing needs the merchant's registered origin, checked again when read; listings say whether Priors approved the merchant. |
+| IB-2 | Low | `InviteBond` snapshots `qualifiedRepaid` at deposit, and a later permissionless `importFromV1` could raise it, releasing the bond early (a new path to IB-1). GHSA-c4wg-mccg-3pfq. | **Not reachable:** every v1 record was imported (blocks 71,702,743–71,704,677) before `InviteBond` was deployed (72,112,874), no v1 record holds a qualified loan, v1 is paused and sealed, and every import now reverts. A replacement bond must import before it snapshots. |
+| O-1 | Low | A line from a root with no hook is bound to the agent id, so whoever buys the NFT can draw it. GHSA-45xq-8g3m-34jm. | **Residual (the T8, X-1, V-2 class):** the loss is bounded by the line the backer vouched, which the owner it vetted could draw and default without a sale; a backer binds owners through its hook (`canBorrow` gets the owner), as the seat vaults and the stock vault do. |
+| O-2 | Low | `ownerDefaults` is keyed on an address, so moving agents to a fresh wallet sheds the mark. GHSA-g46p-969j-m75w. | **Residual (as R2-1):** a fresh address with no record is a fresh identity; a backer still has to choose to vouch for it. |
+| O-3 | Low | An `importFromV1` of a v1 default could settle a v2 seat (half burned) or leave a v1 defaulter backing. GHSA-482p-7442-6227 (F1, F2). | **Not reachable (as X-4, F-6):** every v1 record is imported, none defaulted, v1 is paused. |
+| S-1 | Low | Score v2 counts a backer's 30 days from its id's enrolment, not from when its current owner took it. GHSA-6f8j-g9rf-h284. | **Fixed (display only):** a backer's 30 days count from its current owner's arrival, read from the registry's transfers; no published score changed (no backer id had changed hands after enrolling). |
+
+Not findings: the facilitator's free tier was said to be unlimited and to halt every merchant (GHSA-gg53); its global
+budget (300 free settles a day for the self-registered merchants together, published on `/health`) and the per-IP
+and daily registration limits were live, and the approved merchants sit outside that budget. The v1-only reports
+(GHSA-qq69, GHSA-f8mw, GHSA-576h, GHSA-q9hg) were checked against v2, which none of them reaches.
+
 ## Reproducing
 
 ```bash

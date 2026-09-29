@@ -62,6 +62,36 @@ export async function getLogsAdaptive(provider, filter, fromBlock, toBlock, { mi
 }
 
 /**
+ * When each backer id last changed hands: its latest ERC-721 Transfer in the identity registry since `fromBlock`, in
+ * seconds (Score v2 counts a backer's 30 days from then when that is later than its enrolment: a bought aged id is a
+ * new backer, private report GHSA-6f8j). Incremental: ids already known are read from the cursor on, a new id from
+ * `fromBlock`. The state is { v: 1, scannedTo, ids, since: { [id]: seconds } }.
+ */
+export async function updateBackerTenure(provider, prev, { registry, ids, fromBlock, head, deadline = Infinity }) {
+  const st = prev?.v === 1 ? { v: 1, scannedTo: prev.scannedTo, ids: [...prev.ids], since: { ...prev.since } } : { v: 1, scannedTo: fromBlock - 1, ids: [], since: {} };
+  const want = [...new Set(ids.map(Number).filter((n) => Number.isSafeInteger(n) && n > 0))];
+  const fresh = want.filter((id) => !st.ids.includes(id));
+  const idTopics = (list) => list.map((id) => ethers.zeroPadValue(ethers.toBeHex(id), 32));
+  const read = async (list, from, to) => {
+    if (!list.length || to < from) return;
+    const logs = await getLogsAdaptive(provider, { address: registry, topics: [TOPICS.TRANSFER, null, null, idTopics(list)] }, from, to, { deadline });
+    const times = new Map();
+    for (const l of logs) {
+      if (l.topics?.length !== 4) continue; // an ERC-721 transfer carries its token id as the fourth topic
+      const n = Number(l.blockNumber);
+      if (!times.has(n)) times.set(n, Number((await provider.getBlock(n)).timestamp));
+      const id = Number(BigInt(l.topics[3]));
+      if (!(st.since[id] >= times.get(n))) st.since[id] = times.get(n);
+    }
+  };
+  await read(st.ids, st.scannedTo + 1, head);
+  await read(fresh, fromBlock, head);
+  st.ids.push(...fresh);
+  st.scannedTo = Math.max(st.scannedTo, head);
+  return st;
+}
+
+/**
  * Pure: pair each AuthorizationUsed with the USDG Transfer emitted right after it (the next log of the same
  * transaction), sent by the authorizer: USDG's transferWithAuthorization emits exactly that pair, so an unrelated
  * transfer elsewhere in the same transaction is never taken for the payment. A transaction settling several

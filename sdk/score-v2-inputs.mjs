@@ -113,10 +113,13 @@ function ownershipChangedAt(agent, loans, now) {
  *   repayers      { [loanId]: address }            who repaid each v2 loan (Repaid.payer); v2 loan ids only, never
  *                                                  applied to a v1 loan with the same id
  *   payerScores   { [address]: score }             a payer's own v2 score (scoreAll fills it)
+ *   backerOwnerSince { [agentId]: seconds }        the last registry transfer of each backer id (sdk/x402-income.mjs
+ *                                                  updateBackerTenure): a backer's 30 days count from then when it is
+ *                                                  later than its enrolment. Absent: from its enrolment.
  *   pending       { payers: [...], wallets: [...] } netting still being read (sdk/x402-income.mjs): payments from
  *                                                  those payers, or to a cluster holding one of those wallets, wait
  */
-export function buildInputs(snapshot, { links, income = [], agentWallets = {}, transfers = [], repayers = {}, payerScores = {}, pending = {}, now, weights = DEFAULT_WEIGHTS } = {}) {
+export function buildInputs(snapshot, { links, income = [], agentWallets = {}, transfers = [], repayers = {}, payerScores = {}, pending = {}, backerOwnerSince = {}, now, weights = DEFAULT_WEIGHTS } = {}) {
   const t = Number(now ?? snapshot.meta?.timestamp);
   if (!Number.isFinite(t) || t <= 0) throw new TypeError("score-v2 inputs: pass `now` (or a snapshot with meta.timestamp)");
   const K = makeClusters(snapshot, links, agentWallets);
@@ -147,7 +150,10 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
     if (ownRoots.has(Number(backerId))) return false;              // the borrower's own collateral
     if (K.clusterOfAgent(backerId) === borrowerCluster) return false;
     if (protocolBackers.has(Number(backerId))) return true;
-    return Number(b.enrolledAt) > 0 && Number(issuedAt) - Number(b.enrolledAt) >= minBackerAge;
+    // its age counts from when its current owner took the id, if later than its enrolment: a bought aged id is a new
+    // backer (private report GHSA-6f8j). `backerOwnerSince`: id -> the last registry transfer of that id, in seconds.
+    const since = Math.max(Number(b.enrolledAt) || 0, Number(backerOwnerSince?.[Number(backerId)]) || 0);
+    return Number(b.enrolledAt) > 0 && Number(issuedAt) - since >= minBackerAge;
   };
 
   // a default zeroes the other agents of the wallet that defaulted: the defaulted loan's owner when it was taken (v2

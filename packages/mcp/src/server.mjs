@@ -71,19 +71,30 @@ function v6Bytes(s) {
   if (groups.length !== 8) return null;
   return groups.flatMap((g) => { const v = parseInt(g || "0", 16); return [v >> 8, v & 255]; });
 }
-/** Loopback, private, link-local, CGNAT, unspecified, multicast and IPv4-mapped forms of those. */
+/**
+ * Loopback, private, link-local, CGNAT, unspecified, multicast, reserved and documentation blocks, and the IPv6 forms
+ * that carry an IPv4 address (IPv4-mapped, NAT64, 6to4) judged by that address; Teredo and site-local are refused.
+ */
 export function isPrivateAddress(ip) {
   const kind = isIP(ip.replace(/^\[|\]$/g, "").split("%")[0]);
   if (kind === 4) {
-    const [a, b] = ip.split(".").map(Number);
-    return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19));
+    const [a, b, c] = ip.split(".").map(Number);
+    return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19))
+      || (a === 192 && b === 0 && (c === 0 || c === 2)) || (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113); // 192.0.0.0/24, TEST-NETs
   }
   if (kind !== 6) return true; // not an address: refuse rather than guess
   const x = v6Bytes(ip);
   if (!x) return true;
-  if (x.slice(0, 10).every((v) => v === 0) && x[10] === 255 && x[11] === 255) return isPrivateAddress(x.slice(12).join(".")); // ::ffff:a.b.c.d
+  const v4at = (i) => isPrivateAddress(x.slice(i, i + 4).join("."));
+  if (x.slice(0, 10).every((v) => v === 0) && x[10] === 255 && x[11] === 255) return v4at(12); // ::ffff:a.b.c.d
   if (x.slice(0, 12).every((v) => v === 0)) return true; // ::, ::1 and the deprecated IPv4-compatible forms
-  return (x[0] & 0xfe) === 0xfc || (x[0] === 0xfe && (x[1] & 0xc0) === 0x80) || x[0] === 0xff; // fc00::/7, fe80::/10, ff00::/8
+  if (x[0] === 0 && x[1] === 0x64 && x[2] === 0xff && x[3] === 0x9b) { // NAT64
+    if (x[4] === 0 && x[5] === 1) return true; // 64:ff9b:1::/48, local-use: it can translate to anything
+    if (x.slice(4, 12).every((v) => v === 0)) return v4at(12); // 64:ff9b::/96, the well-known prefix
+  }
+  if (x[0] === 0x20 && x[1] === 0x02) return v4at(2); // 2002::/16, 6to4
+  if (x[0] === 0x20 && x[1] === 0x01 && x[2] === 0 && x[3] === 0) return true; // 2001::/32, Teredo
+  return (x[0] & 0xfe) === 0xfc || (x[0] === 0xfe && (x[1] & 0xc0) === 0x80) || (x[0] === 0xfe && (x[1] & 0xc0) === 0xc0) || x[0] === 0xff; // fc00::/7, fe80::/10, fec0::/10, ff00::/8
 }
 
 /**
@@ -202,11 +213,28 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   };
   const addresses = { ...ADDRESSES, ...(env.PRIORS_STOCK_VAULT ? { stockVault: env.PRIORS_STOCK_VAULT } : {}), ...(deps.addresses || {}) };
 
-  // Everything returned passes through here: the key (with or without 0x, any case) and a private RPC URL are cut.
+  // Everything returned passes through here. The key is cut with or without 0x, in any case, and with separators between
+  // its digits (spaced, split over lines, dashed, JSON-quoted chunks). A private RPC URL is cut whole and by its parts
+  // (the host, long path segments, query values, credentials), in any case, each also when percent-encoded.
   const secrets = [];
-  if (rawKey) { const h = rawKey.replace(/^0x/i, ""); if (h.length >= 16) secrets.push(new RegExp(`(0x)?${h.replace(/[^0-9a-zA-Z]/g, "")}`, "gi")); }
-  if (env.PRIORS_RPC && env.PRIORS_RPC !== X.robinhood.rpcUrl) secrets.push(new RegExp(env.PRIORS_RPC.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"));
-  const redact = (s) => secrets.reduce((acc, re) => acc.replace(re, (m) => (m.startsWith("http") ? "<rpc>" : "<redacted>")), String(s));
+  if (rawKey) {
+    const h = rawKey.replace(/^0x/i, "").replace(/[^0-9a-zA-Z]/g, "");
+    if (h.length >= 16) secrets.push(new RegExp(`(0x)?${[...h].join("[\\s\"'+,\\-]{0,3}")}`, "gi"));
+  }
+  if (env.PRIORS_RPC && env.PRIORS_RPC !== X.robinhood.rpcUrl) {
+    const parts = [env.PRIORS_RPC];
+    try {
+      const u = new URL(env.PRIORS_RPC);
+      parts.push(u.href, u.host, u.username, u.password);
+      for (const seg of u.pathname.split("/")) if (seg.length >= 8) parts.push(seg, decodeURIComponent(seg));
+      for (const v of u.searchParams.values()) if (v.length >= 8) parts.push(v);
+    } catch (_) { /* not a URL: the literal is still cut */ }
+    // each character that is not a letter or a digit may also appear percent-encoded
+    const pattern = (p) => [...p].map((ch) => (/[0-9a-z]/i.test(ch) ? ch : `(?:${ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|%${ch.charCodeAt(0).toString(16).padStart(2, "0")})`)).join("");
+    const uniq = [...new Set(parts.filter((p) => p && p.length >= 6))].sort((a, b) => b.length - a.length);
+    if (uniq.length) secrets.push(new RegExp(uniq.map(pattern).join("|"), "gi"));
+  }
+  const redact = (s) => secrets.reduce((acc, re) => acc.replace(re, (m) => (/^http/i.test(m) ? "<rpc>" : "<redacted>")), String(s));
 
   // One call per request: ethers batches parallel reads up to 100 calls, and the public node (the default PRIORS_RPC)
   // answers a batch that size with HTTP 429, which ethers retries until its 5-minute timeout (stock_assets' ~140 reads).
@@ -310,7 +338,9 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       let json = false; try { JSON.parse(body); json = true; } catch (_) { /* text */ }
       init.body = body; init.headers = { "content-type": json ? "application/json" : "text/plain; charset=utf-8" };
     }
-    const purchase = `${method} ${u.href}`;
+    const target = new URL(u.href);
+    target.hash = ""; // a fragment never reaches the merchant: url#a and url#b are the same purchase
+    const purchase = `${method} ${target.href}`;
     const now = Math.floor(Date.now() / 1000);
     for (const [k, v] of outstanding) if (v.validBefore <= now) outstanding.delete(k);
     const lines = [];
@@ -328,7 +358,18 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       if (maxBorrow > 0n) { agentId = await resolveAgent(); await needController(agentId); }
       const payer = X.createPayer({ signer, maxPrice, maxBorrow, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}), ...(maxBorrow > 0n ? { pool: addresses.pool, agentId } : {}) });
       try { r = await payer.pay(url, init); } catch (e) {
-        if (e?.name === "TimeoutError" || e?.name === "AbortError") throw new ToolError(`${method} ${u.href} did not answer in time. Nothing was signed or paid.`);
+        // What the error carries was done: a loan taken and a payment signed are counted, whatever failed after.
+        if (e?.borrowed > 0n) session.borrowed += e.borrowed;
+        if (e?.signed) {
+          const price = BigInt(e.requirement.amount ?? e.requirement.maxAmountRequired);
+          session.spent += price;
+          outstanding.set(purchase, { ...e.signed, requirement: e.requirement, price });
+          const until = when(e.signed.validBefore);
+          throw new ToolError(`A payment of ${usd(price)} to ${e.requirement.payTo} was signed, then the request failed (${explain(e)}). The merchant may still settle it until ${until}, so do NOT call pay_url again for this URL before ${until}; check wallet_balance.${e.borrowed > 0n ? ` Borrowed ${usd(e.borrowed)}${e.loanId !== null ? ` as loan #${e.loanId}` : ""}: repay it with the repay tool.` : ""}`);
+        }
+        const loan = e?.borrowed > 0n ? ` ${usd(e.borrowed)} was borrowed${e.loanId !== null ? ` as loan #${e.loanId}` : ""} before it failed: repay it with the repay tool.` : "";
+        if (e?.name === "TimeoutError" || e?.name === "AbortError") throw new ToolError(`${method} ${u.href} did not answer in time. Nothing was signed or paid.${loan}`);
+        if (loan) throw new ToolError(`${explain(e)}.${loan}`);
         throw e;
       }
       if (r.signed) {
@@ -339,7 +380,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       if (r.borrowed > 0n) { session.borrowed += r.borrowed; lines.push(`Borrowed ${usd(r.borrowed)} from the Priors line for agent #${agentId}${r.loanId !== null ? ` as loan #${r.loanId}` : ""}${r.dueAt ? `, due ${when(r.dueAt)}` : ""}. Repay it with the repay tool before then.`); }
       else if (r.requirement) lines.push("Nothing was borrowed.");
     }
-    const status = r.timedOut ? "no answer in time" : `HTTP ${r.response.status}`;
+    const status = r.timedOut ? "no answer in time" : r.transportError ? "the connection was lost" : `HTTP ${r.response.status}`;
     if (!r.requirement) lines.unshift(`No payment was asked for: ${method} ${u.href} answered ${status}. Nothing was paid.`);
     else if (r.paid > 0n) {
       outstanding.delete(purchase);
@@ -542,7 +583,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     if (hits.length === 0) return q ? `No registered service matches "${clean(q, 100)}" (${list.length} registered in all).` : "No services are registered with the facilitator yet.";
     const vol = (v) => (/^\d+$/.test(String(v ?? "")) ? usd(BigInt(v)) : clean(v ?? "0", 30));
     const httpsUrl = (v) => { try { const x = new URL(String(v)); return x.protocol === "https:" ? oneLine(x.href, 200) : "no https url"; } catch (_) { return "no url"; } };
-    const rows = hits.slice(0, 25).map((m) => `- ${oneLine(m.name || "(unnamed)", 60)} — ${httpsUrl(m.url)}\n  ${oneLine(m.description || "", 280)}\n  pays to ${ethers.isAddress(String(m.payTo ?? "")) ? ethers.getAddress(m.payTo) : "?"}; ${Number.isFinite(Number(m.settled?.count)) ? Number(m.settled.count) : 0} payments settled, ${oneLine(vol(m.settled?.volume), 40)}`);
+    const rows = hits.slice(0, 25).map((m) => `- ${oneLine(m.name || "(unnamed)", 60)} — ${httpsUrl(m.url)}\n  ${oneLine(m.description || "", 280)}\n  pays to ${ethers.isAddress(String(m.payTo ?? "")) ? ethers.getAddress(m.payTo) : "?"}; ${Number.isFinite(Number(m.settled?.count)) ? Number(m.settled.count) : 0} payments settled, ${oneLine(vol(m.settled?.volume), 40)}; ${m.approved === true ? "approved by Priors" : "self-registered, not reviewed by Priors"}`);
     return `${hits.length} service${hits.length === 1 ? "" : "s"}${q ? ` matching "${oneLine(q, 100)}"` : ""}${hits.length > 25 ? " (first 25 shown)" : ""}. Names, links and descriptions are the merchants' own words:\n${fenced(rows.join("\n"), "merchant listings")}\nPay one with pay_url.`;
   });
 

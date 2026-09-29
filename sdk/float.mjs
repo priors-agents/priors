@@ -11,7 +11,7 @@
 // The payment itself is x402 v1 "exact" on Robinhood Chain: an EIP-3009 TransferWithAuthorization signed on USDG's
 // "Global Dollar" v1 domain, sent back base64-encoded in X-PAYMENT (format: sdk/x402.mjs).
 import { ethers } from "ethers";
-import { NETWORKS, TRANSFER_WITH_AUTHORIZATION_TYPES, domainFor, encodePaymentHeader, USDG_MAINNET } from "./x402.mjs";
+import { NETWORKS, TRANSFER_WITH_AUTHORIZATION_TYPES, domainFor, encodePaymentHeader, decodePaymentHeader, USDG_MAINNET } from "./x402.mjs";
 
 const LOAN = "tuple(uint256 agentId, uint256 sponsorId, uint256 principal, uint256 fee, uint256 sponsorCut, uint256 reserveCut, uint256 premium, address owner, uint64 issuedAt, uint64 dueAt, uint64 defaultableAt, uint64 minScoreTerm, uint64 closedAt, uint8 status)";
 export const POOL_V2_FLOAT_ABI = [
@@ -86,22 +86,37 @@ export async function signPayment(signer, req, { now = Math.floor(Date.now() / 1
  * @param {number} [o.termSeconds]  loan term (default 7 days, clamped to the pool's [minTerm, maxTerm]); an explicit
  *   term below minTerm is raised, above maxTerm refused
  * @param {bigint} [o.maxFee]  refuse a loan whose fee is above this
- * @param {RequestInit} [o.init]  passed to every fetch
+ * @param {RequestInit} [o.init]  passed to every fetch (a redirect is not followed unless `init.redirect` says so)
  * @param {number} [o.pendingRetries]  resends of the SAME payment while the merchant answers "pending" (default 6)
+ * @param {number} [o.timeoutMs]  per-request timeout (default 60 s; 0 = none)
  * @returns {Promise<{response: Response, paid: bigint, borrowed: bigint, loanId: bigint|null, dueAt: bigint|null, requirement?: object,
- *   pending?: boolean, paymentHeader?: string}>}  `pending: true` means the payment may still land: resend
- *   `paymentHeader` as X-PAYMENT later (see `resend`), and do NOT call pay() again for the same purchase, which would
- *   sign a second payment while the first can still settle.
+ *   pending?: boolean, timedOut?: boolean, transportError?: boolean, paymentHeader?: string, validBefore?: number}>}
+ *   Once a payment is signed, `paymentHeader` and `validBefore` are always returned (and carried by any error thrown
+ *   after it, with the loan): until validBefore the merchant can still cash it, so a caller that retries must resend
+ *   `paymentHeader` (see `resend`), never call pay() again for the same purchase, which would sign a second payment.
+ *   `pending: true` (a "pending" answer, a timeout or a lost connection) means it may still land.
  */
-export async function pay(url, { signer, pool, agentId, maxBorrow = 0n, maxPrice = DEFAULT_MAX_PRICE, maxValiditySeconds = DEFAULT_MAX_VALIDITY_SECONDS, fetchImpl = fetch, termSeconds, maxFee, init = {}, asset, pendingRetries = 6, sleep = defaultSleep } = {}) {
-  if (!signer) throw new FloatError("NO_SIGNER", "pay: a signer is required");
-  const first = await fetchImpl(url, init);
+export async function pay(url, o = {}) {
+  if (!o.signer) throw new FloatError("NO_SIGNER", "pay: a signer is required");
+  // One payment at a time per wallet: two concurrent calls on a short balance would each read it short and each borrow
+  // the gap (private report GHSA-482p, F3). The second waits and sees the first's loan.
+  const key = String(await o.signer.getAddress()).toLowerCase();
+  const run = (payQueues.get(key) || Promise.resolve()).then(() => payOne(url, o));
+  const tail = run.then(() => {}, () => {});
+  payQueues.set(key, tail);
+  tail.then(() => { if (payQueues.get(key) === tail) payQueues.delete(key); });
+  return run;
+}
+const payQueues = new Map();
+
+async function payOne(url, { signer, pool, agentId, maxBorrow = 0n, maxPrice = DEFAULT_MAX_PRICE, maxValiditySeconds = DEFAULT_MAX_VALIDITY_SECONDS, fetchImpl = fetch, termSeconds, maxFee, init = {}, asset, pendingRetries = 6, sleep = defaultSleep, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  const first = await fetchImpl(url, requestInit(init, timeoutMs)); // a timeout here throws: nothing is signed yet
   if (first.status !== 402) return { response: first, paid: 0n, borrowed: 0n, loanId: null, dueAt: null };
 
   const poolC = pool ? poolContract(pool, signer) : null;
   const usdgAddr = asset || (poolC ? await poolC.usdg() : USDG_MAINNET);
   let body;
-  try { body = await first.json(); } catch (_) { throw new FloatError("BAD_402", "pay: the 402 response is not x402 JSON"); }
+  try { body = JSON.parse((await readCapped(first)).text); } catch (_) { throw new FloatError("BAD_402", "pay: the 402 response is not x402 JSON"); }
   const req = pickRequirement(body, usdgAddr);
   if (!req) throw new FloatError("NO_USDG_REQUIREMENT", "pay: the resource does not accept exact USDG on Robinhood Chain");
 
@@ -140,31 +155,81 @@ export async function pay(url, { signer, pool, agentId, maxBorrow = 0n, maxPrice
     borrowed = amount;
   }
 
-  const header = await signPayment(signer, req, { maxValiditySeconds });
-  const r = await resend(url, header, { init, fetchImpl, retries: pendingRetries, sleep });
-  return { ...r, paid: r.response.ok ? price : 0n, borrowed, loanId, dueAt, requirement: req };
+  // Exactly one signature for this purchase. An error from here carries the loan (and, once signed, the header).
+  let header, validBefore;
+  try {
+    header = await signPayment(signer, req, { maxValiditySeconds });
+    validBefore = Number(decodePaymentHeader(header).payload.authorization.validBefore);
+    const r = await resend(url, header, { init, fetchImpl, retries: pendingRetries, sleep, timeoutMs });
+    return { ...r, paid: r.response.ok ? price : 0n, borrowed, loanId, dueAt, requirement: req, paymentHeader: header, validBefore };
+  } catch (e) {
+    if (e && typeof e === "object") Object.assign(e, { borrowed, loanId, dueAt, ...(header ? { paymentHeader: header, validBefore } : {}) });
+    throw e;
+  }
 }
 
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Per-request timeout, 60 s by default: a merchant that never answers cannot hold pay() forever. */
+export const DEFAULT_TIMEOUT_MS = 60_000;
+/** Merchant bodies are read at most this far, as in @priors/x402: a merchant streaming gigabytes cannot exhaust memory. */
+export const MAX_BODY_BYTES = 256 * 1024;
+
+/** A response body as text, at most `max` bytes; the rest is cancelled, not read. */
+async function readCapped(response, max = MAX_BODY_BYTES) {
+  if (!response?.body) return { text: "", cut: false };
+  const reader = response.body.getReader();
+  const chunks = [];
+  let n = 0, cut = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (n + value.byteLength > max) { chunks.push(value.subarray(0, max - n)); n = max; cut = true; await reader.cancel().catch(() => {}); break; }
+    chunks.push(value); n += value.byteLength;
+  }
+  const buf = new Uint8Array(n);
+  let o = 0;
+  for (const c of chunks) { buf.set(c, o); o += c.byteLength; }
+  return { text: new TextDecoder().decode(buf), cut };
+}
+
+/**
+ * The caller's init with a redirect never followed (a signed payment must not travel to a host the caller did not
+ * name; the 3xx is the answer, as in @priors/x402) unless the caller sets `redirect`, and the timeout joined to its signal.
+ */
+function requestInit(init, timeoutMs) {
+  const signals = [timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null, init.signal || null].filter(Boolean);
+  return { redirect: "manual", ...init, ...(signals.length ? { signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals) } : {}) };
+}
+const isAbort = (e) => e?.name === "AbortError" || e?.name === "TimeoutError";
+
 const isPending = async (response) => {
   if (response.status !== 402) return false;
-  try { const b = await response.clone().json(); return b?.pending === true; } catch (_) { return false; }
+  try { const b = JSON.parse((await readCapped(response.clone(), 64 * 1024)).text); return b?.pending === true; } catch (_) { return false; }
 };
 
 /**
  * Send an already-signed X-PAYMENT, and keep resending the SAME one while the merchant answers 402 `pending`
  * (its settlement was broadcast but not confirmed yet; see docs/FLOAT.md). Never signs anything:
- * a new signature while the first payment can still land is how a call gets paid twice.
- * @returns {Promise<{response: Response, pending: boolean, paymentHeader?: string}>}
+ * a new signature while the first payment can still land is how a call gets paid twice. Once the payment may be out,
+ * no error is thrown: a timeout or an abort is reported as pending (`timedOut: true`, a synthetic 504), any other
+ * transport error as pending too (`transportError: true`, a synthetic 502, the error in `error`), with the header.
+ * @returns {Promise<{response: Response, pending: boolean, timedOut?: boolean, transportError?: boolean, error?: unknown, paymentHeader?: string}>}
  */
-export async function resend(url, paymentHeader, { init = {}, fetchImpl = fetch, retries = 6, sleep = defaultSleep } = {}) {
+export async function resend(url, paymentHeader, { init = {}, fetchImpl = fetch, retries = 6, sleep = defaultSleep, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   const headers = new Headers(init.headers || {});
   headers.set("X-PAYMENT", paymentHeader);
-  let response = await fetchImpl(url, { ...init, headers });
-  for (let i = 0; i < retries && (await isPending(response)); i++) {
-    const after = Number(response.headers.get("retry-after"));
-    await sleep(1000 * Math.min(30, Math.max(1, Number.isFinite(after) && after > 0 ? after : 5)));
-    response = await fetchImpl(url, { ...init, headers });
+  const send = () => fetchImpl(url, requestInit({ ...init, headers }, timeoutMs));
+  let response;
+  try {
+    response = await send();
+    for (let i = 0; i < retries && (await isPending(response)); i++) {
+      const after = Number(response.headers.get("retry-after"));
+      await sleep(1000 * Math.min(30, Math.max(1, Number.isFinite(after) && after > 0 ? after : 5)));
+      response = await send();
+    }
+  } catch (e) {
+    if (isAbort(e)) return { response: new Response(null, { status: 504, statusText: "payer timeout" }), pending: true, timedOut: true, paymentHeader };
+    return { response: new Response(null, { status: 502, statusText: "payer transport error" }), pending: true, transportError: true, error: e, paymentHeader };
   }
   const pending = await isPending(response);
   return { response, pending, ...(pending ? { paymentHeader } : {}) };

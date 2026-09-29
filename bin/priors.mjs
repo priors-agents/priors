@@ -267,7 +267,7 @@ async function main() {
     const r = await c.priors.report(id);
     out(`   score ${r.score}/1000 · repaid ${r.loansRepaid} (${r.qualifiedRepaid} qualified) · ${r.dollarDaysRepaid} dollar-days · fees paid ${usd(r.feesPaid)}`);
     out(`   earned capacity ${usd(r.earned)} of its own, line now ${usd(r.capacity)}`);
-    out(`\nagent #${id} has a credit history. Check it from anywhere: npx priors report ${id}`);
+    out(`\nagent #${id} has a credit history. Check it from this clone: npx priors report ${id} (outside a clone, npx priors is someone else's package)`);
     if (r.score === 0) die("\nscore came back 0 — that is not a working history. Something above did not take effect.");
     return;
   }

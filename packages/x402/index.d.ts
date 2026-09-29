@@ -83,6 +83,10 @@ export interface CreatePayerOptions {
   asset?: string;
   fetchImpl?: typeof fetch;
   /** Resends of the SAME payment while the merchant answers pending (default 6). */
+  /** Per-request timeout in ms (default 60 000; 0 = none). A payer's payments run one at a time. */
+  timeoutMs?: number;
+  /** Aborts the whole call; once the payment is out an abort is reported as pending, never thrown. */
+  signal?: AbortSignal;
   pendingRetries?: number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -100,16 +104,27 @@ export interface PayResult {
   x402Version?: 1 | 2;
   /** Decoded PAYMENT-RESPONSE on success, when the merchant sent one. */
   settlement?: SettleResponse;
-  /** true: the payment may still land. Resend `paymentHeaders` later with `resend`; do NOT pay again. */
+  /** true: the payment may still land (a "pending" answer, a timeout, or a lost connection). Resend
+   *  `paymentHeaders` later with `resend`; do NOT pay again. */
   pending?: boolean;
+  /** No answer within timeoutMs after the payment was sent (a synthetic 504 response). */
+  timedOut?: boolean;
+  /** The connection failed after the payment was sent (a synthetic 502 response; the error in `error`). */
+  transportError?: boolean;
+  error?: unknown;
   paymentHeaders?: Record<string, string>;
+  /** Once a payment is signed: its headers and validBefore (unix seconds), whatever the outcome. */
+  signed?: { paymentHeaders: Record<string, string>; validBefore: number };
+  /** true: this payer already had an unsettled payment for the purchase (method + URL without its fragment) and sent
+   *  that one again instead of signing a second. */
+  resent?: boolean;
 }
 
 export interface Payer {
   /** fetch-like: pays an x402 USDG 402 (v2 or legacy v1 "robinhood"), borrowing the gap if allowed. */
   pay(input: RequestInfo | URL, init?: RequestInit): Promise<PayResult>;
   /** Resend an already-signed payment (from a pending result); never signs. */
-  resend(input: RequestInfo | URL, paymentHeaders: Record<string, string>, init?: RequestInit): Promise<{ response: Response; pending: boolean; paymentHeaders?: Record<string, string> }>;
+  resend(input: RequestInfo | URL, paymentHeaders: Record<string, string>, init?: RequestInit): Promise<{ response: Response; pending: boolean; timedOut?: boolean; transportError?: boolean; error?: unknown; paymentHeaders?: Record<string, string> }>;
   /** Repay open loans, earliest due first, while the wallet covers them. */
   settleLoans(): Promise<{ repaid: bigint[]; open: bigint[] }>;
 }
@@ -119,7 +134,7 @@ export declare function createPayer(opts: CreatePayerOptions): Payer;
 /** An x402Client for USDG on eip155:4663 with a price cap and a ≤600 s signing window (for @x402/fetch, @x402/mcp). */
 export declare function createUsdgClient(opts: { signer: any; maxPrice?: UsdgAmount; maxValiditySeconds?: number; asset?: string; x402Signer?: any }): x402Client;
 
-export declare function resend(input: RequestInfo | URL, paymentHeaders: Record<string, string>, opts?: { init?: RequestInit; fetchImpl?: typeof fetch; retries?: number; sleep?: (ms: number) => Promise<void> }): Promise<{ response: Response; pending: boolean; paymentHeaders?: Record<string, string> }>;
+export declare function resend(input: RequestInfo | URL, paymentHeaders: Record<string, string>, opts?: { init?: RequestInit; fetchImpl?: typeof fetch; retries?: number; sleep?: (ms: number) => Promise<void> }): Promise<{ response: Response; pending: boolean; timedOut?: boolean; transportError?: boolean; error?: unknown; paymentHeaders?: Record<string, string> }>;
 
 export declare class CappedExactEvmScheme implements SchemeNetworkClient {
   readonly scheme: "exact";

@@ -28,6 +28,8 @@ export const ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
  * Deliberately minimal: `KEY=value`, `#` comments, optional surrounding quotes. An already-set variable wins, so
  * `RPC_URL=... npx priors doctor` still overrides the file.
  */
+/** Variables this process took from a .env file (not exported by the user): an opt-in must never come from there. */
+const fromDotEnv = new Set();
 export function loadDotEnv(file = join(ROOT, ".env")) {
   if (!existsSync(file)) return {};
   const loaded = {};
@@ -41,7 +43,7 @@ export function loadDotEnv(file = join(ROOT, ".env")) {
     let value = line.slice(eq + 1).trim();
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
     loaded[key] = value;
-    if (process.env[key] === undefined) process.env[key] = value;
+    if (process.env[key] === undefined) { process.env[key] = value; fromDotEnv.add(key); }
   }
   return loaded;
 }
@@ -322,6 +324,18 @@ export async function resolveV2(opts = {}) {
   }
   if (addresses.chainId !== undefined && Number(addresses.chainId) !== chainId) {
     throw new Error(`the v2 addresses are for chain ${addresses.chainId}, but the RPC is chain ${chainId}`);
+  }
+  // A PRIORS_ADDRESSES file can come from a .env in whatever directory the CLI runs in, which is not always the user's
+  // own (private report GHSA-xw44): on a real chain its money-moving addresses must be the published ones, unless the
+  // user exported PRIORS_ALLOW_CUSTOM_ADDRESSES=1 in the shell (never read from a .env). The dev chain is left free.
+  if (!opts.addressesFile && file && chainId !== DEV_CHAIN && !(process.env.PRIORS_ALLOW_CUSTOM_ADDRESSES === "1" && !fromDotEnv.has("PRIORS_ALLOW_CUSTOM_ADDRESSES"))) {
+    const pinned = readDeploymentV2(chainId);
+    const keys = ["pool", "usdg", "registry", "priors", "lens", "treasuryV4", "seatVault", "seatVaultV4", "stockVault", "inviteBond"];
+    const differ = pinned ? keys.filter((k) => addresses[k] !== undefined && pinned[k] !== undefined && String(addresses[k]).toLowerCase() !== String(pinned[k]).toLowerCase()) : ["no published deployment for this chain"];
+    if (differ.length) {
+      const where = chainId === 4663 ? "Robinhood Chain" : `chain ${chainId}`;
+      throw new Error(`the addresses file ${file} differs from the published ${where} deployment (${differ.join(", ")}), so it could send your USDG elsewhere: refused. To use it anyway, export PRIORS_ALLOW_CUSTOM_ADDRESSES=1 in your shell (a .env cannot set it).`);
+    }
   }
   const rawPk = opts.privateKey || process.env.PRIORS_KEY || process.env.PRIVATE_KEY;
   const pk = rawPk && rawPk !== "0x" && rawPk !== "0x0" ? rawPk.trim() : undefined;

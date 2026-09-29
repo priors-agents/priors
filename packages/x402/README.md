@@ -119,12 +119,16 @@ Amounts: a `bigint` or integer is atomic USDG (6 decimals: `100000n` = $0.10); a
 - **One signature per purchase.** While the merchant answers "pending" (v2 `settlement_pending`, or a legacy
   `{pending:true}` body) the same signed payment is resent, up to 6 times, honouring `Retry-After`. If it is still
   pending, the result is `{ pending: true, paymentHeaders }`: call `payer.resend(url, paymentHeaders)` later, and do
-  not call `pay()` again for the same purchase.
+  not call `pay()` again for the same purchase. A payer also remembers its unsettled payments: a later `pay()` for the
+  same purchase (method and URL, without the fragment) resends that one (`resent: true`) until it expires.
 - **Legacy v1** 402 bodies (`network: "robinhood"`, `X-PAYMENT`) are paid the way `sdk/float.mjs` pays them.
 - **No redirects.** Requests go out with `redirect: "manual"` unless you pass another `redirect` in `init`: a signed
   payment never travels to a host you did not name, and a 3xx comes back as the answer.
-- **Bounded.** Bodies are read up to 256 KB (`readCapped`). `timeoutMs` bounds each request and `signal` the whole
-  call; a timeout once the payment is out returns `{ pending: true, timedOut: true, paymentHeaders }`, never an error.
+- **Bounded.** Bodies are read up to 256 KB (`readCapped`). `timeoutMs` (60 s by default; 0 = none) bounds each request and `signal` the whole
+  call; a timeout once the payment is out returns `{ pending: true, timedOut: true, paymentHeaders }`, and a dropped
+  connection `{ pending: true, transportError: true, error, paymentHeaders }`: never an error once the payment may be
+  out. An error thrown after a loan or a signature carries `borrowed`, `loanId`, `dueAt` and `signed`.
+- **One payment at a time** per payer: two concurrent `pay()` calls on a short wallet do not both borrow the gap.
 - **`signed`**: every result of a signed payment carries `signed: { paymentHeaders, validBefore }`. Until
   `validBefore` the merchant can still cash it, so a retry of the same purchase must `resend` these headers.
 

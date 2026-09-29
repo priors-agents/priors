@@ -152,6 +152,14 @@ check("F2 a fresh second wallet can't vouch its way up: a backer enrolled under 
   assert.equal(one(mk(80), 1).detail.repaidByOthers, 3);
 });
 
+check("F17 a bought backer is new: its 30 days count from when its current owner took the id, not from its enrolment (GHSA-6f8j)", () => {
+  const mk = () => ({ meta: { timestamp: NOW }, events: [], agents: [agent(1, "0xA", { sponsor: 2 }), agent(2, "0xBUYER", { isRoot: true, enrolledAt: NOW - 100 * DAY })],
+    loans: [0, 1, 2].map((i) => repaid(1, 2, 50, 25 - i * 8, 7)) });
+  assert.equal(one(mk(), 1, { backerOwnerSince: { 2: NOW - 26 * DAY } }).detail.repaidByOthers, 0, "bought 26 days ago: the agent's own money");
+  assert.equal(one(mk(), 1, { backerOwnerSince: { 2: NOW - 80 * DAY } }).detail.repaidByOthers, 3, "held 80 days: counts");
+  assert.equal(one(mk(), 1).detail.repaidByOthers, 3, "no transfer history given: from its enrolment, as before");
+});
+
 check("F2 rungs need time: 3 backed loans inside two weeks stay 'started', and 'earned' needs 30 days since the first", () => {
   const quick = scoreV2(base({ loans: [loan(50, 7, { ago: 12 }), loan(50, 7, { ago: 11 }), loan(50, 7, { ago: 10 })] }));
   assert.equal(quick.rung, 1);

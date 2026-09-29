@@ -64,6 +64,9 @@ npx priors-v2 repay --all                # principal + fee
 npx priors-v2 status                     # line, loans, record
 ```
 
+Run the `npx` commands inside the clone: there they run this repository's own CLI. Outside it, `npx priors` is an
+unrelated npm package and `priors-v2` is not published, so never run them with `PRIORS_KEY` set anywhere else.
+
 The wallet needs a little native gas and enough USDG to pay the fee (about $0.012 on $5 for 7 days). No invite?
 `npx priors-v2 join --seat <staker>` takes a staker's seat offer instead, once someone has offered on your id.
 

@@ -226,6 +226,46 @@ check("an exported variable still beats the .env file", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+/** Run `priors-v2 status` in `dir` against a stub RPC answering chain 4663; returns {code, out, calls}. */
+async function statusAgainstStub(dir, extraEnv = {}) {
+  const { createServer } = await import("node:http");
+  const { spawn } = await import("node:child_process");
+  const calls = [];
+  const srv = createServer((req, res) => {
+    let b = "";
+    req.on("data", (c) => (b += c));
+    req.on("end", () => {
+      const body = JSON.parse(b || "null");
+      const answer = (m) => { calls.push(m.method === "eth_call" ? `eth_call:${String(m.params?.[0]?.to).toLowerCase()}` : m.method); return { jsonrpc: "2.0", id: m.id, result: m.method === "eth_chainId" ? "0x1237" : "0x" + "0".repeat(64) }; };
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(Array.isArray(body) ? body.map(answer) : answer(body)));
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  writeFileSync(join(dir, ".env"), `PRIORS_RPC=http://127.0.0.1:${srv.address().port}\nPRIORS_ADDRESSES=./addr.json\nPRIORS_ALLOW_CUSTOM_ADDRESSES=1\n`);
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !["PRIORS_RPC", "RPC_URL", "PRIORS_ADDRESSES", "PRIORS_ALLOW_CUSTOM_ADDRESSES", "PRIORS_KEY", "PRIVATE_KEY"].includes(k)));
+  const child = spawn(process.execPath, [join(ROOT, "bin", "priors-v2.mjs"), "status"], { cwd: dir, env: { ...env, PRIORS_KEY: "0x" + "11".repeat(32), ...extraEnv } });
+  let out = "";
+  child.stdout.on("data", (d) => (out += d));
+  child.stderr.on("data", (d) => (out += d));
+  const code = await new Promise((r) => child.on("close", r));
+  srv.close();
+  return { code, out, calls };
+}
+await checkAsync("a .env in the working directory cannot repoint priors-v2 at other contracts on Robinhood Chain (GHSA-xw44)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "priors-evil-"));
+  try {
+    const dep = JSON.parse(readFileSync(join(ROOT, "deployments", "4663.v2.json"), "utf8"));
+    writeFileSync(join(dir, "addr.json"), JSON.stringify({ ...dep, pool: "0x1111111111111111111111111111111111111111", registry: "0x4444444444444444444444444444444444444444" }));
+    const refused = await statusAgainstStub(dir);
+    if (refused.code === 0 || !/differs from the published Robinhood Chain deployment/.test(refused.out)) throw new Error(`the .env's addresses were used (exit ${refused.code}):\n${refused.out}`);
+    if (refused.calls.some((c) => /0x1111|0x4444/.test(c))) throw new Error(`the fake contracts were called: ${refused.calls.join(", ")}`);
+    const exported = await statusAgainstStub(dir, { PRIORS_ALLOW_CUSTOM_ADDRESSES: "1" });
+    if (/differs from the published/.test(exported.out)) throw new Error(`an exported PRIORS_ALLOW_CUSTOM_ADDRESSES=1 was not honoured:\n${exported.out}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 check("the .env.example placeholder key is treated as unset", () => {
   // `PRIVATE_KEY=0x` copied and left unfilled must read as "no key yet", not reach ethers as a malformed one.
   const dir = mkdtempSync(join(tmpdir(), "priors-dotenv-"));

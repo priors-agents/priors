@@ -3,7 +3,7 @@
 //   node scripts/test-x402-income.mjs
 import assert from "node:assert/strict";
 import { ethers } from "ethers";
-import { pairPayments, scanPayments, scanTransfers, TOPICS, getLogsAdaptive, DeadlineError, readAgentWallets, readRepayers, updateIncome } from "../sdk/x402-income.mjs";
+import { pairPayments, scanPayments, scanTransfers, TOPICS, getLogsAdaptive, DeadlineError, readAgentWallets, readRepayers, updateIncome, updateBackerTenure } from "../sdk/x402-income.mjs";
 import { scoreV2, DEFAULT_WEIGHTS as W } from "../sdk/score-v2.mjs";
 import { buildInputs, scoreAll } from "../sdk/score-v2-inputs.mjs";
 
@@ -65,6 +65,27 @@ await check("transfers sent back to payers are read the same way, with no block 
   const r = await scanTransfers(provider, { usdg: A(7), from: [A(9)], to: [A(1)], fromBlock: 1, toBlock: 10 });
   assert.deepEqual(r.transfers.map((x) => [x.from, x.to, x.amount]), [[A(9), A(1), "5"]]);
   assert.equal(blocks, 0);
+});
+
+await check("S-1 (GHSA-6f8j): each backer id's last registry transfer is read incrementally, for those ids only; a new id from the start", async () => {
+  const REG = A(8), calls = [];
+  const nft = (id, block) => ({ transactionHash: "0x" + block.toString(16), index: 0, blockNumber: block, address: REG, topics: [TOPICS.TRANSFER, topic(A(1)), topic(A(2)), ethers.zeroPadValue(ethers.toBeHex(id), 32)], data: "0x" });
+  const logs = [nft(5, 120), nft(5, 180), nft(6, 250)];
+  const provider = {
+    async getLogs(f) {
+      calls.push(f);
+      const ids = f.topics[3].map((t) => Number(BigInt(t)));
+      return logs.filter((l) => l.blockNumber >= f.fromBlock && l.blockNumber <= f.toBlock && ids.includes(Number(BigInt(l.topics[3]))));
+    },
+    async getBlock(n) { return { timestamp: 1000 + n }; },
+  };
+  const s1 = await updateBackerTenure(provider, null, { registry: REG, ids: [5], fromBlock: 100, head: 200 });
+  assert.deepEqual(s1.since, { 5: 1180 }); assert.equal(s1.scannedTo, 200);
+  assert.ok(calls.every((c) => c.address === REG && c.topics[0] === TOPICS.TRANSFER && c.topics[1] === null && c.topics[2] === null), "the registry's transfers of those ids only");
+  calls.length = 0;
+  const s2 = await updateBackerTenure(provider, s1, { registry: REG, ids: [5, 6], fromBlock: 100, head: 300 });
+  assert.deepEqual(s2.since, { 5: 1180, 6: 1250 }); assert.equal(s2.scannedTo, 300);
+  assert.ok(calls.some((c) => c.fromBlock === 201) && calls.some((c) => c.fromBlock === 100), "known ids from the cursor, a new id from the start");
 });
 
 // ---------------------------------------------------------------- scoring income

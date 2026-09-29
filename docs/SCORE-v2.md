@@ -101,7 +101,7 @@ for the transfers from those payers to agent wallets; the transfer must be the l
 | flip hundreds of small loans | risk time counts USDG × days: 300 half-hour loans of 8 USDG earn under 10 points (flips of hundreds of USDG do add up, but that money is really at risk, and flips never make seasoned loans) |
 | many tiny week-long loans | a seasoned loan counts by size: ten 1 USDG loans are worth 4 points, not 200 |
 | back yourself | loans backed by your own owner count for nothing |
-| back yourself from a fresh second wallet | a backer counts only after 30 days on Priors; v2.1 adds funding-source clusters |
+| back yourself from a fresh second wallet, or buy an aged backer id | a backer counts only after 30 days on Priors, counted from when its current owner took the id (registry transfers); v2.1 adds funding-source clusters |
 | pay yourself to fake income | payers in your cluster (owner, declared wallet, linked agents) are excluded; each payer is capped; unknown payers count half |
 | fund a second wallet, then have it pay you | what your side sent that wallet directly is netted out of its payments; funding it through an intermediary is not caught yet (v2.1) |
 | round-trip the same money | what goes straight back to the payer doesn't count; a round trip through a third wallet is v2.1 |
@@ -161,6 +161,9 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
 
 ## Changelog
 
+- **inputs, 2026-09-29** (all versions): a backer's 30 days count from when its current owner took the id, read
+  from the identity registry's transfers, not from its enrolment: a bought aged id is a new backer (private report
+  GHSA-6f8j). No published score changed: no backer id had changed hands after enrolling.
 - **2.0.1** (2026-09-28): a loan backed by the stock vault's root (`meta.stockVaultAgentId`) counts as the borrower's
   own money, since its own tokens stand behind it, not as someone else's risk (`sdk/score-weights.v2.0.1.json`,
   `backers.ownCollateralRoots`; found by the stocks readiness review of 2026-09-28). No weight changes. A
