@@ -249,7 +249,8 @@ const consentTuple = (c) => [BigInt(c.agentId), BigInt(c.sponsorId), c.owner, Bi
 export class PriorsV2 {
   /**
    * @param {{ signer?: any, provider?: any, rpc?: string,
-   *           addresses: { pool: string, treasuryV4?: string, seatVault?: string, usdg?: string, registry?: string, priors?: string, stockVault?: string } }} opts
+   *           addresses: { pool: string, treasuryV4?: string, seatVault?: string, seatVaultV4?: string, usdg?: string, registry?: string, priors?: string, stockVault?: string } }} opts
+   * With `seatVaultV4` (the growth seat vault), new seats go to it; a seat already open stays on its own vault.
    */
   constructor(opts = {}) {
     const a = opts.addresses || {};
@@ -262,6 +263,7 @@ export class PriorsV2 {
     this.pool = new ethers.Contract(a.pool, POOL_V2_ABI, run);
     this.treasury = a.treasuryV4 ? new ethers.Contract(a.treasuryV4, TREASURY_V4_ABI, run) : null;
     this.vault = a.seatVault ? new ethers.Contract(a.seatVault, SEAT_VAULT_V2_ABI, run) : null;
+    this.vaultV4 = a.seatVaultV4 ? new ethers.Contract(a.seatVaultV4, SEAT_VAULT_V2_ABI, run) : null;
     this.usdg = a.usdg ? new ethers.Contract(a.usdg, ERC20_ABI, run) : null;
     this.token = a.priors ? new ethers.Contract(a.priors, ERC20_ABI, run) : null;
     this.registry = a.registry ? new ethers.Contract(a.registry, REGISTRY_ABI, run) : null;
@@ -328,61 +330,104 @@ export class PriorsV2 {
 
   // ---- stakers (seat vault) ------------------------------------------------------------------------------------
 
+  /** The seat vaults, the growth seat vault (V4) first once recorded. */
+  _vaults() { return [this.vaultV4, this.vault].filter(Boolean); }
+  /** Where new seats go: the growth seat vault (V4) once recorded, else `seatVault`. */
+  _newSeatVault() { return this.vaultV4 || this._need(this.vault, "seatVault"); }
+  /** The vault whose root sponsors `agentId`, else the one holding an open seat for it, else where new seats go. */
+  async _seatVaultOf(agentId) {
+    const vs = this._vaults();
+    if (vs.length === 1) return vs[0];
+    const [a, roots] = await Promise.all([this.pool.getAgent(agentId), Promise.all(vs.map((v) => v.agentId()))]);
+    const i = roots.findIndex((r) => r === a.sponsor);
+    if (i >= 0) return vs[i];
+    for (const v of vs) if (SEAT_STATUS[Number((await v.getSeat(agentId)).status)] === "open") return v;
+    return this._newSeatVault();
+  }
+  /** The vault holding `staker`'s offer on `agentId` (V4 first), or null. */
+  async _offerVault(agentId, staker) {
+    for (const v of this._vaults()) if ((await v.offers(agentId, staker)) !== 0n) return v;
+    return null;
+  }
+  /** `staker`'s untaken offer on `agentId`: the vault it waits on and its $PRIORS, or null. */
+  async seatOffer(agentId, staker) {
+    const v = await this._offerVault(agentId, staker);
+    return v ? { seatVault: await v.getAddress(), amount: await v.offers(agentId, staker) } : null;
+  }
+
   /** Escrow a seat's worth of $PRIORS behind `agentId` (approved automatically). Nothing is vouched until accepted. */
   async offer(agentId) {
-    const vault = this._need(this.vault, "seatVault");
+    const vault = this._newSeatVault();
     const token = this.token || (this.token = new ethers.Contract(await vault.token(), ERC20_ABI, this.signer));
     const { seatSize } = await vault.params();
     await this._ensure(token, await vault.getAddress(), seatSize, "offer");
-    return { hash: (await sendChecked(vault, "offer", [agentId], this._ifaces)).hash, seatSize };
+    return { hash: (await sendChecked(vault, "offer", [agentId], this._ifaces)).hash, seatSize, seatVault: await vault.getAddress() };
   }
   /** Take back an untaken offer (the staker's own by default). */
   async withdrawOffer(agentId, staker) {
-    const vault = this._need(this.vault, "seatVault");
-    return (await sendChecked(vault, "withdrawOffer", [agentId, staker || (await this.me())], this._ifaces)).hash;
+    const who = staker || (await this.me());
+    const vault = (await this._offerVault(agentId, who)) || this._newSeatVault();
+    return (await sendChecked(vault, "withdrawOffer", [agentId, who], this._ifaces)).hash;
   }
   /** Close a seat (staker or agent controller). With a loan open it closes when the last one is repaid. */
   async closeSeat(agentId) {
-    const vault = this._need(this.vault, "seatVault");
+    this._need(this.vault || this.vaultV4, "seatVault");
+    const vault = await this._seatVaultOf(agentId);
     return (await sendChecked(vault, "close", [agentId], this._ifaces)).hash;
   }
-  /** Pay out the USDG fees credited to the caller. Pokes the caller's open seats first so nothing is left behind. */
+  /**
+   * Pay out the USDG fees credited to the caller, on every seat vault. Pokes the caller's open seats first so nothing
+   * is left behind. `hash` is the last claim's; `hashes` has one per vault that paid.
+   */
   async claimSeatFees(to) {
-    const vault = this._need(this.vault, "seatVault");
+    this._need(this.vault || this.vaultV4, "seatVault");
     const me = await this.me();
-    for (const id of await vault.openSeats()) {
-      const s = await vault.getSeat(id);
-      if (s.staker.toLowerCase() === me.toLowerCase() && (await vault.pendingFees(id)) > 0n) await sendChecked(vault, "poke", [id], this._ifaces);
+    let amount = 0n;
+    const hashes = [];
+    for (const vault of this._vaults()) {
+      for (const id of await vault.openSeats()) {
+        const s = await vault.getSeat(id);
+        if (s.staker.toLowerCase() === me.toLowerCase() && (await vault.pendingFees(id)) > 0n) await sendChecked(vault, "poke", [id], this._ifaces);
+      }
+      const owed = await vault.feesOwed(me);
+      if (owed === 0n) continue;
+      hashes.push((await sendChecked(vault, "claim", [to || me], this._ifaces)).hash);
+      amount += owed;
     }
-    const owed = await vault.feesOwed(me);
-    if (owed === 0n) throw new Error(`no seat fees owed to ${me}`);
-    const rc = await sendChecked(vault, "claim", [to || me], this._ifaces);
-    return { hash: rc.hash, amount: owed };
+    if (amount === 0n) throw new Error(`no seat fees owed to ${me}`);
+    return { hash: hashes[hashes.length - 1], hashes, amount };
   }
   /** Fees owed to `addr`: credited, plus what its open seats would be credited now. */
   async pendingSeatFees(addr) {
-    const vault = this._need(this.vault, "seatVault");
+    this._need(this.vault || this.vaultV4, "seatVault");
     const who = (addr || (await this.me())).toLowerCase();
-    let total = await vault.feesOwed(who);
-    for (const id of await vault.openSeats()) {
-      const s = await vault.getSeat(id);
-      if (s.staker.toLowerCase() === who) total += await vault.pendingFees(id);
+    let total = 0n;
+    for (const vault of this._vaults()) {
+      total += await vault.feesOwed(who);
+      for (const id of await vault.openSeats()) {
+        const s = await vault.getSeat(id);
+        if (s.staker.toLowerCase() === who) total += await vault.pendingFees(id);
+      }
     }
     return total;
   }
   /** Whether a seat could open behind `agentId` now (the vault's own check). */
-  async seatable(agentId) { return this._need(this.vault, "seatVault").seatable(agentId); }
+  async seatable(agentId) { return this._newSeatVault().seatable(agentId); }
   /**
    * The seats open now. There is no cheap on-chain list of every seatable identity (the registry is not
    * enumerable); filter candidate ids with `seatableAgents(ids)`.
    */
   async openSeats() {
-    const vault = this._need(this.vault, "seatVault");
-    const ids = await vault.openSeats();
-    return Promise.all(ids.map(async (id) => ({ agentId: Number(id), ...this._seat(await vault.getSeat(id)) })));
+    this._need(this.vault || this.vaultV4, "seatVault");
+    const out = [];
+    for (const vault of this._vaults()) {
+      const at = await vault.getAddress();
+      for (const id of await vault.openSeats()) out.push({ agentId: Number(id), seatVault: at, ...this._seat(await vault.getSeat(id)) });
+    }
+    return out;
   }
   async seatableAgents(ids) {
-    const vault = this._need(this.vault, "seatVault");
+    const vault = this._newSeatVault();
     const ok = await Promise.all(ids.map((id) => vault.seatable(id)));
     return ids.filter((_, i) => ok[i]).map(Number);
   }
@@ -485,14 +530,15 @@ export class PriorsV2 {
     return { hash: rc.hash, sponsorId: Number(sponsorId) };
   }
 
-  /** Take staker `staker`'s seat offer on `agentId`: the vault vouches its line with the owner's consent. */
+  /** Take staker `staker`'s seat offer on `agentId` (on whichever seat vault it waits): the vault vouches its line with the owner's consent. */
   async acceptSeat(agentId, staker) {
-    const vault = this._need(this.vault, "seatVault");
-    if ((await vault.offers(agentId, staker)) === 0n) throw new Error(`no seat offer from ${staker} on agent #${agentId}`);
+    this._need(this.vault || this.vaultV4, "seatVault");
+    const vault = await this._offerVault(agentId, staker);
+    if (!vault) throw new Error(`no seat offer from ${staker} on agent #${agentId}`);
     const sponsorId = await vault.agentId();
     const { consent, sig } = await this.signConsent({ agentId, sponsorId, maxPremiumBps: 0 });
     const rc = await sendChecked(vault, "accept", [agentId, staker, consentTuple(consent), sig], this._ifaces);
-    return { hash: rc.hash, sponsorId: Number(sponsorId) };
+    return { hash: rc.hash, sponsorId: Number(sponsorId), seatVault: await vault.getAddress() };
   }
 
   /** The fee for `amount` over `termSeconds` for this agent (its sponsor's premium included), from the pool. */
@@ -542,21 +588,25 @@ export class PriorsV2 {
     const reg = await this._registry();
     const owner = await reg.ownerOf(agentId).catch(() => null);
     const a = await this.pool.getAgent(agentId);
-    const [tRoot, vRoot, sRoot] = await Promise.all([this.treasury ? this.treasury.agentId() : 0n, this.vault ? this.vault.agentId() : 0n, this.stockVault ? this.stockVault.agentId() : 0n]);
+    const vs = this._vaults();
+    const [tRoot, vRoots, sRoot] = await Promise.all([this.treasury ? this.treasury.agentId() : 0n, Promise.all(vs.map((v) => v.agentId())), this.stockVault ? this.stockVault.agentId() : 0n]);
     const sponsor = a.sponsor;
     const onStock = sponsor !== 0n && sponsor === sRoot;
-    const sponsorKind = sponsor === 0n ? "none" : sponsor === tRoot ? "treasury v4" : sponsor === vRoot ? "seat vault" : onStock ? "stock vault" : "backer";
+    const onSeat = sponsor !== 0n && vRoots.includes(sponsor);
+    const sponsorKind = sponsor === 0n ? "none" : sponsor === tRoot ? "treasury v4" : onSeat ? "seat vault" : onStock ? "stock vault" : "backer";
+    // the seat vault that sponsors it, else the one holding an open seat for it, else where new seats go
+    const seatVault = vs.length ? (onSeat ? vs[vRoots.indexOf(sponsor)] : await this._seatVaultOf(agentId)) : null;
     const collateral = onStock ? collateralOf(await readStockPosition(this.stockVault, agentId)) : null;
     const available = borrowable(a.delegatedIn > a.principalOut ? a.delegatedIn - a.principalOut : 0n, collateral);
-    const seat = this.vault ? this._seat(await this.vault.getSeat(agentId)) : null;
+    const seat = seatVault ? this._seat(await seatVault.getSeat(agentId)) : null;
     const usdg = await this._usdg();
     return {
       agentId: Number(agentId), owner, enrolled: a.enrolled, isRoot: a.isRoot, defaulted: a.defaulted, frozen: a.frozen,
-      sponsor: Number(sponsor), sponsorKind, premiumBps: Number(a.premiumBps),
+      sponsor: Number(sponsor), sponsorKind, seatVault: onSeat ? await seatVault.getAddress() : null, premiumBps: Number(a.premiumBps),
       line: a.delegatedIn, principalOut: a.principalOut, available, activeLoans: Number(a.activeLoans),
       loansRepaid: Number(a.loansRepaid), qualifiedRepaid: Number(a.qualifiedRepaid), volumeRepaid: a.volumeRepaid, feesPaid: a.feesPaid,
       openLoans: await this.openLoans(agentId),
-      seat: seat && seat.status !== "none" ? seat : null,
+      seat: seat && seat.status !== "none" ? { ...seat, seatVault: await seatVault.getAddress() } : null,
       collateral,
       ownerUsdg: owner ? await usdg.balanceOf(owner) : 0n,
     };

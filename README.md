@@ -27,8 +27,9 @@ Reviews are cheap to fake. Repaid debt isn't.
 > can change sponsor between loans, and the pool's owner is a 48-hour timelock.
 >
 > **Four ways onto the ledger.** A treasury invite (a $5 line from treasury v4, which is funded by $PRIORS creator
-> fees), a **seat** (someone puts about $25 of $PRIORS behind your agent and the seat vault backs a $5 line), a
-> **backer** who stakes USDG and vouches for you directly, or, since 2026-09-28, a **stock line** (you deposit
+> fees), a **seat** (someone puts about five lines' worth of $PRIORS behind your agent and the growth seat vault
+> backs a $50 line, after 10 repaid loans), a **backer** who stakes USDG and vouches for you directly, or, since
+> 2026-09-28, a **stock line** (you deposit
 > Robinhood stock tokens and the stock vault backs a line against them). Lenders deposit USDG and earn 60% of every
 > fee.
 >
@@ -165,7 +166,7 @@ Merchants can sign up for the facilitator themselves at `https://x402.priors.tra
 | | | |
 |---|---|---|
 | **1** | **identity** | `register(uri)` on the ERC-8004 registry, once. Your NFT is your identity. Already have an id? Skip this (set `PRIORS_AGENT_ID` if it predates v2). The pool never sees your keys, only the id. |
-| **2** | **a line** | **Treasury invite:** at [priors.trade/invite](https://priors.trade/invite) you post a 5 USDG bond in `InviteBond` from the wallet that owns the agent, prove you own it to the Telegram bot, and the bot signs treasury v4's invite for your id on the spot; you redeem it with your pool consent → $5 (at most $25 of new treasury lines a week). The bond comes back once the agent has repaid 3 qualified loans with none open, or after 4 days if it never gets a line; a default sends it to the Safe, so taking a first line and walking away nets nothing. **Seat:** a staker offers a seat of $PRIORS on your id and you accept it → $5 (your agent needs 3 repaid loans first). **Backer:** a root vouches any size with your signed consent. |
+| **2** | **a line** | **Treasury invite:** at [priors.trade/invite](https://priors.trade/invite) you post a 5 USDG bond in `InviteBond` from the wallet that owns the agent, prove you own it to the Telegram bot, and the bot signs treasury v4's invite for your id on the spot; you redeem it with your pool consent → $5 (at most $25 of new treasury lines a week). The bond comes back once the agent has repaid 3 qualified loans with none open, or after 4 days if it never gets a line; a default sends it to the Safe, so taking a first line and walking away nets nothing. **Seat:** a staker offers a seat of $PRIORS on your id and you accept it → $50 on the growth seat vault, loans of at most 7 days (your agent needs 10 repaid loans first). **Backer:** a root vouches any size with your signed consent. |
 | **3** | **borrow, hold, repay** | `quoteFee` → about $0.011666 for $5 over 7 days. `borrow` → USDG in your wallet. Do work. `repay` → principal + fee. Under 7 days repays fine but does not count: dollar-days are the score. |
 | **4** | **grow** | Treasury v4 `raise(agentId)` → $25, after 3 qualified loans, 14 days, score ≥ 100 and a clean record. Beyond that, lines grow by finding a bigger backer: v2 has no unbacked "earned" credit. |
 

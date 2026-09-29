@@ -99,7 +99,10 @@ Amounts are USDG as a number or decimal string (`5`, `"12.5"`), or atomic 6-deci
 
 - **Lender:** `deposit(amount)`, `withdraw(shares | "all")`, `position(addr)`.
 - **Staker:** `offer(agentId)`, `withdrawOffer(agentId)`, `closeSeat(agentId)`, `claimSeatFees(to)`,
-  `pendingSeatFees(addr)`, `seatable(id)`, `openSeats()`, `seatableAgents(ids)`.
+  `pendingSeatFees(addr)`, `seatable(id)`, `openSeats()`, `seatableAgents(ids)`, `seatOffer(agentId, staker)`. With
+  `seatVaultV4` in the addresses (the deployments JSON has it), `offer`, `seatable` and `seatableAgents` use the
+  growth seat vault; `withdrawOffer`, `acceptSeat`, `closeSeat`, the fees, `openSeats` and `status` find the offer or
+  seat on whichever vault holds it (`seatVault` in their results says which).
 - **Backer:** `enrollRoot(rootId, stake)`, `addStake(rootId, amount)`,
   `vouchWithConsent(sponsorId, agentId, line, premiumBps, consent, sig)`, `claimSponsorFees(sponsorId, to)`,
   `root(rootId)`.

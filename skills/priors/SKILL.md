@@ -1,6 +1,6 @@
 ---
 name: priors
-description: Give an AI agent a credit history on Priors — register an ERC-8004 identity, get a $5 line (a treasury invite or a $PRIORS seat), borrow, repay, and earn a public trust score on Robinhood Chain. Use when the user wants to give their agent credit, reputation, a trust score, an ERC-8004 identity, wants to borrow, repay, pay x402 APIs on credit, or look up an agent's record on Priors (priors.trade).
+description: Give an AI agent a credit history on Priors — register an ERC-8004 identity, get a line (a $5 treasury invite, or a $50 $PRIORS seat after 10 repaid loans), borrow, repay, and earn a public trust score on Robinhood Chain. Use when the user wants to give their agent credit, reputation, a trust score, an ERC-8004 identity, wants to borrow, repay, pay x402 APIs on credit, or look up an agent's record on Priors (priors.trade).
 ---
 
 # Priors: give your agent a credit history
@@ -59,13 +59,14 @@ Three ways, and every one needs the agent owner's signature (the pool consent), 
 
 ```bash
 npx priors-v2 join --invite priors-invite:<id>:<expiry>:<signature>   # treasury v4: $5
-npx priors-v2 join --seat <stakerAddress>                             # a staker's $PRIORS seat: $5
+npx priors-v2 join --seat <stakerAddress>                             # a staker's $PRIORS seat: $50
 ```
 
 - **Invite.** Ask at [priors.trade/invite](https://priors.trade/invite) for an invite **for the id from step 1**.
   An invite names one agent id, expires, and seats that agent once.
-- **Seat.** Someone offers a seat of $PRIORS (about $25) on your id (the Participate page on priors.trade), then you
-  accept it. The agent must have repaid at least 3 loans first. If no offer exists yet, `join --seat` exits with
+- **Seat.** Someone offers a seat of $PRIORS (about five lines' worth) on your id (the Participate page on
+  priors.trade), then you accept it: the growth seat vault backs a $50 line, on loans of at most 7 days. The agent
+  must have repaid at least 10 loans first. If no offer exists yet, `join --seat` exits with
   code 3: that is "waiting on someone else", not a failure.
 - **Backer.** A root backer can vouch any size, with your signed consent (`signConsent` in the SDK).
 
@@ -75,7 +76,7 @@ Ways it legitimately fails, and what they mean:
   or a backer. Do not retry in a loop.
 - **`NotInvited` / `InviteExpired` / `InviteUsed`** — the code is wrong, stale, or spent. Ask for a new one. There
   is no path around the invite; that is the gate working.
-- **`NotSeatable`** — the agent has not repaid 3 loans yet, is already backed by the seat vault, is a root, or has defaulted.
+- **`NotSeatable`** — the agent has not repaid 10 loans yet, is already backed by a seat vault, is a root, or has defaulted.
 
 ## Step 3: borrow, hold, repay
 
@@ -87,7 +88,8 @@ npx priors-v2 repay --all          # principal + fee; approves USDG for exactly 
 
 **Hold it for real time, then repay at or before the due date.** The score is dollar-days: how much you borrowed
 times how long you held it, capped at the term you contracted for. A loan shorter than **7 days** repays fine but
-does not count as a qualified loan. Churning one-day loans gets you nowhere; that is deliberate.
+does not count as a qualified loan. Churning one-day loans gets you nowhere; that is deliberate. On a growth seat a
+loan lasts at most 7 days (`BorrowBlockedByBacker` above that), so borrow for exactly 7 and hold it to the due date.
 
 ⛔ **Repay before the due date.** Three days past due and *anyone* can mark the loan defaulted. The record is
 defaulted forever, the identity can never borrow again, the owner's address is marked, and the sponsor pays (its

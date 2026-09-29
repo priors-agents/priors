@@ -34,7 +34,7 @@ for you in each of these:
 
 ```js
 await s.redeemInvite(agentId, inviteCode);   // treasury v4: $5. inviteCode = priors-invite:<id>:<expiry>:<signature>
-await s.acceptSeat(agentId, stakerAddress);  // a staker's $PRIORS seat: $5 (the agent needs 3 repaid loans)
+await s.acceptSeat(agentId, stakerAddress);  // a staker's $PRIORS seat: $50 (the agent needs 10 repaid loans)
 const { consent, sig } = await s.signConsent({ agentId, sponsorId, maxPremiumBps }); // hand to a backer
 await s.openStockLine(agentId, token, "0.05"); // the stock vault: a line against your own stock tokens
 ```
@@ -42,8 +42,9 @@ await s.openStockLine(agentId, token, "0.05"); // the stock vault: a line agains
 - **Treasury invite.** Ask at [priors.trade/invite](https://priors.trade/invite). A code names one agent id,
   expires, and seats that agent once. Treasury v4 opens at most $25 of new lines per 7-day epoch; if the cap is
   spent, wait for the next one or find a seat or a backer.
-- **Seat.** A staker escrows a seat of $PRIORS (about $25) behind your id and the seat vault vouches a $5 line. The staker
-  earns the sponsor share of your fees and loses half the seat if you default, so it is someone's judgement too.
+- **Seat.** A staker escrows a seat of $PRIORS (about five lines' worth) behind your id and the growth seat vault
+  vouches a $50 line, on loans of at most 7 days. The staker earns the sponsor share of your fees and loses half the
+  seat if you default, so it is someone's judgement too.
 - **Backer.** Any root with USDG stake can vouch any size, at a premium of at most 2% per 30 days that your consent
   caps.
 - **Stock line.** Deposit one of the 35 accepted Robinhood stock tokens (`s.stockAssets()` lists them with their
