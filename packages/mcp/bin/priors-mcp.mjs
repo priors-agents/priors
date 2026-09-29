@@ -9,7 +9,7 @@ if (argv.some((a) => /(^|[^0-9a-fA-F])(0x)?[0-9a-fA-F]{64}($|[^0-9a-fA-F])/.test
   process.exit(2);
 }
 if (argv.includes("--help") || argv.includes("-h")) {
-  process.stderr.write("priors-mcp: MCP server (stdio) for Priors on Robinhood Chain.\nenv: PRIORS_KEY (wallet key, optional), PRIORS_RPC, PRIORS_AGENT_ID, PRIORS_FACILITATOR, PRIORS_MAX_PRICE_USD, PRIORS_MAX_BORROW_USD\nSee the README for the Claude Desktop / Claude Code config.\n");
+  process.stderr.write("priors-mcp: MCP server (stdio) for Priors on Robinhood Chain.\nenv: PRIORS_KEY (wallet key, optional), PRIORS_RPC, PRIORS_AGENT_ID, PRIORS_FACILITATOR, PRIORS_MAX_PRICE_USD, PRIORS_MAX_BORROW_USD, PRIORS_MAX_SPEND_USD, PRIORS_MAX_BORROW_TOTAL_USD, PRIORS_ALLOW_LOCAL, PRIORS_STOCK_VAULT, PRIORS_SCORE_V2\nSee the README for the Claude Desktop / Claude Code config.\n");
   process.exit(0);
 }
 if (argv.length > 0) {

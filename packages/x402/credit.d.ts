@@ -15,7 +15,7 @@ export interface CreditContracts {
   lens: any;
   usdg: any;
   registry: any;
-  /** The stock vault, or null before it is deployed. */
+  /** The stock vault contract, or null when the addresses give none. */
   stockVault: any | null;
 }
 export declare function creditContracts(o: { runner: any; addresses?: Partial<CreditContracts["addresses"]> }): CreditContracts;

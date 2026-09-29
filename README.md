@@ -227,7 +227,7 @@ await priors.closeStockLine(agentId);                    // every token back to 
 ```
 
 `status(agentId)` shows the tokens behind a stock line. `@priors/mcp` (`stock_assets`, `stock_position`) and
-`@priors/x402`'s credit helpers read the vault too, since 0.2.0; 0.2.1, the current release of both, carries the
+`@priors/x402`'s credit helpers read the vault too, since 0.2.0; 0.2.1 carries the
 security fixes of the private reports. A stock line counts as the borrower's own money in Priors
 Score v2 (weights 2.0.1). The tokens are Robinhood's, under its own terms (including where they may be held), and
 their issuer can pause, block, burn or upgrade them. The vault is the one upgradeable Priors contract: what its owner,

@@ -17,7 +17,7 @@
 //   PRIORS_MAX_BORROW_TOTAL_USD  most borrowed in total per process (default 25)
 //   PRIORS_ALLOW_LOCAL     "1": pay_url may reach http://localhost and private addresses (testing only)
 //   PRIORS_SCORE_V2        where score_of reads Priors Score v2 (default https://priors.trade/api/score-v2; "off": v1 only)
-//   PRIORS_STOCK_VAULT     the stock vault's address (default: deployments/4663.v2.json `stockVault`, once deployed)
+//   PRIORS_STOCK_VAULT     the stock vault's address (default: deployments/4663.v2.json `stockVault`)
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
@@ -283,7 +283,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     const mine = await credit.agentsOf(wallet.address);
     if (mine.length === 1) return (agentCache = mine[0]);
     if (mine.length > 1) throw new ToolError(`This wallet owns several agent identities (${mine.map((i) => "#" + i).join(", ")}). Set PRIORS_AGENT_ID or pass agent_id.`);
-    throw new ToolError("This wallet owns no Priors agent identity minted since the v2 deploy. Set PRIORS_AGENT_ID if it owns an older one, or register first (the `priors join` CLI).");
+    throw new ToolError("This wallet owns no Priors agent identity minted since the v2 deploy. Set PRIORS_AGENT_ID if it owns an older one, or register first (`npx priors-v2 join`, from a clone of github.com/priors-agents/priors).");
   }
 
   function needWallet(action) {

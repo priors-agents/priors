@@ -24,7 +24,7 @@ export interface RobinhoodConstants {
   readonly lens: `0x${string}`;
   /** ERC-8004 identity registry. */
   readonly registry: `0x${string}`;
-  /** The Priors stock vault (lines backed by the agent's own stock tokens); null until it is deployed. */
+  /** The Priors stock vault (lines backed by the agent's own stock tokens), live since 2026-09-28. */
   readonly stockVault: `0x${string}` | null;
 }
 export declare const robinhood: RobinhoodConstants;
@@ -82,12 +82,14 @@ export interface CreatePayerOptions {
   /** USDG address override (fork or test token); default the pool's usdg(), else mainnet USDG. */
   asset?: string;
   fetchImpl?: typeof fetch;
-  /** Resends of the SAME payment while the merchant answers pending (default 6). */
   /** Per-request timeout in ms (default 60 000; 0 = none). A payer's payments run one at a time. */
   timeoutMs?: number;
   /** Aborts the whole call; once the payment is out an abort is reported as pending, never thrown. */
   signal?: AbortSignal;
+  /** Resends of the SAME payment while the merchant answers pending (default 6). */
   pendingRetries?: number;
+  /** Longest wait between two resends, in ms (default 30 000). */
+  maxSleepMs?: number;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -134,7 +136,13 @@ export declare function createPayer(opts: CreatePayerOptions): Payer;
 /** An x402Client for USDG on eip155:4663 with a price cap and a ≤600 s signing window (for @x402/fetch, @x402/mcp). */
 export declare function createUsdgClient(opts: { signer: any; maxPrice?: UsdgAmount; maxValiditySeconds?: number; asset?: string; x402Signer?: any }): x402Client;
 
-export declare function resend(input: RequestInfo | URL, paymentHeaders: Record<string, string>, opts?: { init?: RequestInit; fetchImpl?: typeof fetch; retries?: number; sleep?: (ms: number) => Promise<void> }): Promise<{ response: Response; pending: boolean; timedOut?: boolean; transportError?: boolean; error?: unknown; paymentHeaders?: Record<string, string> }>;
+export declare function resend(input: RequestInfo | URL, paymentHeaders: Record<string, string>, opts?: { init?: RequestInit; fetchImpl?: typeof fetch; retries?: number; sleep?: (ms: number) => Promise<void>; maxSleepMs?: number; timeoutMs?: number; signal?: AbortSignal }): Promise<{ response: Response; pending: boolean; timedOut?: boolean; transportError?: boolean; error?: unknown; paymentHeaders?: Record<string, string> }>;
+/** A payer's per-request timeout unless `timeoutMs` says otherwise: 60 000 ms. */
+export declare const DEFAULT_TIMEOUT_MS: number;
+/** Merchant bodies are read at most this far: 256 KB. */
+export declare const MAX_BODY_BYTES: number;
+/** A response body as text, at most `max` bytes (default MAX_BODY_BYTES); the rest is cancelled, not read. `cut` says it was. */
+export declare function readCapped(response: Response | null | undefined, max?: number): Promise<{ text: string; cut: boolean }>;
 
 export declare class CappedExactEvmScheme implements SchemeNetworkClient {
   readonly scheme: "exact";
