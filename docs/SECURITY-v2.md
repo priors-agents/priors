@@ -218,7 +218,7 @@ Reviewed before deployment by an internal audit (2026-09-27) and a readiness rev
 
 Thirty-eight private reports (GitHub advisories) and one by email, triaged against the code and the chain on
 2026-09-29. Each was reproduced (a local merchant, a unit test, or a fork of mainnet) before a ruling. One row per root
-cause; duplicates are credited with the first report. Credits are added once the reporters are answered.
+cause; duplicates are credited with the first report (credits below the table).
 
 | id | sev | finding | status |
 |---|---|---|---|
@@ -239,10 +239,24 @@ cause; duplicates are credited with the first report. Credits are added once the
 | O-3 | Low | An `importFromV1` of a v1 default could settle a v2 seat (half burned) or leave a v1 defaulter backing. GHSA-482p-7442-6227 (F1, F2). | **Not reachable (as X-4, F-6):** every v1 record is imported, none defaulted, v1 is paused. |
 | S-1 | Low | Score v2 counts a backer's 30 days from its id's enrolment, not from when its current owner took it. GHSA-6f8j-g9rf-h284. | **Fixed (display only):** a backer's 30 days count from its current owner's arrival, read from the registry's transfers; no published score changed (no backer id had changed hands after enrolling). |
 
+Credits, by row: the first valid report, then the later reports of the same root cause in filing order.
+
+- P-10: @sands786; also @sebattoriq, @islaintent, @Fdxyz, @Godswork4, @dimazz12, @johndastech-glitch,
+  @clementnaomi064-spec.
+- F4: @sebattoriq; also @xbyteid, @Sangmadun, @Fdxyz, @JasmeJun, @ginan15, @Godswork4, @ashraf9191.
+- F5: @andelaiceee-code; also @Godswork4.
+- F6: @Fdxyz. F7 and O-3: @brianyazzz.
+- P-11: @xShadowxIQ; also @Fdxyz.
+- P-12: @johndastech-glitch, and Gerald Gerald by email the same day.
+- P-13: @0ex-NightFall. C-1: @johndastech-glitch. C-2: @xbyteid. FAC-1: @mmasyoga0.
+- IB-2: @daffhaidar; also @rabbinik, @0ex-NightFall, @johndastech-glitch.
+- O-1: @sands786; also @xShadowxIQ. O-2: @Muhamadluis. S-1: @Firlinata.
+
 Not findings: the facilitator's free tier was said to be unlimited and to halt every merchant (GHSA-gg53); its global
 budget (300 free settles a day for the self-registered merchants together, published on `/health`) and the per-IP
 and daily registration limits were live, and the approved merchants sit outside that budget. The v1-only reports
-(GHSA-qq69, GHSA-f8mw, GHSA-576h, GHSA-q9hg) were checked against v2, which none of them reaches.
+(GHSA-qq69, GHSA-f8mw, GHSA-576h, GHSA-q9hg) were checked against v2, which none of them reaches; thanks to llen
+(@yossweh) and @byfor8 for them.
 
 ## Reproducing
 

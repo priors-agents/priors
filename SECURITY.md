@@ -136,6 +136,13 @@ People who have found something real, or told us something we needed to hear.
   once the share price passes 1:1 (see below), and proposed a stronger invariant than the two we had:
   assert that a defaulted root's stake is either charged or explicitly released, never left where
   `withdrawStake` reverts forever.
+- **The private reports of 2026-09-23 to 2026-09-29**: 38 GitHub advisories and one email, each answered, and
+  listed by row in [docs/SECURITY-v2.md](docs/SECURITY-v2.md) ("Private reports"). First reports: `@sands786`
+  (P-10, O-1), `@sebattoriq` (F4), `@andelaiceee-code` (F5), `@Fdxyz` (F6), `@brianyazzz` (F7, O-3), `@xShadowxIQ`
+  (P-11), `@johndastech-glitch` (P-12, C-1), `@0ex-NightFall` (P-13), `@xbyteid` (C-2), `@mmasyoga0` (FAC-1),
+  `@daffhaidar` (IB-2), `@Muhamadluis` (O-2) and `@Firlinata` (S-1); Gerald Gerald reported P-12 by email the same
+  day. Later reports of the same causes: `@islaintent`, `@Godswork4`, `@dimazz12`, `@clementnaomi064-spec`,
+  `@Sangmadun`, `@JasmeJun`, `@ginan15`, `@ashraf9191` and `@rabbinik`.
 
 **Not fixed, deliberately:** the `ZeroAmount` revert on a sub-share deposit. `convertToShares` rounds
 down, in the pool's favour, which is the correct direction for an ERC-4626-style vault; the effect is that
