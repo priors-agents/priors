@@ -41,9 +41,10 @@ on data, it moves into the next on-chain version.
 | **default** | | the score is 0, and so is every other agent of the wallet that defaulted: the loan's owner when it was taken, and the defaulted agent's declared payment wallet. Sending a defaulted agent to someone never harms them. (A v1 default, with no owner recorded, zeroes only the agent itself.) |
 
 **Backers.** A loan is "backed by someone else" when its backer is another owner's agent that had been enrolled on
-Priors for **30+ days** when the loan was issued (the protocol's treasury and seat vault, public ids in the snapshot,
-count from day one). A backer the record doesn't know counts as the agent's own. v1 loans take their backer from the
-repayment's `FeeSplit` event, not from today's sponsor. The same rule applies to backing held now.
+Priors for **30+ days** when the loan was issued (the protocol's treasury and seat vaults, V3 and the growth seat vault
+V4, public ids in the snapshot, count from day one). A backer the record doesn't know counts as the agent's own. v1
+loans take their backer from the repayment's `FeeSplit` event, not from today's sponsor. The same rule applies to
+backing held now.
 
 **Rungs** (the record side of the trust ladder): 0 unproven · 1 started (one repayment backed by
 someone else) · 2 proven (3+, over 14+ days, none late) · 3 earned (proven, a record score of 300+ with income left

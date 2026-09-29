@@ -32,7 +32,7 @@ where we land, say so — the reasoning is the part we will publish.
 
 ## In scope
 
-The live v2 contracts on Robinhood Chain (chain 4663), deployed at block 71,702,460:
+The v2 contracts on Robinhood Chain (chain 4663), live since block 71,702,460, and the ones added to the set since:
 
 | Contract | Address |
 |---|---|
@@ -40,6 +40,8 @@ The live v2 contracts on Robinhood Chain (chain 4663), deployed at block 71,702,
 | `CreditLensV2` | [`0x9d7035722bd42C551f82FEB9FDDd17453AEF3D9B`](https://robinhoodchain.blockscout.com/address/0x9d7035722bd42C551f82FEB9FDDd17453AEF3D9B) |
 | `TreasurySponsorV4` (root `#6228`) | [`0x0c5091235A25bBFD3F5a009cBe04120D0CBAD573`](https://robinhoodchain.blockscout.com/address/0x0c5091235A25bBFD3F5a009cBe04120D0CBAD573) |
 | `SeatVaultV3` (root `#6234`) | [`0x59D155C42A9263fA7596867b992bB3e84dF680a9`](https://robinhoodchain.blockscout.com/address/0x59D155C42A9263fA7596867b992bB3e84dF680a9) |
+| `SeatVaultV4`, the growth seat vault (root `#6466`; live since 2026-09-29) | [`0xb1c3a04496238D62E3c93118C297163855e22192`](https://robinhoodchain.blockscout.com/address/0xb1c3a04496238D62E3c93118C297163855e22192) |
+| `SeatSizer` of the growth seat vault (owns it; the Safe owns the sizer) | [`0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777`](https://robinhoodchain.blockscout.com/address/0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777) |
 | `TimelockController` (the pool's owner, 48 h) | [`0x5d984C274035F81BB327d532897a902C5125F87c`](https://robinhoodchain.blockscout.com/address/0x5d984C274035F81BB327d532897a902C5125F87c) |
 | `InviteBond` (the bond an automatic invite needs) | [`0x8BE478c754D9124D11e78dB20F5bf4dA45403275`](https://robinhoodchain.blockscout.com/address/0x8BE478c754D9124D11e78dB20F5bf4dA45403275) |
 

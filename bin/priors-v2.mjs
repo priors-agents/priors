@@ -12,13 +12,15 @@
 // Environment (the key is never read from argv and never printed; .env is loaded like the v1 tools):
 //   PRIORS_KEY        the agent owner's private key (PRIVATE_KEY is accepted too)
 //   PRIORS_RPC        JSON-RPC endpoint(s), comma-separated failover (else RPC_URL, else Robinhood Chain's official RPC)
-//   PRIORS_ADDRESSES  path to a v2 addresses JSON (default: deployments/<chainId>.v2.json in this package)
+//   PRIORS_ADDRESSES  path to a v2 addresses JSON (default: deployments/<chainId>.v2.json in this package). With
+//                     seatVaultV4, `join --seat` accepts the offer on the growth seat vault V4, or else on V3, and
+//                     `status` reads the seat on the vault that sponsors the agent
 //   PRIORS_AGENT_ID   which identity to use, when the key owns more than one or it predates the v2 deploy
 //
 // Exit codes: 0 done, 1 failed, 2 usage or configuration error, 3 registered but waiting on someone else
 // (a seat offer that does not exist yet).
 import { ethers } from "ethers";
-import { fmtUsdg, toUnits } from "../sdk/priors-v2.mjs";
+import { PriorsV2, fmtUsdg, toUnits } from "../sdk/priors-v2.mjs";
 import { resolveV2 } from "../sdk/env.mjs";
 
 const USAGE = `usage:
@@ -63,7 +65,18 @@ async function config() {
     throw new UsageError(e.message);
   }
   for (const k of ["pool", "treasuryV4", "seatVault"]) if (!r.addresses[k]) throw new UsageError(`the v2 addresses have no "${k}"`);
-  return { sdk: r.priors, wallet: r.signer, addresses: r.addresses };
+  // `sdk` is on V3; `sdkV4` on the growth seat vault (V4), once recorded. A seat lives on the vault whose root sponsors it
+  const sdkV4 = r.addresses.seatVaultV4 ? new PriorsV2({ provider: r.provider, signer: r.signer, addresses: { ...r.addresses, seatVault: r.addresses.seatVaultV4 } }) : null;
+  return { sdk: r.priors, sdkV4, wallet: r.signer, addresses: r.addresses };
+}
+
+const V4_KIND = "growth seat vault (V4)";
+
+/** The SDK on the seat vault that sponsors agent `id`: V4 when its root is the sponsor, else V3's. */
+async function seatSdk(sdk, sdkV4, id) {
+  if (!sdkV4) return sdk;
+  const [a, v4Root] = await Promise.all([sdk.pool.getAgent(id), sdkV4.vault.agentId()]);
+  return a.sponsor === v4Root ? sdkV4 : sdk;
 }
 
 const usd = (u) => `${fmtUsdg(u)} USDG`;
@@ -106,11 +119,13 @@ async function needAgent(sdk, me, addresses) {
   return id;
 }
 
-async function printStatus(sdk, id) {
-  const s = await sdk.status(id);
+async function printStatus(sdk, sdkV4, id) {
+  const on = await seatSdk(sdk, sdkV4, id);
+  const s = await on.status(id);
+  const kind = on === sdkV4 && s.sponsorKind === "seat vault" ? V4_KIND : s.sponsorKind;
   const lines = [
     `agent #${s.agentId}  owner ${s.owner}`,
-    `  sponsor   ${s.sponsor ? `#${s.sponsor} (${s.sponsorKind})${s.premiumBps ? `, premium ${s.premiumBps} bps` : ""}` : "none: no line yet"}${s.frozen ? " [frozen]" : ""}${s.defaulted ? " [DEFAULTED]" : ""}`,
+    `  sponsor   ${s.sponsor ? `#${s.sponsor} (${kind})${s.premiumBps ? `, premium ${s.premiumBps} bps` : ""}` : "none: no line yet"}${s.frozen ? " [frozen]" : ""}${s.defaulted ? " [DEFAULTED]" : ""}`,
     `  line      ${usd(s.line)}  (drawn ${usd(s.principalOut)}, available ${usd(s.available)})`,
     `  record    ${s.loansRepaid} repaid (${s.qualifiedRepaid} qualified), volume ${usd(s.volumeRepaid)}, fees ${usd(s.feesPaid)}`,
   ];
@@ -124,7 +139,7 @@ async function printStatus(sdk, id) {
 
 async function join(flags) {
   if (flags.invite && flags.seat) throw new UsageError("give --invite or --seat, not both");
-  const { sdk, wallet, addresses } = await config();
+  const { sdk, sdkV4, wallet, addresses } = await config();
   const me = wallet.address;
   let hint = null;
   if (flags.invite) {
@@ -148,16 +163,19 @@ async function join(flags) {
     const r = await sdk.redeemInvite(id, flags.invite);
     console.log(`first line opened by treasury v4 (root #${r.sponsorId}), tx ${r.hash}`);
   } else if (flags.seat) {
-    if ((await sdk.vault.offers(id, flags.seat)) === 0n) {
-      await printStatus(sdk, id);
+    // the staker's offer, on V4 first, else on V3
+    let on = null;
+    for (const s of [sdkV4, sdk]) if (s && !on && (await s.vault.offers(id, flags.seat)) !== 0n) on = s;
+    if (!on) {
+      await printStatus(sdk, sdkV4, id);
       throw new Pending(`no seat offer from ${flags.seat} on agent #${id} yet: ask them to offer on #${id}, then run this again`);
     }
-    const r = await sdk.acceptSeat(id, flags.seat);
-    console.log(`seat accepted: the seat vault (root #${r.sponsorId}) backs agent #${id}, tx ${r.hash}`);
+    const r = await on.acceptSeat(id, flags.seat);
+    console.log(`seat accepted: the ${on === sdkV4 ? V4_KIND : "seat vault"} (root #${r.sponsorId}) backs agent #${id}, tx ${r.hash}`);
   } else if (a.sponsor === 0n) {
     console.log(`no line yet. next: \`priors-v2 join --invite <code>\` with an invite for #${id} (ask at https://priors.trade/invite), or \`priors-v2 join --seat <staker>\` once a staker offers on #${id}`);
   }
-  await printStatus(sdk, id);
+  await printStatus(sdk, sdkV4, id);
 }
 
 async function borrow(pos, flags) {
@@ -165,17 +183,17 @@ async function borrow(pos, flags) {
   const amount = toUnits(pos[0]);
   const days = flags.days == null ? 7 : Number(flags.days);
   if (!Number.isFinite(days) || days <= 0) throw new UsageError("--days must be a positive number");
-  const { sdk, wallet, addresses } = await config();
+  const { sdk, sdkV4, wallet, addresses } = await config();
   const id = await needAgent(sdk, wallet.address, addresses);
   const term = BigInt(Math.round(days * 86400));
   const q = await sdk.quoteFee(id, amount, term);
   const r = await sdk.borrow(id, amount, term);
   console.log(`borrowed ${usd(r.principal)} as loan #${r.loanId} for agent #${id}: fee ${usd(r.fee)} (quoted ${usd(q.fee)}), due ${when(r.dueAt)}, tx ${r.hash}`);
-  await printStatus(sdk, id);
+  await printStatus(sdk, sdkV4, id);
 }
 
 async function repay(flags) {
-  const { sdk, wallet, addresses } = await config();
+  const { sdk, sdkV4, wallet, addresses } = await config();
   const id = await needAgent(sdk, wallet.address, addresses);
   const open = (await sdk.openLoans(id)).sort((x, y) => x.dueAt - y.dueAt || x.loanId - y.loanId);
   if (open.length === 0) { console.log(`agent #${id} has no open loan`); return; }
@@ -183,14 +201,14 @@ async function repay(flags) {
     const r = await sdk.repay(l.loanId);
     console.log(`repaid loan #${l.loanId}: ${usd(r.paid)}, tx ${r.hash}`);
   }
-  await printStatus(sdk, id);
+  await printStatus(sdk, sdkV4, id);
 }
 
 async function status() {
-  const { sdk, wallet, addresses } = await config();
+  const { sdk, sdkV4, wallet, addresses } = await config();
   const id = await findAgent(sdk, wallet.address, addresses);
   if (id == null) { console.log(`${wallet.address} owns no agent identity yet: run \`priors-v2 join\``); return; }
-  await printStatus(sdk, id);
+  await printStatus(sdk, sdkV4, id);
 }
 
 async function main() {

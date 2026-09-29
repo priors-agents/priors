@@ -24,5 +24,10 @@
   "seatSizerBlock": 72572884,
   "stockVault": "0xbEcd07EC689988e16b870C121756C4c2C8cb02B6",
   "stockVaultAgentId": 6424,
-  "stockVaultBlock": 74826641
+  "stockVaultBlock": 74826641,
+  "seatVaultV4": "0xb1c3a04496238D62E3c93118C297163855e22192",
+  "seatVaultV4AgentId": 6466,
+  "seatVaultV4Block": 75614831,
+  "seatSizerV4": "0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777",
+  "seatSizerV4Block": 75614955
 }

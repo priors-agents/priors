@@ -174,6 +174,13 @@ check("F4 dust, zero, negative and future payments add nothing: no breadth under
   assert.ok(pts(r, "income") < 0.1, `income ${pts(r, "income")}`);
 });
 
+check("F16 the growth seat vault (V4) backs from day one, as V3 and the treasury do: its young root is not a fresh second wallet", () => {
+  const mk = (meta) => ({ meta: { timestamp: NOW, ...meta }, events: [], agents: [agent(1, "0xA", { sponsor: 2 }), agent(2, "0xV4", { isRoot: true, enrolledAt: NOW - 1 * DAY })],
+    loans: [0, 1, 2].map((i) => repaid(1, 2, 50, 25 - i * 8, 7)) });
+  assert.equal(one(mk({}), 1).detail.repaidByOthers, 0, "a root a day old, not a protocol backer: the agent's own");
+  assert.equal(one(mk({ seatVaultV4AgentId: 2 }), 1).detail.repaidByOthers, 3, "the snapshot's V4 root: backs from day one");
+});
+
 check("F6 a v1 loan's backer comes from its FeeSplit event, not from the agent's sponsor today", () => {
   const s = { meta: { timestamp: NOW }, agents: [agent(1, "0xA", { sponsor: 3 }), agent(2, "0xA", { isRoot: true }), agent(3, "0xB", { isRoot: true })],
     loans: [{ agentId: 1, era: "v1", id: 7, principal: $(50), issuedAt: NOW - 40 * DAY, dueAt: NOW - 10 * DAY, closedAt: NOW - 30 * DAY, status: "repaid" }],

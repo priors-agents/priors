@@ -8,11 +8,10 @@ report is welcome even if you are not sure it is exploitable.
 **Use GitHub's private vulnerability reporting** — the *Report a vulnerability* button under this repo's
 **Security** tab. It is private, it timestamps your report, and it keeps the thread in one place.
 
-If that button is not available to you, open a public issue that says only that you have something and
-asks for a channel. **Do not put details in a public issue.** We will answer with somewhere private to
-send them.
+You can also write to **contact@priors.trade**; say in the subject that it is a security report.
 
-We do not publish an email address for this, because an address nobody watches is worse than none.
+If neither is available to you, open a public issue that says only that you have something and asks for a
+channel. **Do not put details in a public issue.** We will answer with somewhere private to send them.
 
 ## What makes a report actionable
 
@@ -47,6 +46,8 @@ the affected function and your own severity assessment. We cannot evaluate, prio
 | `src/CreditLensV2.sol` | the score and credit-report views |
 | `src/TreasurySponsorV4.sol` | the rule-based treasury root: invites, raises, reclaims, sweeps |
 | `src/SeatVaultV3.sol` | $PRIORS seats: offers, acceptance, owner binding, freeze, burns, fees, expiry (SeatVaultV2 is retired) |
+| `src/SeatVaultV4.sol` | the growth seat vault (live since 2026-09-29): V3's seats plus the slash split, protocol seats and their eligibility, and the loan-term cap |
+| `src/SeatSizer.sol` | the owner of each seat vault (one for V3, one for V4): price observations, resizing within bounds, the Safe's `execute` |
 | `src/InviteBond.sol` | the 5 USDG bond behind an automatic treasury invite |
 | `sdk/`, `bin/` | the SDK, the x402 float client and the CLIs, including anything that could sign or broadcast wrongly |
 | `packages/x402`, `packages/mcp` | the npm payer (`@priors/x402`) and the local MCP server (`@priors/mcp`), including anything that could pay, borrow or repay wrongly |
@@ -77,7 +78,9 @@ yield loop (N-1) is fixed by the fee lock, with one residual path around it (SO-
 marking a default; yield only); the utilization freeze (N-2) by a 100% cap; the farmable keeper bounty
 (F-1) is mitigated by setting it to 0; the seat vault's stale offers (X-1) and idle seats (X-2) are fixed; the
 self-seat loop (X-3) is gated by repaid history and closed economically by the seat's market value; the treasury's
-invite-to-raise path (T10) is bounded by its epoch cap. None of these reaches lender principal.
+invite-to-raise path (T10) is bounded by its epoch cap. The growth seat vault's two internal reviews (protocol-seat
+farming H-1, eligibility bound to the owner the Safe vetted R2-1, and the rest) were fixed before it was deployed.
+None of these reaches lender principal.
 
 **v1** (now paused; kept for the record):
 
@@ -113,7 +116,7 @@ they were not the same thing here — see **Credits**. `scripts/verify-migration
 runtime bytecode against the compiled artifact, so you can confirm which one you are looking at rather
 than trusting this file. It does not read the v2 record: for v2, compare each address in
 `deployments/4663.v2.json` against `forge build` output the same way (immutables and the `PoolV2Lib` link
-zeroed, metadata stripped); all of them matched on 2026-09-25.
+zeroed, metadata stripped); all of them matched on 2026-09-25, and `seatVaultV4` and `seatSizerV4` on 2026-09-29.
 
 An independent rediscovery of a fixed issue is still worth telling us about, and we will say so and
 credit the work. It is not a new finding.
@@ -189,8 +192,9 @@ trusts it** are very much in scope, and we would rather hear them.
 The levers we do hold, and how fast they move:
 
 - **Fast:** the pool's guardian (the 2-of-3 Safe) can `pause` new risk for at most 14 days at a time; exits
-  never pause. The Safe owns treasury v4 (`setRules`, `setInviter`, `freeze`, `retire`) and the seat vault
-  (`setParams`, `setGates`, `pauseSeats`, `retire`) directly, so those need two signatures and no delay. The same
+  never pause. The Safe owns treasury v4 (`setRules`, `setInviter`, `freeze`, `retire`) directly, and each seat
+  vault, V3 and the growth vault V4, through the SeatSizer that owns it (`execute`: `setParams`, `setGates`,
+  `pauseSeats`, `freezeSeat`, `retire`), so those need two signatures and no delay. The same
   goes for the stock vault (`setAsset`, `setParams`, `pause`, `freezePosition`, `writeOff`, `retire`) and its
   ProxyAdmin (`upgradeAndCall`).
 - **Slow on purpose:** the pool's owner is a 48-hour `TimelockController` (the Safe proposes and executes, no

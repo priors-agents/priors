@@ -2,8 +2,8 @@
 
 This page covers the v2 set live on Robinhood Chain since block 71,702,460: `CreditPoolV2` (+ `PoolV2Lib`,
 `CreditLensV2`), `TreasurySponsorV4`, `SeatVaultV3` (which replaced `SeatVaultV2` on 2026-09-25), the
-`SeatSizer` that owns it since 2026-09-26, `InviteBond`, and the `StockVault` since 2026-09-28 (the one upgradeable
-Priors contract), plus the SDK's x402 float client and the `@priors/x402` and `@priors/mcp` packages. It lists every known
+`SeatSizer` that owns it since 2026-09-26, `InviteBond`, the `StockVault` since 2026-09-28 (the one upgradeable
+Priors contract), and the growth seat vault `SeatVaultV4` with its own `SeatSizer` (live since 2026-09-29), plus the SDK's x402 float client and the `@priors/x402` and `@priors/mcp` packages. It lists every known
 finding, so a rediscovery is not mistaken for a new one, and so you can check each ruling against a test.
 
 **How these were found.** Several internal adversarial reviews before launch (three per-contract hunts, Slither,
@@ -71,7 +71,7 @@ Since 2026-09-25 the live seat vault is **SeatVaultV3** (`0x59D155C42A9263fA7596
 | X-2 | Medium | Idle seats never expired, so self-seats could fill every slot and tie up the vault's backing. | **Fixed:** `expire(id)` is permissionless after `idleAfter` = 30 days with no loan open. The idle clock counts from the latest of seat opening, last borrow and **last repay**, so a long loan repaid today is not idle. | `SeatVaultV2Fixes.t.sol` (`test_fix_X2_aSeatIsNotIdleRightAfterALongLoanIsRepaid`) |
 | V-2 | Low | **Levers and ownership did not reach open seats** (SeatVaultV2): `pauseSeats` and a new `seatSize` applied only to seats opened afterwards; an agent sold to a new owner kept its seat; an active seat could not be evicted, so seat capacity could be squatted. | **Fixed in SeatVaultV3.** `canBorrow` refuses new loans while seats are paused, or on a seat below the current size, burn or line; a seat is bound to the owner who accepted it, so a sale stops lending and anyone may close it (every token back to the staker); the Safe's `freezeSeat` closes any seat, every token back, never a burn. Loans already open are untouched. | `test/SeatVaultV3V2Fixes.t.sol` (the three proofs of concept replayed, each failing on V3); the V2 suites ported to V3 (`test/SeatVaultV3*.t.sol`) |
 | X-4 | Low | A v1 default plus a failed hook could lock a seat forever. | **Closed by order:** v1 was paused before seats opened. | `test/SeatVaultV2V1DefaultOrder.t.sol` |
-| V-3 | Info | SeatVaultV3 inherits OpenZeppelin's `renounceOwnership`. Called, it would remove the owner's levers for good: `pauseSeats`, `freezeSeat` and new parameters. | **Accepted, not redeployed.** The owner is the 2-of-3 Safe, so renouncing takes two signers doing it on purpose; stakers lose nothing if it happens (closing, settling, expiring and claiming never need the owner). The next seat vault overrides it to revert. | `src/SeatVaultV3.sol` (`Ownable2Step`, no override) |
+| V-3 | Info | SeatVaultV3 inherits OpenZeppelin's `renounceOwnership`. Called, it would remove the owner's levers for good: `pauseSeats`, `freezeSeat` and new parameters. | **Accepted, not redeployed.** The owner is the 2-of-3 Safe, so renouncing takes two signers doing it on purpose; stakers lose nothing if it happens (closing, settling, expiring and claiming never need the owner). SeatVaultV4 does not override it either; a SeatSizer owns each vault and refuses the call (SZ-6). | `src/SeatVaultV3.sol` (`Ownable2Step`, no override) |
 
 Refuted: stealing or double-exiting a staker's $PRIORS, double-claiming fees across re-seats, a stranger burning a
 live seat, offer squatting and consent redirection, EIP-1271 abuse of `registerAndSeat`, re-entrancy through pool
@@ -92,6 +92,67 @@ Reviewed before deployment by an internal review and an adversarial pass; **no t
 | SZ-5 | Low | A stolen keeper key can record false prices every pass. | **Residual, bounded** by the same limits as SZ-4; it can never move funds or reach an owner function, and the Safe replaces the keeper with one call. | `test_theKeeperHasNoOtherPower`, `test_keeperCannotReachOwnerPaths` |
 | SZ-6 | Info | `renounceOwnership` (on the SeatSizer, or on the vault through `execute`) would strand the vault for good. | **Fixed before deployment:** both revert `NoRenounce`. | `test_renounceIsRefused_onTheSizerAndOnTheVault` |
 | SZ-7 | Info | With a burn share under 30% (the vault allows 25%), a seat at the 5-line target burns under 1.5 lines, so every resize would pause seats. | **Accepted:** the live burn share is 50%; lowering it means raising `LINES` in a new SeatSizer first. | `test_poc_burnUnder30pct_everyResizeOnTargetPauses` |
+
+`src/SeatSizer.sol` now carries the comments the growth seat vault's SeatSizer (next section) was built from: they note
+that the pause check measures the slash (`burnBps`), of which a SeatVaultV4 with `keepBps` set burns only part, and
+that the Pons hook takes about 3% of each swap. The code is unchanged: the live pair's SeatSizer (`0xd24B…5E61`) was
+built from the previous comment text, so its executable code is the same and only its metadata differs.
+
+## SeatVaultV4 (growth seats) and its SeatSizer
+
+Deployed on 2026-09-29 (block 75,614,831), **live since block 75,648,704**: **SeatVaultV4**
+(`0xb1c3a04496238D62E3c93118C297163855e22192`, `src/SeatVaultV4.sol`, root `#6466`), funded by the Safe with 1,087.06
+USDG of backing (block 75,648,677) before its seats were opened. It is owned by a SeatSizer of its own
+(`0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777`, block 75,614,955, the same `src/SeatSizer.sol`, bounds
+[110,000, 20,000,000] $PRIORS), which the Safe owns, as for the V3 pair. The deployed runtime bytecode of both matches
+`forge build` of this repository's source (immutables masked); explorer verification is pending. SeatVaultV3 is
+unchanged: its open seats run until they close, and new seats go to V4.
+
+The settings at deployment: a seat of 120,000 $PRIORS (the sizer's target, about 5 lines), a $50 line, `burnBps`
+5000 with `keepBps` 0 (a default burns half the seat, all of it, as on V3), at most 20 open seats, $1,000 of new lines
+per 7-day epoch, 10 repaid loans before seating, seats idle after 30 days, loans of at most 7 days (`maxLoanTerm`),
+protocol seats closed (`protocolEpochCap` 0 and no `protocolFeesTo`), fees owed to no staker to the Safe.
+
+**What V4 adds to SeatVaultV3, and nothing else** (its contract notes list the same): the slash split (`keepBps` of a
+staker's slash stays in the vault as protocol stake, which nobody can withdraw, and only the rest burns); protocol
+seats backed by that stake, for agents the owner marks eligible, with their own weekly budget (`protocolEpochCap`) and
+their fees to `protocolFeesTo`; `maxLoanTerm`; and both weekly budgets rolling in one place. With `keepBps` 0 and
+`maxLoanTerm` 0 it behaves as V3, except that a new `epochLength` starts a new epoch (R2-3). It launched with
+`keepBps` 0 and protocol seats closed: the split and protocol seats are off.
+
+Reviewed twice before deployment, internally: an adversarial review with proofs of concept (`test/audit-v4/`), then a
+second review of its fixes the same day (round 2). **No third-party audit.** Tests: `test/SeatVaultV4.t.sol` (the V3
+suite ported to V4 at `keepBps` 0: V4 at 0 is V3), `test/SeatVaultV4Split.t.sol` (what V4 adds, and the round-2
+regressions), `test/audit-v4/`, and the V3 audit suite, invariants and v1 default order ported to V4
+(`test/audit-r2/R2Port_SeatVaultV4*.t.sol`). The round-2 review's own proofs of concept are internal; the regressions
+cited below are public.
+
+| id | sev | finding | status | evidence |
+|---|---|---|---|---|
+| H-1 | High | **Protocol seats could be farmed.** A fresh identity fakes the record gate on a throwaway root for cents of fees, takes a protocol seat, draws the line and defaults: the funder pays the line and nothing of the attacker's is at risk. With the whole slash kept, the protocol stake refilled after every such default. | **Fixed before deployment:** a protocol seat needs the owner's eligibility (`setProtocolEligible`); protocol lines have their own weekly budget (`protocolEpochCap`, 0 until set); a protocol seat's own slash burns in full, so protocol defaults shrink the stake and never refill it. | `test/audit-v4/ProtocolSeatFarm.t.sol` (`test_farmedIdentity_cannotTakeAProtocolSeat`, `test_protocolSeatDefault_burnsItsWholeSlash_theStakeShrinks`, `test_protocolEpochCap_boundsProtocolLines`) |
+| L-1 | Low | Closing protocol seats did not stop loans on protocol seats already open. | **Fixed before deployment:** `canBorrow` refuses a protocol seat's loan while protocol seats are closed. | `test_closingProtocolSeats_stopsBorrowsOnOpenOnes` |
+| L-2 | Low | A protocol seat costs its taker nothing, so any gated agent could hold slots and backing. | **Fixed before deployment** by H-1's eligibility, completed in round 2 (R2-2): revoking eligibility, or `freezeSeat`, now removes an eligible agent on its own. | as H-1 and R2-2 |
+| I-1 | Info | Protocol fees defaulted to the fee sink, not the funder, and did not follow `setFeeSink`. | **Fixed before deployment:** no recipient until the owner names one; until then protocol seats cannot open and protocol fees cannot be claimed. | `test_protocolFeesTo_unsetUntilNamed_andSeatsWaitForIt` |
+| I-2 | Info | `keepBps` is read when a seat settles, not fixed when it opens (the staker's loss is unaffected); a protocol seat emits `Offered` with the vault as staker; a SeatSizer cut doubles how many protocol seats a stake backs. | **Documented;** eligibility and the protocol budget bound the last point. | – |
+| R2-1 | Low | **Eligibility travelled with the agent id.** It was stored per id, not per vetted owner, so a new holder the Safe never vetted could take a protocol seat, draw and default, and an operator could shed the pool's owner-default mark the same way. | **Fixed before deployment:** `setProtocolEligible(ids, owners, eligible)` binds each agent to the owner the Safe vetted and reverts `OwnerChanged` unless that owner still holds it when the Safe's transaction runs; `seatFromProtocol` reverts `NotEligible` unless the agent's owner is still that owner. A pool delegate acts for the vetted owner, and a default is recorded against that owner. | `test_R2_1_eligibilityBindsTheOwnerWhenMarked`, `test_R2_1_marking_revertsIfTheVettedOwnerNoLongerHoldsIt`, `test_R2_1_transferredEligibleId_cannotTakeAProtocolSeat` |
+| R2-2 | Low | **Neither owner lever alone removed an eligible agent.** `freezeSeat` closed its protocol seat and it re-seated in the next transaction; revoking eligibility left the open protocol seat able to borrow. | **Fixed before deployment:** `canBorrow` refuses a protocol seat whose agent is no longer eligible, or is held by anyone but the vetted owner; `freezeSeat` on a protocol seat also revokes the agent's eligibility while it is still bound to the owner who took the seat. | `test_R2_2_revokedEligibility_stopsLoansOnTheOpenProtocolSeat`, `test_R2_2_freezeSeat_protocolSeat_revokesEligibility`, `test_R2_2_freezeSeat_oldProtocolSeat_keepsTheNewHoldersEligibility`, `test_R2_2_freezeSeat_ordinarySeat_keepsEligibility` |
+| R2-3 | Info | The two weekly budgets rolled in two places: shortening `epochLength` in the same second a protocol seat opened could leave the protocol budget carrying the old epoch while the vault's restarted (one extra line of room). | **Fixed before deployment:** one roll starts the next epoch with both counters at zero; a new `epochLength` starts a new epoch now, carrying what the current one spent; a clean close refunds only the epoch still running; new view `protocolEpochRoom()`. This is the one place V4 at its defaults differs from V3. | `test_R2_3_bothBudgetsRollTogether_andProtocolEpochRoom`, `test_R2_3_newEpochLength_startsAnEpochCarryingTheSpend`, `test_seatSizer_drivesV4` |
+| R2 #8 | Low | **`canBorrow` ignored the loan term.** Once the seat's $PRIORS loses enough value while a loan is open, walking away pays better than repaying, and a longer term leaves more time for that fall. | **Fixed before deployment:** `maxLoanTerm` (`setMaxLoanTerm`, 1 to 365 days, or 0 for no cap beyond the pool's) refuses longer loans on every seat of the vault; **set to 7 days at deployment**. Loans already open keep their terms. | `test_maxLoanTerm_refusesLongerTerms_allowsShorter`, `test_ownerLevers_boundedAndOwnerOnly`, `test_seatSizer_drivesV4` (the Safe sets it through `SeatSizer.execute`) |
+
+Left as they are, on purpose: a vetted owner can still hand its line to someone else through its pool delegate (the
+default is recorded against the vetted owner, and the loss is the same one line); after a revoke, the open protocol
+seat keeps its tokens and its slot until it is closed, frozen or expired, and lends nothing meanwhile. X-3's
+economics apply to V4 at its larger line: the funder's USDG backs every line 100% and carries the credit risk, lenders
+are never reached, and a staker who seats its own agent and walks away loses half a 5-line seat, so walking away pays
+only after a fall of more than about 60% in $PRIORS since the seat was sized (about 50% at the edge of the sizer's
+band). Open loans keep their terms through such a fall, which is why V4's loans are capped at 7 days.
+
+Checked and sound, with a fuzzed sequence of random steps checking both after every step (`testFuzz_sequence`): the
+vault's $PRIORS always equals `tokensHeld + protocolTokens`, and its USDG plus the pool's sponsor fees always covers
+`totalFeesOwed`. Nobody, the owner included, can take the protocol stake through `rescue`, `withdrawOffer`, `accept`,
+`close`, `expire`, `settle`, `freezeSeat` or re-entrancy; protocol fees stay out of `skim` and reach only
+`protocolFeesTo`; and `SeatSizer` drives V4 unchanged. Like V3, V4 inherits `renounceOwnership` (V-3); while its
+SeatSizer owns it, the sizer refuses that call (SZ-6).
 
 ## StockVault
 
@@ -161,6 +222,9 @@ forge test --match-path 'test/audit-final/*' -vv
 forge test --match-path 'test/review-v2/*' -vv
 forge test --match-contract 'CreditPoolV2Invariant|SeatVaultV2Invariant|SeatVaultV3Invariant|TreasurySponsorV4Invariant'
 forge test --match-path 'test/StockVault*' -vv
+forge test --match-path 'test/SeatVaultV4*' -vv
+forge test --match-path 'test/audit-v4/*' -vv
+forge test --match-path 'test/audit-r2/*' -vv
 FORK_RPC=https://rpc.mainnet.chain.robinhood.com forge test --match-path test/StockVaultFork.t.sol -vv
 ```
 

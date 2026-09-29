@@ -1,9 +1,10 @@
 # Taking part in Priors v2: lenders, stakers, backers, agents
 
 Pool v2 (`CreditPoolV2`), treasury v4 (`TreasurySponsorV4`) and the seat vault (`SeatVaultV3` since 2026-09-25, replacing `SeatVaultV2`) are **live on Robinhood
-Chain mainnet** (chain 4663) since block 71,702,460. The v1 pool is paused; its record stays readable. Addresses are
-in [`deployments/4663.v2.json`](../deployments/4663.v2.json), and the SDK and the `priors-v2` CLI read them from
-there, so nothing below needs an address typed by hand.
+Chain mainnet** (chain 4663) since block 71,702,460. The v1 pool is paused; its record stays readable. The growth seat
+vault, `SeatVaultV4` (`0xb1c3a04496238D62E3c93118C297163855e22192`, $50 lines), is live since
+2026-09-29. Addresses are in [`deployments/4663.v2.json`](../deployments/4663.v2.json), and the SDK and the
+`priors-v2` CLI read them from there, so nothing below needs an address typed by hand.
 
 The same actions are on the site: [priors.trade](https://priors.trade) has a Participate page (deposit, seats,
 roots), [/agent](https://priors.trade/agent) and [/invite](https://priors.trade/invite).
@@ -49,6 +50,7 @@ Other v2 changes:
 | Treasury v4 (root #6228) | first line $5 · raise to $25 after 3 qualified loans, 14 days, score ≥ 100 · $25 of new lines per 7-day epoch · idle lines reclaimed after 30 days |
 | Seats V3 (root #6234) | seat ≈ $25 of $PRIORS (12,000 on 2026-09-25, resized with the price by the SeatSizer `0xd24B…5E61`) · line $5 · 50% of the seat burnt on a default · 10 open seats · $50 of new lines per 7-day epoch |
 | Seat gates | the agent has repaid at least 3 loans; a seat idle 30 days can be expired by anyone |
+| Growth seats V4 (root #6466, live since 2026-09-29) | seat ≈ 5 lines of $PRIORS (120,000 at deployment, resized by its own SeatSizer `0x97C4…8777` within [110,000, 20,000,000]) · line $50 · 50% of the seat burnt on a default · agent has repaid at least 10 loans · loans of at most 7 days · 20 open seats · $1,000 of new lines per 7-day epoch · protocol seats closed |
 | Stock lines (`StockVault`, root #6424, since 2026-09-28) | 35 Robinhood stock tokens · line 25-50% of the deposit's Chainlink value by token (`deployments/stock-ltv.4663.json`), plus up to 15 points for a record of repaid treasury credit · at most $250 a line · $1,000 of new lines per 7-day epoch · the whole deposit seized on a default · a line idle 30 days (7 if never drawn) can be expired by anyone, tokens back |
 
 `npx priors-v2 status` and the Participate page read these live; if this table and the chain disagree, the chain
@@ -61,7 +63,7 @@ npm install
 export PRIORS_KEY=0x…        # the agent owner's key: environment or .env only, never argv, never printed
 npx priors-v2 join                       # registers an ERC-8004 identity for this key if it owns none, prints its id
 npx priors-v2 join --invite <code>       # redeems a treasury v4 invite: first line opened
-npx priors-v2 join --seat <staker>       # or accepts that staker's seat offer instead
+npx priors-v2 join --seat <staker>       # or accepts that staker's seat offer instead (on the growth seat vault V4, else V3)
 npx priors-v2 borrow 5 --days 7
 npx priors-v2 repay --all
 npx priors-v2 status
@@ -75,6 +77,8 @@ npx priors-v2 status
   official endpoint.
 - **Identity lookup**: the key's identity minted since the v2 deploy is found automatically; an older one (for
   example a v1 agent) needs `PRIORS_AGENT_ID`.
+- **Two seat vaults**: with `seatVaultV4` in the record, `join --seat` takes the staker's offer on the growth seat
+  vault (V4) if there is one, else on V3, and `status` reads the seat on whichever vault sponsors the agent.
 - **Exit codes**: 0 done, 1 failed, 2 usage or configuration, 3 waiting on someone else (no seat offer yet).
 
 ⛔ **Repay before the due date.** Three days past due, anyone can mark the loan defaulted: the record is

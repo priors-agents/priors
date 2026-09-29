@@ -43,6 +43,11 @@ await check("the v2 record is live on 4663 and names every contract the SDK and 
   assert.equal(d.seatVaultAgentId, 6234);
   assert.equal(d.seatVaultV2, "0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F");
   assert.equal(d.seatVaultV2AgentId, 6229);
+  // the growth seat vault (SeatVaultV4) since 2026-09-29, and its own SeatSizer: the CLI seats on it once recorded
+  for (const k of ["seatVaultV4", "seatSizerV4"]) assert.equal(ethers.getAddress(d[k]), d[k], `${k} is not a checksummed address`);
+  assert.equal(d.seatVaultV4, "0xb1c3a04496238D62E3c93118C297163855e22192");
+  assert.equal(d.seatVaultV4AgentId, 6466);
+  assert.equal(d.seatSizerV4, "0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777");
 });
 await check("the v1 record is kept for history, marked paused, and points at the v2 record", () => {
   const v1 = readDeployment(4663);

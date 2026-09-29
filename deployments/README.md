@@ -28,8 +28,12 @@ plus the two roots' agent ids (`treasuryV4AgentId` 6228, `seatVaultAgentId` 6234
 2026-09-25. `seatSizer` (since block 72,572,884) owns the seat vault and keeps its seat at about 5 lines of $PRIORS;
 the Safe owns it. `stockVault` (root `stockVaultAgentId` 6424, since block `stockVaultBlock` 74,826,641) is the stock
 vault: the proxy address, the one to call and the one that holds the tokens; its implementation and ProxyAdmin are in
-the README's address table. `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it (the SDK's stock-line calls
-use `stockVault` from it); `PRIORS_ADDRESSES` points them at another file.
+the README's address table. `seatVaultV4` (root `seatVaultV4AgentId` 6466, since block `seatVaultV4Block`
+75,614,831) is the growth seat vault, SeatVaultV4: live since 2026-09-29. `seatSizerV4` (since
+block `seatSizerV4Block` 75,614,955) is its own SeatSizer, which owns it; the Safe owns the sizer. `seatVault` stays
+SeatVaultV3. `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it (the SDK's stock-line calls use `stockVault`
+from it; `priors-v2 join --seat` takes a staker's offer on `seatVaultV4` first, else on `seatVault`);
+`PRIORS_ADDRESSES` points them at another file.
 
 ```json
 {

@@ -11,7 +11,8 @@ contracts, the SDK, the CLIs, and the skill that walks an agent through getting 
 
 **Priors v2 is live on Robinhood Chain (4663)**: `CreditPoolV2`, treasury v4, the seat vault (`SeatVaultV3`) and the
 stock vault (`StockVault`, lines against Robinhood stock tokens), addresses in
-`deployments/4663.v2.json`. The v1 pool is paused; its records were imported into v2. Use the v2 tools
+`deployments/4663.v2.json`. The growth seat vault (`SeatVaultV4`, $50 lines for agents with 10
+repaid loans) is live since 2026-09-29. The v1 pool is paused; its records were imported into v2. Use the v2 tools
 (`npx priors-v2`, `sdk/priors-v2.mjs`) for anything on mainnet. The v1 tools (`npx priors`, `sdk/priors.mjs`)
 read v1 history and drive the local devnet, which still deploys v1.
 
@@ -43,8 +44,9 @@ npm run quickstart                         # no mainnet? a local v1 chain and th
 2. **Nothing here has had a third-party audit.** v1 shipped with a lender-loss defect the randomized invariants
    did not catch (fixed; `test/DefaultAccounting.t.sol`). v2 had internal adversarial reviews; every finding, fix
    and residual is in `docs/SECURITY-v2.md`, each with a test. ⛔ Do not delete the PoC and regression tests
-   (`test/audit-v2/`, `test/audit-final/`, `test/review-v2/`, `test/DefaultAccounting.t.sol`,
-   `test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure`) — they are the evidence the fixes work. Do not
+   (`test/audit-v2/`, `test/audit-final/`, `test/review-v2/`, `test/audit-v4/`, `test/audit-r2/`,
+   `test/DefaultAccounting.t.sol`, `test_multipleDefaultsKeepLendersWholeWithoutEarnedExposure`) — they are the
+   evidence the fixes work. Do not
    describe any of this as audited or as proven safe.
 
 3. **A default is permanent.** Three days past due and anyone can mark a loan defaulted: the record is
@@ -54,7 +56,7 @@ npm run quickstart                         # no mainnet? a local v1 chain and th
 ## Working on the code
 
 ```bash
-forge test                  # 642 tests, all green (fork-only tests skip)
+forge test                  # 750 tests, all green (fork-only tests skip)
 npm test                    # SDK, CLI, publish guard (needs Foundry)
 npm run test:v2             # v2 SDK and x402 client, network-free
 npm run devnet              # local v1 chain + deployed pool, bootstrapped so firstLine() works

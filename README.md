@@ -18,7 +18,8 @@ Reviews are cheap to fake. Repaid debt isn't.
 > Pool v2 (`CreditPoolV2`), treasury v4 and the seat vault (`SeatVaultV3`) are **live on Robinhood Chain mainnet** (chain 4663) since
 > block 71,702,460. Addresses come from [`deployments/4663.v2.json`](deployments/4663.v2.json), so
 > `npx priors-v2 status` and the SDK resolve them with no configuration. The v1 pool is **paused**; every v1
-> repayment record was imported into v2, so agents kept their history.
+> repayment record was imported into v2, so agents kept their history. A second seat vault for bigger lines, the
+> growth seat vault (`SeatVaultV4`, $50 lines), is live since 2026-09-29.
 >
 > **What v2 changes.** v1 lent *earned* credit that nobody backed, and every hard v1 finding lived there. v2 drops
 > it: every line is 100% backed by a backer's locked pool shares, a default burns that backer's shares worth the
@@ -244,7 +245,9 @@ There is no appeal. That is why the score means something.
   The seat vault (SeatVaultV3, root #6234) backs a $5 line behind any agent a staker puts a seat of $PRIORS on; stakers earn
   the sponsor share of that agent's fees and lose half the seat on a default. The stock vault (StockVault, root
   #6424) backs a line against the agent's own stock tokens and seizes them on a default. Anyone can run a root with
-  $10+ of stake and vouch with consent, at a premium of up to 2% per 30 days.
+  $10+ of stake and vouch with consent, at a premium of up to 2% per 30 days. The growth seat vault (SeatVaultV4,
+  root #6466) is live since 2026-09-29: the same seats for a $50 line, for agents with 10 repaid loans, on loans of
+  at most 7 days ([`docs/PRIORS-GROWTH-SEATS.md`](docs/PRIORS-GROWTH-SEATS.md)).
 - **One money loop.** Loan fees split 60 / 25 / 15 between lenders, the sponsor, and the reserve.
 - **A score that is a pure function of the record.** `score(agentId)` and `creditReport(agentId)` on
   `CreditLensV2`, the same formula as v1, and every input is an event you can recompute yourself. Score v1 is
@@ -274,6 +277,7 @@ v2 findings.
 | `maxUtilizationBps` · `keeperBounty` | 10000 · 0 |
 | Treasury v4 | first line $5 · raise to $25 · $25 of new lines per 7-day epoch · idle after 30 days |
 | Seats (`SeatVaultV3`, root #6234) | seat ≈ $25 of $PRIORS (12,000 on 2026-09-25, resized with the price by the SeatSizer) · line $5 · 50% burnt on default · agent needs 3 repaid loans · seat expires after 30 idle days · $50 of new lines per 7-day epoch |
+| Growth seats (`SeatVaultV4`, root #6466; live since 2026-09-29) | seat ≈ 5 lines of $PRIORS (120,000 at deployment, resized by its own SeatSizer within [110,000, 20,000,000]) · line $50 · 50% burnt on default · agent needs 10 repaid loans · loans of at most 7 days · 20 open seats · seat expires after 30 idle days · $1,000 of new lines per 7-day epoch · protocol seats closed |
 | Stock lines (`StockVault`, root #6424) | 35 stock tokens · line 25-50% of the deposit's value by token, plus up to 15 points for a record of repaid treasury credit, never above 70% · at most $250 a line · $1,000 of new lines per 7-day epoch · $1,000 of open lines per token ($500 on CRCL, CRWV, NBIS, RGTI, SNDK, USAR) · whole deposit seized on default · idle after 30 days (7 if never drawn) |
 | Minimum root stake | $10 |
 | Pool owner | 48 h `TimelockController` (the Safe proposes and executes, no admin); the Safe is guardian (pause ≤ 14 days, exits never pause) |
@@ -291,10 +295,12 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | SeatVaultV2 (retired and paused, root `#6229`; replaced by V3 for audit V-2) | `0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F` |
 | TimelockController (owns the pool, 48 h) | `0x5d984C274035F81BB327d532897a902C5125F87c` |
 | **SeatSizer** (owns the seat vault since 2026-09-26; resizes the seat from the $PRIORS price, within bounds) | `0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61` |
+| **SeatVaultV4**, the growth seat vault (live since 2026-09-29, root `#6466`) | `0xb1c3a04496238D62E3c93118C297163855e22192` |
+| SeatSizer of the growth seat vault (owns it; the Safe owns the sizer) | `0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777` |
 | **StockVault** (live since 2026-09-28, root `#6424`; lines against stock tokens; a Transparent proxy, `StockVaultProxy`) | `0xbEcd07EC689988e16b870C121756C4c2C8cb02B6` |
 | StockVault implementation (behind the proxy) | `0xF781b2634254d7819E9E17BfFc9D18C54C32008b` |
 | StockVault ProxyAdmin (owned by the Safe; the only way to upgrade the vault) | `0x5174A18550a295cd25aF59416a56B7e4c38C8Afc` |
-| Safe (2-of-3; proposes to the timelock, owns treasury v4 and the SeatSizer, so every other vault power, and the stock vault and its ProxyAdmin) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
+| Safe (2-of-3; proposes to the timelock, owns treasury v4 and both SeatSizers, so every other seat vault power, and the stock vault and its ProxyAdmin) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
 | InviteBond (the bond an automatic invite needs; no admin) | `0x8BE478c754D9124D11e78dB20F5bf4dA45403275` |
 | ERC-8004 Identity Registry | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
 | USDG (Robinhood's 6-decimal dollar, the pool asset) | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
@@ -351,7 +357,8 @@ src/libraries/PoolV2Lib.sol  v2 pool's linked library (hooks, consent digest)
 src/CreditLensV2.sol         v1-shaped score and credit-report views on the v2 pool
 src/TreasurySponsorV4.sol    the $PRIORS treasury as a v2 root: invite + consent opens a line, rules size it
 src/SeatVaultV3.sol          $PRIORS seats: a staker's tokens behind an agent, the vault backs its line (live)
-src/SeatSizer.sol            owns the seat vault: keeps the seat at ~5 lines of $PRIORS from the pool price (live)
+src/SeatVaultV4.sol          growth seats: V3 plus the slash split, protocol seats, a loan-term cap (deployed, paused)
+src/SeatSizer.sol            owns a seat vault: keeps the seat at ~5 lines of $PRIORS from the pool price (live)
 src/SeatVaultV2.sol          the previous seat vault (retired; V3 closes audit V-2)
 src/InviteBond.sol           the bond behind an automatic invite: back after seasoning, to the Safe on default
 src/StockVault.sol           lines against Robinhood stock tokens: per-token LTV, lending holds, seizure on default (live)
@@ -361,8 +368,9 @@ src/TreasurySponsor.sol      v1 treasury (v3)
 src/ReserveFunder.sol        v1 creator-fee sweep into the reserve
 src/libraries/ScoreLib.sol   the trust score (shared by v1 and the v2 lens)
 src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPonsFeeEscrow
-test/                        642 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
-                             review-v2/), the stock vault's (StockVault*), and the v1 suite
+test/                        750 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
+                             review-v2/, audit-v4/, audit-r2/), the stock vault's (StockVault*), the growth seat
+                             vault's (SeatVaultV4*), and the v1 suite
 script/DeployV2.s.sol        deploys the v2 set under a 48 h timelock, writes deployments/<chainId>.v2.json
 script/Deploy.s.sol          v1 deploy (mocks on dev chains), writes deployments/<chainId>.json
 sdk/priors-v2.mjs            the v2 client on ethers v6, ABIs included
@@ -394,7 +402,7 @@ small and we say so up front rather than after you have spent a week.
 ## Working on it
 
 ```bash
-forge test                     # 642 tests, all green (fork-only tests skip without FORK_RPC)
+forge test                     # 750 tests, all green (fork-only tests skip without FORK_RPC)
 npm test                       # SDK, CLI and publish-guard checks (needs Foundry for the v1 end-to-end run)
 npm run test:v2                # the v2 SDK and x402 client, network-free
 npm run devnet                 # local chain + deployed, bootstrapped v1 pool

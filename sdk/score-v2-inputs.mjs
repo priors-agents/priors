@@ -121,8 +121,9 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
   if (!Number.isFinite(t) || t <= 0) throw new TypeError("score-v2 inputs: pass `now` (or a snapshot with meta.timestamp)");
   const K = makeClusters(snapshot, links, agentWallets);
   const minBackerAge = weights.backers.minAgeDays * DAY;
-  // the pool's treasury and seat vault count as backers from day one (public ids in the snapshot's meta)
-  const protocolBackers = new Set([snapshot.meta?.treasuryAgentId, snapshot.meta?.seatVaultAgentId, snapshot.meta?.archive?.treasuryAgentId].filter((x) => x != null).map(Number));
+  // the pool's treasury and seat vaults (V3, and the growth vault V4) count as backers from day one (public ids in the
+  // snapshot's meta)
+  const protocolBackers = new Set([snapshot.meta?.treasuryAgentId, snapshot.meta?.seatVaultAgentId, snapshot.meta?.seatVaultV4AgentId, snapshot.meta?.archive?.treasuryAgentId].filter((x) => x != null).map(Number));
   // roots that lend against the borrower's own collateral: never someone else's risk
   const ownRoots = new Set((weights.backers.ownCollateralRoots || []).includes("stockVault") && Number(snapshot.meta?.stockVaultAgentId) > 0 ? [Number(snapshot.meta.stockVaultAgentId)] : []);
   // v1 loans predate the loan's own sponsorId: their backer is in the FeeSplit event of the repayment

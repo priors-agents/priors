@@ -23,10 +23,13 @@ interface IExtsload {
 ///                     MEDIAN observation): a raise goes to the target at once; a cut at most halves the seat, once
 ///                     per CUT_INTERVAL; never under `floorSize` or over `ceilingSize`. Every other vault term is
 ///                     kept as it is, except that seats are paused when the ceiling leaves the burn under 1.5 lines.
+///                     The check reads the vault's `burnBps`, the share of a seat slashed: on SeatVaultV3 all of it
+///                     burns, while a SeatVaultV4 with `keepBps` set burns only part of it (at 5000, 0.75 lines).
 ///
-///         Why the keeper and not anyone: the $PRIORS pool charges no swap fee, so a public poke could be sandwiched
-///         in one transaction (pump, poke, dump) at almost no cost, and 24 of them would own the median. A keeper
-///         poke cannot be placed inside someone else's transaction. A stolen keeper key can still record bad
+///         Why the keeper and not anyone: the $PRIORS pool's LP fee is 0 and the Pons hook takes about 3% of each
+///         swap, so a public poke could be sandwiched in one transaction (pump, poke, dump) for only the hook's cut on
+///         the two swaps, and 24 of them would own the median. A keeper poke cannot be placed inside someone else's
+///         transaction. A stolen keeper key can still record bad
 ///         observations, and the bounds are what cap it: a cut is at most MAX_STEP per day and the seat stays in
 ///         [floorSize, ceilingSize] (a bad raise only makes seats bigger, which pauses nothing but new loans on
 ///         smaller seats); the Safe can replace the keeper, or take the vault back, at any time. The keeper
