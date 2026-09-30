@@ -47,7 +47,7 @@ The v2 contracts on Robinhood Chain (chain 4663), live since block 71,702,460, a
 | `TimelockController` (the pool's owner, 48 h) | [`0x5d984C274035F81BB327d532897a902C5125F87c`](https://robinhoodchain.blockscout.com/address/0x5d984C274035F81BB327d532897a902C5125F87c) |
 | `InviteBond` (the bond an automatic invite needs) | [`0x8BE478c754D9124D11e78dB20F5bf4dA45403275`](https://robinhoodchain.blockscout.com/address/0x8BE478c754D9124D11e78dB20F5bf4dA45403275) |
 | `StockVault`, the stock vault (root `#6424`; live since 2026-09-28): the proxy users call | [`0xbEcd07EC689988e16b870C121756C4c2C8cb02B6`](https://robinhoodchain.blockscout.com/address/0xbEcd07EC689988e16b870C121756C4c2C8cb02B6) |
-| its implementation (`src/StockVault.sol`) | [`0xF781b2634254d7819E9E17BfFc9D18C54C32008b`](https://robinhoodchain.blockscout.com/address/0xF781b2634254d7819E9E17BfFc9D18C54C32008b) |
+| its implementation (`src/StockVault.sol`) | [`0x8Be04c08De0158c88F84875DAe181054c30734fA`](https://robinhoodchain.blockscout.com/address/0x8Be04c08De0158c88F84875DAe181054c30734fA) (since 2026-09-30) |
 
 The stock vault is the one upgradeable contract: what is in scope is the implementation its proxy points to when you
 report (the ERC-1967 implementation slot), which the table will follow after any upgrade.
@@ -97,7 +97,7 @@ Every issue listed in [docs/SECURITY-v2.md](docs/SECURITY-v2.md), whether fixed,
 or a trust assumption, is known. A report of one is not a new finding and is not paid at any tier; if it adds
 something real (a cleaner reproduction, a tighter measurement) we will credit it in public. That includes the
 residuals added after launch: SO-1 and SO-2 (stake held only while marking a default) and AI-1 (the invite bot's
-self-service mode, now priced by `InviteBond`), and the stock vault's SV-1 to SV-12. V-2 (seat levers and ownership
+self-service mode, now priced by `InviteBond`), and the stock vault's SV-1 to SV-14. V-2 (seat levers and ownership
 not reaching open seats) is fixed in `SeatVaultV3`; a path that still gets around those fixes on V3 is a new finding.
 
 What still counts is a new root cause, or a path that beats the bound stated for a listed issue: reaching lender

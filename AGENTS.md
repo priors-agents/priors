@@ -57,7 +57,7 @@ npm run quickstart                         # no mainnet? a local v1 chain and th
 ## Working on the code
 
 ```bash
-forge test                  # 750 tests, all green (fork-only tests skip)
+forge test                  # 754 tests, all green (fork-only tests skip)
 npm test                    # SDK, CLI, publish guard (needs Foundry)
 npm run test:v2             # v2 SDK and x402 client, network-free
 npm run devnet              # local v1 chain + deployed pool, bootstrapped so firstLine() works

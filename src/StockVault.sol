@@ -84,7 +84,9 @@ interface IAccessRegistry {
 ///         `seizeTo`, so a default could not seize.
 ///
 ///         An issuer burn from the vault is shared: when the vault holds less of a token than it owes, every
-///         position of that token gets the same share of its amount back (or seized).
+///         position of that token gets the same share of its amount back (or seized). Until that shortfall is paid
+///         out, the token takes no new collateral (`open` and `addCollateral` revert `Shortfall`), so a later deposit
+///         never pays it, and every loan is sized on that share of the amount, not on the amount.
 ///
 ///         Fresh: at most `sessionMaxAge` old (the feeds publish at least daily while the market trades), or, for the
 ///         week's last price (published on a Friday or Saturday, UTC), until Tuesday 06:00 UTC: the market is closed
@@ -262,6 +264,7 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     error Renounce();
     error TokensOwed(uint256 agentId);
     error TokenCapReached(address token, uint256 wanted, uint256 left);
+    error Shortfall(address token);
 
     /// @dev The implementation: its pool (and the pool's USDG and registry) are code, shared by every proxy of it. Its
     ///      own storage is never used (initializers disabled, owned by nobody's key), so only a proxy is a vault. The
@@ -539,7 +542,8 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
 
     /// @notice A new loan is allowed only on an open position that is not closing, while the vault is not paused, for
     ///         the owner who opened it, at a fresh and unpaused price with no lending hold, and while the agent's drawn
-    ///         principal plus this loan stays within `ltvOf(id, token)` of the collateral's value now.
+    ///         principal plus this loan stays within `ltvOf(id, token)` of the collateral's value now: the value of what
+    ///         the position would be paid (_payout), which an issuer burn cuts.
     function canBorrow(uint256 rootId, uint256 id, uint256 amount, uint64, uint256, address, address owner, address)
         external
         view
@@ -548,7 +552,7 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
         Position storage p = positions[id];
         if (rootId != agentId || rootId == 0 || p.status != Status.Open || p.closing || paused) return false;
         if (owner != p.owner) return false;
-        (bool ok, uint256 value) = _valueOf(p.token, p.amount);
+        (bool ok, uint256 value) = _valueOf(p.token, _payout(p.token, p.amount));
         if (!ok || _lendStatus(p.token) != 0) return false;
         return pool.getAgent(id).principalOut + amount <= value * ltvOf(id, p.token) / 10_000;
     }
@@ -627,7 +631,7 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     function borrowRoom(uint256 id) external view returns (uint256) {
         Position storage p = positions[id];
         if (p.status != Status.Open || p.closing || paused) return 0;
-        (bool ok, uint256 value) = _valueOf(p.token, p.amount);
+        (bool ok, uint256 value) = _valueOf(p.token, _payout(p.token, p.amount));
         if (!ok || _lendStatus(p.token) != 0) return 0;
         uint256 limit = value * ltvOf(id, p.token) / 10_000;
         CreditPoolV2.Agent memory a = pool.getAgent(id);
@@ -948,8 +952,11 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
         return Math.mulDiv(lines, pp.feeBps * pp.maxTerm, 10_000 * 30 days, Math.Rounding.Ceil);
     }
 
+    /// @dev Refused while the vault holds less of `token` than it owes (an issuer burn not yet paid out): the new tokens
+    ///      would be owed back at the same short share, paying the positions the burn hit.
     function _pull(address token, address from, uint256 amount) internal {
         uint256 before = IERC20(token).balanceOf(address(this));
+        if (before < held[token]) revert Shortfall(token);
         IERC20(token).safeTransferFrom(from, address(this), amount);
         uint256 got = IERC20(token).balanceOf(address(this)) - before;
         if (got != amount) revert BadTransfer(amount, got); // no fee-on-transfer surprises: collateral is exact

@@ -91,6 +91,9 @@ export interface CreatePayerOptions {
   /** Longest wait between two resends, in ms (default 30 000). */
   maxSleepMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  /** Called with each signed payment before it is sent, so a caller can keep its own record across processes;
+   *  awaited, and its failure never stops the payment. */
+  onSigned?: (s: { purchase: string; paymentHeaders: Record<string, string>; validBefore: number; price: bigint; requirement: any; x402Version: number; borrowed?: bigint; loanId?: bigint | null }) => void | Promise<void>;
 }
 
 export interface PayResult {
@@ -141,6 +144,8 @@ export declare function resend(input: RequestInfo | URL, paymentHeaders: Record<
 export declare const DEFAULT_TIMEOUT_MS: number;
 /** Merchant bodies are read at most this far: 256 KB. */
 export declare const MAX_BODY_BYTES: number;
+/** Seconds an unsettled payment is kept past its validBefore, for a chain clock behind the payer's: 60. */
+export declare const SKEW_SECONDS: number;
 /** A response body as text, at most `max` bytes (default MAX_BODY_BYTES); the rest is cancelled, not read. `cut` says it was. */
 export declare function readCapped(response: Response | null | undefined, max?: number): Promise<{ text: string; cut: boolean }>;
 

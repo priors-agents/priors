@@ -309,7 +309,7 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | **SeatVaultV4**, the growth seat vault (live since 2026-09-29, root `#6466`) | `0xb1c3a04496238D62E3c93118C297163855e22192` |
 | SeatSizer of the growth seat vault (owns it; the Safe owns the sizer) | `0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777` |
 | **StockVault** (live since 2026-09-28, root `#6424`; lines against stock tokens; a Transparent proxy, `StockVaultProxy`) | `0xbEcd07EC689988e16b870C121756C4c2C8cb02B6` |
-| StockVault implementation (behind the proxy) | `0xF781b2634254d7819E9E17BfFc9D18C54C32008b` |
+| StockVault implementation (behind the proxy; since 2026-09-30) | `0x8Be04c08De0158c88F84875DAe181054c30734fA` |
 | StockVault ProxyAdmin (owned by the Safe; the only way to upgrade the vault) | `0x5174A18550a295cd25aF59416a56B7e4c38C8Afc` |
 | Safe (2-of-3; proposes to the timelock, owns treasury v4 and both SeatSizers, so every other seat vault power, and the stock vault and its ProxyAdmin) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
 | InviteBond (the bond an automatic invite needs; no admin) | `0x8BE478c754D9124D11e78dB20F5bf4dA45403275` |
@@ -379,7 +379,7 @@ src/TreasurySponsor.sol      v1 treasury (v3)
 src/ReserveFunder.sol        v1 creator-fee sweep into the reserve
 src/libraries/ScoreLib.sol   the trust score (shared by v1 and the v2 lens)
 src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPonsFeeEscrow
-test/                        750 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
+test/                        754 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
                              review-v2/, audit-v4/, audit-r2/, audit-sizer/), the stock vault's (StockVault*), the growth seat
                              vault's (SeatVaultV4*), and the v1 suite
 script/DeployV2.s.sol        deploys the v2 set under a 48 h timelock, writes deployments/<chainId>.v2.json
@@ -413,7 +413,7 @@ small and we say so up front rather than after you have spent a week.
 ## Working on it
 
 ```bash
-forge test                     # 750 tests, all green (fork-only tests skip without FORK_RPC)
+forge test                     # 754 tests, all green (fork-only tests skip without FORK_RPC)
 npm test                       # SDK, CLI and publish-guard checks (needs Foundry for the v1 end-to-end run)
 npm run test:v2                # the v2 SDK and x402 client, network-free
 npm run devnet                 # local chain + deployed, bootstrapped v1 pool

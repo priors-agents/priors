@@ -228,7 +228,7 @@ function purchaseKey(req) {
   return `${req.method} ${u.href}`;
 }
 /** Seconds an unsettled authorization is kept past its validBefore, for clock skew between the payer and the chain. */
-const SKEW_SECONDS = 60;
+export const SKEW_SECONDS = 60;
 
 /**
  * A payer for x402 USDG on Robinhood Chain.
@@ -236,7 +236,7 @@ const SKEW_SECONDS = 60;
  * @returns {import("../index.d.ts").Payer}
  */
 export function createPayer(opts = {}) {
-  const { signer, agentId, pool, termSeconds, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = DEFAULT_TIMEOUT_MS, signal, maxValiditySeconds = MAX_VALIDITY_SECONDS } = opts;
+  const { signer, agentId, pool, termSeconds, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = DEFAULT_TIMEOUT_MS, signal, maxValiditySeconds = MAX_VALIDITY_SECONDS, onSigned } = opts;
   if (!signer || typeof signer.getAddress !== "function" || typeof signer.signTypedData !== "function") {
     throw new PayError("NO_SIGNER", "createPayer: `signer` must be an ethers v6 Signer (a Wallet connected to a Robinhood Chain provider)");
   }
@@ -285,7 +285,8 @@ export function createPayer(opts = {}) {
     }
     const version = paymentRequired?.x402Version;
     const req = version === 2 ? pickV2Requirement(paymentRequired.accepts, usdgAddr) : version === 1 ? pickV1Requirement(paymentRequired.accepts, usdgAddr) : null;
-    if (version !== 1 && version !== 2) throw new PayError("BAD_402", `pay: unsupported x402Version ${JSON.stringify(version)}`);
+    // Never quote the merchant's value: callers show this message to a model, outside any data fence.
+    if (version !== 1 && version !== 2) throw new PayError("BAD_402", `pay: unsupported x402Version (${Number.isSafeInteger(version) ? version : `a ${typeof version}`})`);
     if (!req) throw new PayError("NO_USDG_REQUIREMENT", "pay: the resource does not accept exact USDG on Robinhood Chain");
 
     const price = BigInt(version === 2 ? req.amount : req.maxAmountRequired);
@@ -314,6 +315,9 @@ export function createPayer(opts = {}) {
         validBefore = Number(JSON.parse(Buffer.from(header, "base64").toString("utf8")).payload.authorization.validBefore);
       }
       unsettled.set(key, { paymentHeaders, validBefore, price, requirement: req, x402Version: version });
+      // Before the payment leaves: a caller that keeps its own record (the MCP server's state file) writes it now, so a
+      // process that dies while the request is in flight cannot lose the only copy. Its failure never stops the payment.
+      if (typeof onSigned === "function") { try { await onSigned({ purchase: key, paymentHeaders, validBefore, price, requirement: req, x402Version: version, borrowed: loan.borrowed, loanId: loan.loanId }); } catch (_) { /* best effort */ } }
       const r = await resend(base, paymentHeaders, resendOpts);
       if (r.response.ok) unsettled.delete(key);
       const settlement = r.response.ok ? settlementOf(r.response) : undefined;

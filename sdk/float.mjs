@@ -198,7 +198,7 @@ async function readCapped(response, max = MAX_BODY_BYTES) {
  */
 function requestInit(init, timeoutMs) {
   const signals = [timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null, init.signal || null].filter(Boolean);
-  return { redirect: "manual", ...init, ...(signals.length ? { signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals) } : {}) };
+  return { ...init, redirect: init.redirect ?? "manual", ...(signals.length ? { signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals) } : {}) };
 }
 const isAbort = (e) => e?.name === "AbortError" || e?.name === "TimeoutError";
 

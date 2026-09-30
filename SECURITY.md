@@ -126,8 +126,9 @@ than trusting this file. It does not read the v2 record: for v2, compare each ad
 `deployments/4663.v2.json` against `forge build` output the same way (immutables and the `PoolV2Lib` link
 zeroed, metadata stripped). The v2 set matched on 2026-09-25; `seatVaultV4` and `seatSizerV4` matched on
 2026-09-29, and so did V3's `seatSizer`. For the stock vault the record holds the proxy (`StockVaultProxy`): what
-matches `forge build` of `src/StockVault.sol` is the implementation behind it,
-`0xF781b2634254d7819E9E17BfFc9D18C54C32008b` (its ERC-1967 implementation slot), which matched on 2026-09-29.
+matches `forge build` of `src/StockVault.sol` is the implementation behind it (its ERC-1967 implementation slot):
+`0x8Be04c08De0158c88F84875DAe181054c30734fA` since the upgrade of 2026-09-30, which matched that day (the first one,
+`0xF781b2634254d7819E9E17BfFc9D18C54C32008b`, matched on 2026-09-29).
 
 An independent rediscovery of a fixed issue is still worth telling us about, and we will say so and
 credit the work. It is not a new finding.
@@ -154,6 +155,10 @@ People who have found something real, or told us something we needed to hear.
   `@daffhaidar` (IB-2), `@Muhamadluis` (O-2) and `@Firlinata` (S-1); Gerald Gerald reported P-12 by email the same
   day. Later reports of the same causes: `@islaintent`, `@Godswork4`, `@dimazz12`, `@clementnaomi064-spec`,
   `@Sangmadun`, `@JasmeJun`, `@ginan15`, `@ashraf9191` and `@rabbinik`.
+- **The reports of 2026-09-29 and 2026-09-30**: `@Zhhns12` (SV-13) and `@byfor8` (SV-14, and SV-13 the same
+  night) on the stock vault: a deposit made after an issuer burn paid the earlier positions, and a line could be
+  drawn past the loan-to-value of what was left, fixed by an upgrade before any stock was deposited. `@byfor8` (P-14,
+  also `@fandiyana`) and `@sebattoriq` (P-15) on `pay_url`'s guard, fixed in 0.2.3.
 
 **Not fixed, deliberately:** the `ZeroAmount` revert on a sub-share deposit. `convertToShares` rounds
 down, in the pool's favour, which is the correct direction for an ERC-4626-style vault; the effect is that

@@ -40,7 +40,7 @@ export const STOCK_VAULT_ABI = [
   "error StillBacked(uint256 agentId)", "error InvalidParams()", "error Protected(address token)",
   "error NotDepositor(uint256 agentId, address caller)", "error NoFeeRoom(uint256 needed, uint256 free)",
   "error NotIdle(uint256 agentId)", "error LendingHeld(address token, uint8 reason)", "error LoanOpen(uint256 agentId)",
-  "error NotSent(uint256 agentId)", "error TokensOwed(uint256 agentId)", "error TokenCapReached(address token, uint256 wanted, uint256 left)",
+  "error NotSent(uint256 agentId)", "error TokensOwed(uint256 agentId)", "error TokenCapReached(address token, uint256 wanted, uint256 left)", "error Shortfall(address token)",
 ];
 const FEED_ABI = ["function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)"];
 const MULTICALL_ABI = ["function aggregate3((address target, bool allowFailure, bytes callData)[] calls) payable returns ((bool success, bytes returnData)[] returnData)"];

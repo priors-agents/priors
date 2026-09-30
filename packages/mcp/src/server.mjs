@@ -18,7 +18,11 @@
 //   PRIORS_ALLOW_LOCAL     "1": pay_url may reach http://localhost and private addresses (testing only)
 //   PRIORS_SCORE_V2        where score_of reads Priors Score v2 (default https://priors.trade/api/score-v2; "off": v1 only)
 //   PRIORS_STOCK_VAULT     the stock vault's address (default: deployments/4663.v2.json `stockVault`)
-import { readFileSync } from "node:fs";
+//   PRIORS_STATE_DIR       where signed, unsettled payments are kept across restarts and shared by every session of the
+//                          wallet (default ~/.local/state/priors-mcp; "off": memory only)
+import { readFileSync, writeFileSync, mkdirSync, renameSync, openSync, closeSync, statSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -240,6 +244,70 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   // answers a batch that size with HTTP 429, which ethers retries until its 5-minute timeout (stock_assets' ~140 reads).
   const provider = deps.provider || new ethers.JsonRpcProvider(rpc, ethers.Network.from(X.robinhood.chainId), { staticNetwork: true, cacheTimeout: -1, batchMaxCount: 1 });
   const wallet = key ? new ethers.Wallet(key, provider) : null;
+  // The payments this wallet signed and has not seen settle outlive the process (a restart, or the client closing its
+  // session, starts a new one): one file per wallet under PRIORS_STATE_DIR (default ~/.local/state/priors-mcp; "off"
+  // disables it), owner-only. It holds signed authorizations, each payable only to the merchant it was sent to, never the key.
+  const stateRaw = String(env.PRIORS_STATE_DIR ?? "").trim();
+  const stateDir = /^(off|none|false|0)$/i.test(stateRaw) ? null : stateRaw || join(homedir(), ".local", "state", "priors-mcp");
+  const stateFile = wallet && stateDir ? join(stateDir, `outstanding-${wallet.address.toLowerCase()}.json`) : null;
+  // An entry is { paymentHeaders, validBefore, price (bigint), payTo }: only what this server wrote, never the merchant's
+  // own requirement object (its fields are the merchant's to choose). On disk the price is a decimal string; each entry
+  // is checked on its own, so one bad entry never costs the others. No reviver.
+  const live = (e, nowS) => e.validBefore + X.SKEW_SECONDS > nowS;
+  function entryFrom(v) {
+    if (!v || typeof v !== "object" || !v.paymentHeaders || typeof v.paymentHeaders !== "object") return null;
+    const headers = {};
+    for (const [k, x] of Object.entries(v.paymentHeaders)) { if (!/^(payment-signature|x-payment)$/i.test(k) || typeof x !== "string") return null; headers[k] = x; }
+    const validBefore = Number(v.validBefore);
+    if (Object.keys(headers).length === 0 || !Number.isSafeInteger(validBefore) || !/^\d{1,30}$/.test(String(v.price)) || !ethers.isAddress(String(v.payTo))) return null;
+    return { paymentHeaders: headers, validBefore, price: BigInt(v.price), payTo: String(v.payTo) };
+  }
+  function readState() {
+    const m = new Map();
+    try {
+      const obj = JSON.parse(readFileSync(stateFile, "utf8"));
+      const nowS = Math.floor(Date.now() / 1000);
+      for (const [k, v] of Object.entries(obj && typeof obj === "object" ? obj : {})) { const e = entryFrom(v); if (e && live(e, nowS)) m.set(k, e); }
+    } catch (_) { /* no file yet, or unreadable */ }
+    return m;
+  }
+  function writeState(m) {
+    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    const tmp = `${stateFile}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+    writeFileSync(tmp, JSON.stringify(Object.fromEntries([...m].map(([k, e]) => [k, { paymentHeaders: e.paymentHeaders, validBefore: e.validBefore, price: String(e.price), payTo: e.payTo }]))), { mode: 0o600 });
+    renameSync(tmp, stateFile);
+  }
+  // Several servers can share one wallet (two sessions, Claude Desktop and Claude Code): every change is a read-modify-write
+  // of the file under an exclusive lock file, so no server rewrites the file from its own map and erases another's entries.
+  // Best effort: a lock older than 10 s is stale, and after 2 s the write goes ahead without it. Waiting for it delays
+  // this call only (an async wait, never a blocking one): the server keeps answering meanwhile. Inside one process the
+  // lock is held only across synchronous code, so two calls of this server never contend.
+  async function locked(fn) {
+    const lock = `${stateFile}.lock`;
+    const giveUp = Date.now() + 2000;
+    let held = false;
+    for (;;) {
+      try { closeSync(openSync(lock, "wx", 0o600)); held = true; break; } catch (e) {
+        if (e?.code === "ENOENT") { try { mkdirSync(stateDir, { recursive: true, mode: 0o700 }); continue; } catch (_) { break; } }
+        if (e?.code !== "EEXIST") break;
+        try { if (Date.now() - statSync(lock).mtimeMs > 10_000) { rmSync(lock, { force: true }); continue; } } catch (_) { continue; }
+        if (Date.now() > giveUp) break; // never block a payment on the lock
+        await new Promise((res) => setTimeout(res, 10));
+      }
+    }
+    try { return fn(); } finally { if (held) rmSync(lock, { force: true }); }
+  }
+  /** Entries another server wrote since: merged in before any decision to sign. */
+  function refresh() { if (stateFile) for (const [k, e] of readState()) if (!outstanding.has(k)) outstanding.set(k, e); }
+  async function record(key, e) {
+    outstanding.set(key, e);
+    if (stateFile) { try { await locked(() => { const m = readState(); m.set(key, e); writeState(m); }); } catch (_) { /* best effort: memory still holds it */ } }
+  }
+  async function forget(key) {
+    outstanding.delete(key);
+    if (stateFile) { try { await locked(() => { const m = readState(); if (m.delete(key)) writeState(m); }); } catch (_) { /* best effort */ } }
+  }
+  refresh();
   const contracts = C.creditContracts({ runner: provider, addresses: { pool: addresses.pool, lens: addresses.lens, usdg: addresses.usdg, registry: addresses.registry, stockVault: addresses.stockVault || null } });
 
   // The chain, behind one facade (tests replace it).
@@ -342,29 +410,39 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     target.hash = ""; // a fragment never reaches the merchant: url#a and url#b are the same purchase
     const purchase = `${method} ${target.href}`;
     const now = Math.floor(Date.now() / 1000);
-    for (const [k, v] of outstanding) if (v.validBefore <= now) outstanding.delete(k);
+    // Kept for the payer's clock-skew margin past validBefore: the chain's clock may be behind this machine's.
+    for (const [k, v] of outstanding) if (!live(v, now)) outstanding.delete(k); // the file drops them on its next write
+    refresh(); // a payment another server of this wallet (another session) signed for this purchase is resent, not signed again
+    // SHORTCUT: two sessions of one wallet paying the same URL in the same instant (between this read and the other's
+    // onSigned, about one 402 round trip) can still both sign: onSigned records a payment, it cannot veto one. Ceiling:
+    // one extra payment of at most max_price_usd to the merchant the user chose, counted in each session's cap (the
+    // P-15 class, Low). Upgrade trigger: a report of it, or agents running pay_url concurrently on one wallet: reserve
+    // the purchase in the file under the lock before the 402 request, or derive the EIP-3009 nonce per purchase.
     const lines = [];
     const prior = outstanding.get(purchase);
     let r;
+    let signedPrice = null; // what the payer checked and signed, never a merchant field read again here
     if (prior) {
       // A payment for this purchase is already out and still cashable: send that same one, never a second.
       r = await X.createPayer({ signer, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}) }).resend(url, prior.paymentHeaders, init);
-      r = { ...r, requirement: prior.requirement, paid: r.response.ok ? prior.price : 0n, borrowed: 0n, signed: prior, resent: true, ...(r.response.ok ? { settlement: settlementOf(r.response) } : {}) };
+      r = { ...r, requirement: { payTo: prior.payTo }, paid: r.response.ok ? prior.price : 0n, borrowed: 0n, signed: prior, resent: true, ...(r.response.ok ? { settlement: settlementOf(r.response) } : {}) };
+      signedPrice = prior.price;
       lines.push("No new payment was signed: the same signed payment was sent again.");
     } else {
       if (session.spent + maxPrice > spendCap) throw new ToolError(`this would bring what pay_url may sign in this session to ${usd(session.spent + maxPrice)}, above ${usd(spendCap)} (PRIORS_MAX_SPEND_USD). ${usd(session.spent)} was signed so far; the user can raise the limit and restart the server.`);
       if (maxBorrow > 0n && session.borrowed + maxBorrow > borrowTotalCap) throw new ToolError(`this could bring what is borrowed in this session to ${usd(session.borrowed + maxBorrow)}, above ${usd(borrowTotalCap)} (PRIORS_MAX_BORROW_TOTAL_USD).`);
       let agentId;
       if (maxBorrow > 0n) { agentId = await resolveAgent(); await needController(agentId); }
-      const payer = X.createPayer({ signer, maxPrice, maxBorrow, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}), ...(maxBorrow > 0n ? { pool: addresses.pool, agentId } : {}) });
+      const payer = X.createPayer({ signer, maxPrice, maxBorrow, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}), ...(maxBorrow > 0n ? { pool: addresses.pool, agentId } : {}),
+        // Counted when signed, at the price the payer checked and signed (a v1 requirement's `amount` is the merchant's text).
+        onSigned: async (s) => { signedPrice = s.price; session.spent += s.price; await record(purchase, { paymentHeaders: s.paymentHeaders, validBefore: s.validBefore, price: s.price, payTo: s.requirement.payTo }); } });
       try { r = await payer.pay(url, init); } catch (e) {
         // What the error carries was done: a loan taken and a payment signed are counted, whatever failed after.
         if (e?.borrowed > 0n) session.borrowed += e.borrowed;
         if (e?.signed) {
-          const price = BigInt(e.requirement.amount ?? e.requirement.maxAmountRequired);
-          session.spent += price;
-          outstanding.set(purchase, { ...e.signed, requirement: e.requirement, price });
-          const until = when(e.signed.validBefore);
+          if (signedPrice === null) { signedPrice = maxPrice; session.spent += maxPrice; await record(purchase, { ...e.signed, price: maxPrice, payTo: e.requirement.payTo }); } // not reached: onSigned ran
+          const price = signedPrice;
+          const until = when(e.signed.validBefore + X.SKEW_SECONDS);
           throw new ToolError(`A payment of ${usd(price)} to ${e.requirement.payTo} was signed, then the request failed (${explain(e)}). The merchant may still settle it until ${until}, so do NOT call pay_url again for this URL before ${until}; check wallet_balance.${e.borrowed > 0n ? ` Borrowed ${usd(e.borrowed)}${e.loanId !== null ? ` as loan #${e.loanId}` : ""}: repay it with the repay tool.` : ""}`);
         }
         const loan = e?.borrowed > 0n ? ` ${usd(e.borrowed)} was borrowed${e.loanId !== null ? ` as loan #${e.loanId}` : ""} before it failed: repay it with the repay tool.` : "";
@@ -372,10 +450,9 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
         if (loan) throw new ToolError(`${explain(e)}.${loan}`);
         throw e;
       }
-      if (r.signed) {
-        const price = BigInt(r.requirement.amount ?? r.requirement.maxAmountRequired);
-        session.spent += price; // counted when signed: the merchant can cash it whether or not it says so
-        if (r.paid === 0n) outstanding.set(purchase, { ...r.signed, requirement: r.requirement, price });
+      if (r.signed && signedPrice === null) { // not reached: onSigned counted and recorded it
+        signedPrice = maxPrice; session.spent += maxPrice;
+        if (r.paid === 0n) await record(purchase, { ...r.signed, price: maxPrice, payTo: r.requirement.payTo });
       }
       if (r.borrowed > 0n) { session.borrowed += r.borrowed; lines.push(`Borrowed ${usd(r.borrowed)} from the Priors line for agent #${agentId}${r.loanId !== null ? ` as loan #${r.loanId}` : ""}${r.dueAt ? `, due ${when(r.dueAt)}` : ""}. Repay it with the repay tool before then.`); }
       else if (r.requirement) lines.push("Nothing was borrowed.");
@@ -383,12 +460,12 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     const status = r.timedOut ? "no answer in time" : r.transportError ? "the connection was lost" : `HTTP ${r.response.status}`;
     if (!r.requirement) lines.unshift(`No payment was asked for: ${method} ${u.href} answered ${status}. Nothing was paid.`);
     else if (r.paid > 0n) {
-      outstanding.delete(purchase);
+      await forget(purchase);
       const tx = r.settlement?.transaction;
       lines.unshift(`Paid ${usd(r.paid)}${r.x402Version ? ` (x402 v${r.x402Version})` : ""} to ${r.requirement.payTo} for ${method} ${u.href}: ${status}.${tx ? (TX_RE.test(String(tx)) ? ` Settlement tx ${tx}.` : " (The merchant's settlement id is not a transaction hash; not shown.)") : ""}`);
     } else {
-      const until = when(r.signed.validBefore);
-      lines.unshift(`A payment of ${usd(BigInt(r.requirement.amount ?? r.requirement.maxAmountRequired))} to ${r.requirement.payTo} was signed and sent (${status}), and the merchant may still settle it until ${until}, so do NOT call pay_url again for this URL before ${until}; check wallet_balance. A later call for this URL only resends this same payment.`);
+      const until = when(r.signed.validBefore + X.SKEW_SECONDS);
+      lines.unshift(`A payment of ${usd(signedPrice)} to ${r.requirement.payTo} was signed and sent (${status}), and the merchant may still settle it until ${until}, so do NOT call pay_url again for this URL before ${until}; check wallet_balance. A later call for this URL only resends this same payment.`);
     }
     const loc = r.response.status >= 300 && r.response.status < 400 ? r.response.headers.get("location") : null;
     if (loc) lines.push(`The server redirected (not followed): ${fenced(oneLine(loc, 500), "redirect target")}`);

@@ -129,7 +129,11 @@ default), `asset` (a USDG address for a fork or test token; default the pool's `
   `{pending:true}` body) the same signed payment is resent, up to 6 times, honouring `Retry-After`. If it is still
   pending, the result is `{ pending: true, paymentHeaders }`: call `payer.resend(url, paymentHeaders)` later, and do
   not call `pay()` again for the same purchase. A payer also remembers its unsettled payments: a later `pay()` for the
-  same purchase (method and URL, without the fragment) resends that one (`resent: true`) until it expires.
+  same purchase (method and URL, without the fragment) resends that one (`resent: true`) until it expires, plus
+  `SKEW_SECONDS` (60 s, exported) for a chain clock behind this machine's. That memory is per payer and per process:
+  pass `onSigned(s)` to `createPayer` to record each payment before it leaves (`s.paymentHeaders`, `s.validBefore`,
+  `s.price`, `s.purchase`), so a new process can resend it instead of signing again; its failure never stops the
+  payment. `@priors/mcp` does this with a state file.
 - **Legacy v1** 402 bodies (`network: "robinhood"`, `X-PAYMENT`) are paid the way `sdk/float.mjs` pays them.
 - **No redirects.** Requests go out with `redirect: "manual"` unless you pass another `redirect` in `init`: a signed
   payment never travels to a host you did not name, and a 3xx comes back as the answer.
