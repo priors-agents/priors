@@ -207,6 +207,26 @@ await check("short of USDG with maxBorrow 0: refused before any transaction, no 
     s.server.close();
   }
 });
+await check("a borrow whose answer is lost throws BORROW_UNCONFIRMED carrying the amount, and nothing is signed; a mined revert borrowed nothing (GHSA-v9xj)", async () => {
+  const s = await stub(0n);
+  try {
+    const signer = wallet.connect(new ethers.JsonRpcProvider(s.url, 4663, { staticNetwork: true }));
+    let signed = 0;
+    const fetchImpl = async (_u, init = {}) => { if (new Headers(init.headers || {}).get("X-PAYMENT")) { signed++; return new Response("data", { status: 200 }); } return json402({ accepts: [requirement()] }); };
+    // a pool whose borrow is sent (it may have mined) and then `wait` decides what came back
+    const pool = (wait) => ({ getParams: async () => ({ minLoan: 1_000000n, maxLoan: 50_000000n, minTerm: 86400n, maxTerm: 30n * 86400n }), quoteFee: async () => [10_000n], interface: new ethers.Interface([]), borrow: async () => ({ hash: "0x" + "77".repeat(32), wait }) });
+    const o = (p) => ({ signer, fetchImpl, asset: USDG_MAINNET, pool: p, agentId: 1, maxBorrow: 5_000000n });
+    const lost = await pay("https://m.example/x", o(pool(async () => { throw Object.assign(new Error("eth_getTransactionReceipt: socket hang up"), { code: "NETWORK_ERROR" }); }))).then(() => null, (e) => e);
+    assert.ok(lost instanceof FloatError && lost.code === "BORROW_UNCONFIRMED", `got ${lost?.code}: ${lost?.message}`);
+    assert.equal(lost.borrowed, 1_000000n); assert.equal(lost.loanId, null); assert.equal(lost.dueAt, null);
+    assert.equal(lost.unconfirmed, true); assert.equal(lost.hash, "0x" + "77".repeat(32));
+    const reverted = await pay("https://m.example/x", o(pool(async () => { throw Object.assign(new Error("transaction execution reverted"), { code: "CALL_EXCEPTION", receipt: { status: 0 } }); }))).then(() => null, (e) => e);
+    assert.equal(reverted?.code, "CALL_EXCEPTION"); assert.equal(reverted.borrowed, undefined, "a mined revert borrowed nothing");
+    assert.equal(signed, 0, "nothing was signed or sent");
+  } finally {
+    s.server.close();
+  }
+});
 await check("the facilitator URL the docs name is the one the SDK exports", () => {
   assert.equal(FACILITATOR_URL, "https://facilitator.priors.trade");
 });

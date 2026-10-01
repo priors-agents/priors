@@ -26,6 +26,9 @@ export interface LoanView { loanId: bigint; agentId: bigint; sponsorId: bigint; 
 /** The stock collateral behind a stock line. */
 export interface StockCollateral {
   token: string; amount: bigint;
+  /** Only after an issuer burn left the vault short of the token: what the vault would pay this position now (less
+   *  than `amount`); `value` prices it. */
+  payout?: bigint;
   /** What the vault prices the tokens at, USDG base units; null while it will not price them for new loans. */
   value: bigint | null;
   ltvBps: bigint;
@@ -53,6 +56,8 @@ export interface CreditStatus {
 }
 export declare function creditStatus(c: CreditContracts, agentId: bigint | number | string): Promise<CreditStatus>;
 export declare function quoteBorrow(c: CreditContracts, agentId: bigint | number | string, amount: bigint, termSeconds: bigint | number): Promise<{ amount: bigint; term: bigint; fee: bigint; due: bigint }>;
+/** Throws PayError BORROW_UNCONFIRMED (`borrowed`, `unconfirmed: true`, `hash`) when the borrow was sent and its answer
+ *  was lost: it may have opened a loan. borrowGap does the same. */
 export declare function borrowLine(c: CreditContracts, signer: any, agentId: bigint | number | string, amount: bigint, termSeconds: bigint | number): Promise<{ hash: string; loanId: bigint | null; principal: bigint; fee: bigint; dueAt: number | null }>;
 export declare function repayLoan(c: CreditContracts, signer: any, loanId: bigint | number | string): Promise<{ hash: string; loanId: bigint; agentId: bigint; paid: bigint }>;
 export declare function balances(c: CreditContracts, provider: any, address: string): Promise<{ address: string; usdg: bigint; native: bigint }>;

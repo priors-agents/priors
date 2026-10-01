@@ -120,8 +120,8 @@ export interface PayResult {
   paymentHeaders?: Record<string, string>;
   /** Once a payment is signed: its headers and validBefore (unix seconds), whatever the outcome. */
   signed?: { paymentHeaders: Record<string, string>; validBefore: number };
-  /** true: this payer already had an unsettled payment for the purchase (method + URL without its fragment) and sent
-   *  that one again instead of signing a second. */
+  /** true: this payer already had an unsettled payment for the purchase (the method, the URL without its fragment, and
+   *  the body: see purchaseKey) and sent that one again instead of signing a second. */
   resent?: boolean;
 }
 
@@ -146,6 +146,9 @@ export declare const DEFAULT_TIMEOUT_MS: number;
 export declare const MAX_BODY_BYTES: number;
 /** Seconds an unsettled payment is kept past its validBefore, for a chain clock behind the payer's: 60. */
 export declare const SKEW_SECONDS: number;
+/** A purchase's identity: "METHOD url" (the URL without its fragment), plus " body:<sha256>" when there is a body (a JSON
+ *  body by its value, a form by its fields, any other body by its bytes). The key `onSigned` receives as `purchase`. */
+export declare function purchaseKey(req: Request): Promise<string>;
 /** A response body as text, at most `max` bytes (default MAX_BODY_BYTES); the rest is cancelled, not read. `cut` says it was. */
 export declare function readCapped(response: Response | null | undefined, max?: number): Promise<{ text: string; cut: boolean }>;
 
@@ -160,8 +163,16 @@ export declare function pickV1Requirement(accepts: unknown, asset?: string): Rec
 export declare function signPaymentV1(signer: any, req: Record<string, any>, opts?: { now?: number; chainId?: number; maxValiditySeconds?: number }): Promise<string>;
 
 export declare class PayError extends Error {
-  /** PRICE_ABOVE_MAX_PRICE, PRICE_ABOVE_MAX_BORROW, MIN_LOAN_ABOVE_MAX_BORROW, ABOVE_MAX_LOAN, TERM_OUT_OF_RANGE, FEE_TOO_HIGH, NO_POOL, NO_SIGNER, NO_PROVIDER, BAD_402, NO_USDG_REQUIREMENT, BORROW_WOULD_REVERT, ... */
+  /** PRICE_ABOVE_MAX_PRICE, PRICE_ABOVE_MAX_BORROW, MIN_LOAN_ABOVE_MAX_BORROW, ABOVE_MAX_LOAN, TERM_OUT_OF_RANGE, FEE_TOO_HIGH, NO_POOL, NO_SIGNER, NO_PROVIDER, BAD_402, NO_USDG_REQUIREMENT, BORROW_WOULD_REVERT, BORROW_UNCONFIRMED, ... */
   code: string;
+  /** Set on BORROW_UNCONFIRMED (the amount sent to borrow: it may have opened a loan), and on any error thrown after a loan. */
+  borrowed?: bigint;
+  loanId?: bigint | null;
+  dueAt?: bigint | null;
+  /** BORROW_UNCONFIRMED: a borrow was sent and its answer (the broadcast's or the receipt's) was lost; check the agent's loans and repay. */
+  unconfirmed?: boolean;
+  /** BORROW_UNCONFIRMED: the borrow's transaction hash, when it came back before the answer was lost. */
+  hash?: string | null;
   constructor(code: string, message: string, details?: Record<string, unknown>);
 }
 export declare function settleLoans(o: { signer: any; pool: string | any; agentId: bigint | number | string }): Promise<{ repaid: bigint[]; open: bigint[] }>;

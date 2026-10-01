@@ -199,6 +199,9 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     uint256 public bonusFeeStep; // USDG of fees paid under trusted roots per step of bonus
     uint16 public bonusBpsPerStep; // loan-to-value added per step
     uint16 public maxBonusBps; // the most the record adds
+    // appended after the 2026-09-30 layout: a close requested with a loan open keeps its epoch refund until the last
+    // repayment ends the position (onRelease); written by the first deferred request, cleared by any eviction
+    mapping(uint256 => bool) internal closeRefund;
 
     event Adopted(uint256 indexed agentId);
     event Funded(address indexed from, uint256 amount);
@@ -432,6 +435,8 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
 
     /// @notice Close a position: the line freezes in the pool now; with no loan open every token goes back to the
     ///         depositor in this call, otherwise in the transaction that repays the last loan (a default seizes).
+    ///         Either way the line goes back to this epoch's budget, unless the owner evicts the position too
+    ///         (`freezePosition`, before or after) or it is seized.
     ///         The depositor or the agent's controller may call it; anyone may once the agent has changed hands.
     function close(uint256 id) external nonReentrant {
         Position storage p = positions[id];
@@ -443,7 +448,8 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     }
 
     /// @notice The owner's lever: close a position exactly as its depositor could. It never seizes. The line stays
-    ///         counted in this epoch's budget (an evicted position cannot reopen at once).
+    ///         counted in this epoch's budget, even if the depositor closes it too (an evicted position cannot reopen
+    ///         at once).
     function freezePosition(uint256 id) external onlyOwner nonReentrant {
         Position storage p = positions[id];
         if (p.status != Status.Open) revert NoPosition(id);
@@ -501,11 +507,15 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
         if (a.defaulted) revert AgentDefaulted(id); // settle() seizes it
         if (a.sponsor == agentId) {
             pool.freeze(id, true); // our own onRelease callback is skipped: this call reconciles below
-            if (!p.closing) {
+            bool first = !p.closing;
+            if (first) {
                 p.closing = true;
                 emit CloseRequested(id, msg.sender);
             }
-            if (a.activeLoans != 0) return; // the last repayment closes it (onRelease), or settle()
+            if (a.activeLoans != 0) {
+                closeRefund[id] = refund && (first || closeRefund[id]); // freezePosition's "no refund" wins
+                return; // the last repayment closes it (onRelease), or settle()
+            }
         }
         _end(id, p, false, refund);
     }
@@ -570,7 +580,8 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     }
 
     /// @notice Part of a line came back. If the sponsorship ended (leave, handoff, a frozen line's last loan), the
-    ///         position closes, every token back, unless the agent is defaulted: then the collateral is seized.
+    ///         position closes, every token back, unless the agent is defaulted: then the collateral is seized. Closed,
+    ///         its line goes back to this epoch's budget, unless the owner evicted the position (`freezePosition`).
     function onRelease(uint256 rootId, uint256 id, uint256, uint8) external {
         if (!_hookCall(rootId)) return;
         Position storage p = positions[id];
@@ -578,7 +589,7 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
         CreditPoolV2.Agent memory a = pool.getAgent(id);
         if (a.sponsor == rootId) return; // part of the line only; the position stays open
         _enter();
-        _end(id, p, a.defaulted, !a.defaulted && !p.closing);
+        _end(id, p, a.defaulted, !a.defaulted && (!p.closing || closeRefund[id]));
         LOCK.asBoolean().tstore(false);
     }
 

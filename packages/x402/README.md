@@ -119,7 +119,10 @@ default), `asset` (a USDG address for a fork or test token; default the pool's `
 - **`maxPrice`** (default $0.10) is checked before anything is read, signed or borrowed.
 - **Borrowing** happens only when the wallet is short, a `pool` and `agentId` are given, and the price is within
   `maxBorrow` (default 0: never). It draws `max(shortfall, pool minimum loan)`, refuses above `maxBorrow` or the
-  pool's `maxLoan`, caps the fee at the pool's quote (or `maxFee`), and simulates the borrow first.
+  pool's `maxLoan`, caps the fee at the pool's quote (or `maxFee`), and simulates the borrow first. A borrow that was
+  sent and whose answer was lost (the broadcast's or the receipt's) may have mined: it throws `BORROW_UNCONFIRMED` with
+  `borrowed` set, `loanId: null`, `unconfirmed: true` and the tx `hash` when known. Count it, check the agent's loans,
+  and repay before the due date.
 - **Term**: 7 days by default, clamped into the pool's range; an explicit `termSeconds` above the pool's maximum is
   refused. The result's `dueAt` is when the loan is due; three days later anyone can mark it defaulted, and the
   agent's record is burnt.
@@ -129,14 +132,16 @@ default), `asset` (a USDG address for a fork or test token; default the pool's `
   `{pending:true}` body) the same signed payment is resent, up to 6 times, honouring `Retry-After`. If it is still
   pending, the result is `{ pending: true, paymentHeaders }`: call `payer.resend(url, paymentHeaders)` later, and do
   not call `pay()` again for the same purchase. A payer also remembers its unsettled payments: a later `pay()` for the
-  same purchase (method and URL, without the fragment) resends that one (`resent: true`) until it expires, plus
+  same purchase (the method, the URL without its fragment, and the body: a JSON body by its value, so key order and
+  whitespace do not count; `purchaseKey(request)` gives it) resends that one (`resent: true`) until it expires, plus
   `SKEW_SECONDS` (60 s, exported) for a chain clock behind this machine's. That memory is per payer and per process:
   pass `onSigned(s)` to `createPayer` to record each payment before it leaves (`s.paymentHeaders`, `s.validBefore`,
   `s.price`, `s.purchase`), so a new process can resend it instead of signing again; its failure never stops the
   payment. `@priors/mcp` does this with a state file.
 - **Legacy v1** 402 bodies (`network: "robinhood"`, `X-PAYMENT`) are paid the way `sdk/float.mjs` pays them.
-- **No redirects.** Requests go out with `redirect: "manual"` unless you pass another `redirect` in `init`: a signed
-  payment never travels to a host you did not name, and a 3xx comes back as the answer.
+- **No redirects.** Requests go out with `redirect: "manual"` unless you pass another `redirect` in `init` (`redirect:
+  undefined` counts as none): a signed payment never travels to a host you did not name, and a 3xx comes back as the
+  answer.
 - **Bounded.** Bodies are read up to 256 KB (`readCapped`). `timeoutMs` (60 s by default; 0 = none) bounds each request and `signal` the whole
   call; a timeout once the payment is out returns `{ pending: true, timedOut: true, paymentHeaders }`, and a dropped
   connection `{ pending: true, transportError: true, error, paymentHeaders }`: never an error once the payment may be
@@ -147,8 +152,9 @@ default), `asset` (a USDG address for a fork or test token; default the pool's `
 
 Refusals throw a `PayError` with a `code`: `PRICE_ABOVE_MAX_PRICE`, `PRICE_ABOVE_MAX_BORROW`,
 `MIN_LOAN_ABOVE_MAX_BORROW`, `ABOVE_MAX_LOAN`, `TERM_OUT_OF_RANGE`, `FEE_TOO_HIGH`, `NO_POOL`, `NO_USDG_REQUIREMENT`,
-`BAD_402`, `BORROW_WOULD_REVERT`, `NO_SIGNER`, `NO_PROVIDER`, `NO_FETCH`, `UNSUPPORTED_TRANSFER_METHOD` (a requirement
-that is not EIP-3009), `NOT_CONTROLLER` (`repayLoan`, `settleLoans`). The credit helpers add
+`BAD_402`, `BORROW_WOULD_REVERT`, `BORROW_UNCONFIRMED` (not a refusal: the borrow was sent, and may have opened a
+loan), `NO_SIGNER`, `NO_PROVIDER`, `NO_FETCH`, `UNSUPPORTED_TRANSFER_METHOD` (a requirement that is not EIP-3009),
+`NOT_CONTROLLER` (`repayLoan`, `settleLoans`). The credit helpers add
 `LOAN_SIZE_OUT_OF_RANGE` (`quoteBorrow`, `borrowLine`), `LOAN_NOT_ACTIVE`, `INSUFFICIENT_USDG`, `REPAY_WOULD_REVERT`
 (`repayLoan`) and `NO_STOCK_VAULT` (`stockPosition`, `stockAssets`).
 

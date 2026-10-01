@@ -3,13 +3,14 @@
 // stock line; @priors/x402 and @priors/mcp read the vault.
 //   node scripts/test-stocks.mjs
 import assert from "node:assert/strict";
+import { ethers } from "ethers";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { weightsFor, WEIGHTS_BY_VERSION, DEFAULT_WEIGHTS } from "../sdk/score-v2.mjs";
 import { scoreAll } from "../sdk/score-v2-inputs.mjs";
-import { STOCK_ASSETS, borrowable, collateralOf } from "../sdk/stock-vault.mjs";
+import { STOCK_VAULT_ABI, STOCK_ASSETS, borrowable, collateralOf } from "../sdk/stock-vault.mjs";
 import * as credit from "../packages/x402/src/credit.mjs";
-import { createPriorsMcpServer } from "../packages/mcp/src/server.mjs";
+import { createPriorsMcpServer, collateralText } from "../packages/mcp/src/server.mjs";
 
 let n = 0;
 const ok = (m) => { n++; console.log("  ok  ", m); };
@@ -84,6 +85,51 @@ const COL = { token: SPY.token, symbol: "SPY", decimals: 18, amount: 5n * 10n **
   const none = await credit.creditStatus(c(9000n, null), 100);
   assert.equal(none.collateral, null, "without a vault configured nothing is read");
   ok("@priors/x402: creditStatus carries a stock line's collateral (LTV from params when the vault has no per-token LTV) and min(available, borrowRoom)");
+
+  // After an issuer burn from the vault (it holds less of a token than it owes), a position is paid its share,
+  // amount x balance / held, not what was deposited: every surface values that, and says so (our audit, 2026-09-30).
+  const DEP = 2n * 10n ** 17n, HELD = 4n * 10n ** 17n, BAL = 16n * 10n ** 16n, PAID = 8n * 10n ** 16n; // 0.2 deposited, 0.08 paid
+  const VAULT_AT = "0x0000000000000000000000000000000000005700";
+  const erc20 = new ethers.Interface(["function balanceOf(address) view returns (uint256)"]);
+  const px = (amt) => (amt * 771_212_660n) / 10n ** 18n; // $771.21 a share, USDG base units
+  const pos = { depositor: "0x0000000000000000000000000000000000000001", owner: "0x0000000000000000000000000000000000000001", token: SPY.token, openedAt: 1n, closing: false, status: 1n, line: 19_280_316n, amount: DEP };
+  const fakeVault = (bal) => ({
+    target: VAULT_AT, runner: { call: async () => erc20.encodeFunctionResult("balanceOf", [bal]) },
+    agentId: async () => 9000n, getPosition: async () => pos, held: async () => HELD, valueOf: async (_t, amt) => [true, px(amt)],
+    borrowRoom: async () => 1_000_000n, lendStatus: async () => 0n, ltvOf: async () => 5000n, params: async () => ({ ltvBps: 5000n }),
+  });
+  const { stockPosition: sdkPosition, stockPositions: sdkPositions } = await import("../sdk/stock-vault.mjs");
+  const short = await sdkPosition(fakeVault(BAL), 100);
+  assert.equal(short.amount, DEP, "amount stays what was deposited");
+  assert.equal(short.payout, PAID, "payout: what the vault would pay it now");
+  assert.equal(short.value, px(PAID), "valued on what it would be paid");
+  const whole = await sdkPosition(fakeVault(HELD), 100);
+  assert.equal(whole.payout, undefined, "no shortfall: no payout field, nothing changes");
+  assert.equal(whole.value, px(DEP));
+  // many positions in one Multicall3-shaped read (here one by one, on a fake provider)
+  const viface = new ethers.Interface(STOCK_VAULT_ABI);
+  const fakeProvider = (bal) => ({
+    call: async (tx) => {
+      if (tx.to.toLowerCase() === SPY.token.toLowerCase()) return erc20.encodeFunctionResult("balanceOf", [bal]);
+      const f = viface.getFunction(tx.data.slice(0, 10)); const args = viface.decodeFunctionData(f, tx.data);
+      const out = { getPosition: [pos], borrowRoom: [1_000_000n], held: [HELD], valueOf: f.name === "valueOf" ? [true, px(args[1])] : null, lendStatus: [0n], ltvOf: [5000n], params: [5000n, 250_000_000n, 1_000_000_000n, 604800n] }[f.name];
+      return viface.encodeFunctionResult(f, out);
+    },
+  });
+  const many = await sdkPositions(fakeProvider(BAL), VAULT_AT, [100], { multicall: null });
+  assert.equal(many["100"].payout, PAID); assert.equal(many["100"].value, px(PAID));
+  assert.equal((await sdkPositions(fakeProvider(HELD), VAULT_AT, [100], { multicall: null }))["100"].payout, undefined);
+  assert.equal(collateralOf(short).payout, PAID, "the collateral block carries the payout");
+  assert.equal(collateralOf(whole).payout, undefined);
+  ok("SDK: after an issuer burn, stockPosition and stockPositions value what the position would be paid and carry it as `payout`; no shortfall, no change");
+
+  const xs = await credit.stockPosition({ stockVault: fakeVault(BAL) }, 100, [{ symbol: "SPY", token: SPY.token, decimals: 18 }]);
+  assert.equal(xs.payout, PAID); assert.equal(xs.value, px(PAID)); assert.equal(xs.amount, DEP);
+  const xc = await credit.creditStatus(c(9000n, fakeVault(BAL)), 100);
+  assert.equal(xc.collateral.payout, PAID); assert.equal(xc.collateral.value, px(PAID));
+  assert.equal((await credit.creditStatus(c(9000n, fakeVault(HELD)), 100)).collateral.payout, undefined);
+  assert.ok(/Backed by 0\.08 SPY, of 0\.2 deposited: an issuer burn left the vault short/.test(collateralText(xs)), collateralText(xs));
+  ok("@priors/x402 and @priors/mcp: stockPosition and creditStatus value the payout after an issuer burn, and the text says so");
 }
 
 // ---------------------------------------------------------------------------------------------------------------

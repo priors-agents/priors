@@ -94,7 +94,9 @@ export async function signPayment(signer, req, { now = Math.floor(Date.now() / 1
  *   Once a payment is signed, `paymentHeader` and `validBefore` are always returned (and carried by any error thrown
  *   after it, with the loan): until validBefore the merchant can still cash it, so a caller that retries must resend
  *   `paymentHeader` (see `resend`), never call pay() again for the same purchase, which would sign a second payment.
- *   `pending: true` (a "pending" answer, a timeout or a lost connection) means it may still land.
+ *   `pending: true` (a "pending" answer, a timeout or a lost connection) means it may still land. A borrow whose answer
+ *   was lost throws `BORROW_UNCONFIRMED` with `borrowed` (and `unconfirmed: true`, `hash`): the loan may exist, so check
+ *   the agent's loans and repay it.
  */
 export async function pay(url, o = {}) {
   if (!o.signer) throw new FloatError("NO_SIGNER", "pay: a signer is required");
@@ -148,7 +150,15 @@ async function payOne(url, { signer, pool, agentId, maxBorrow = 0n, maxPrice = D
     if (maxFee !== undefined && fee > BigInt(maxFee)) throw new FloatError("FEE_TOO_HIGH", `pay: loan fee ${fee} is above maxFee ${maxFee}`);
     // to = the agent itself: EIP-3009 needs the payer to hold the funds, so the draw lands in the agent's wallet and
     // is spent by the signed authorization below. (A borrow-and-pay router would send it straight to payTo.)
-    const rc = await (await poolC.borrow(agentId, amount, term, me, fee)).wait();
+    // A lost answer (the broadcast's or the receipt's) may hide a loan that mined: BORROW_UNCONFIRMED carries the amount
+    // (GHSA-v9xj). Only CALL_EXCEPTION (a refused estimate, or a mined revert) and INSUFFICIENT_FUNDS borrowed nothing.
+    let tx, rc;
+    try { tx = await poolC.borrow(agentId, amount, term, me, fee); rc = await tx.wait(); } catch (e) {
+      if (e?.code === "CALL_EXCEPTION" || e?.code === "INSUFFICIENT_FUNDS") throw e;
+      const hash = typeof tx?.hash === "string" ? tx.hash : null;
+      throw new FloatError("BORROW_UNCONFIRMED", `pay: a borrow of ${amount} was sent${hash ? ` (tx ${hash})` : ""} and its answer was lost (${e?.shortMessage || e?.message || String(e)}): it may have opened a loan`,
+        { borrowed: amount, loanId: null, dueAt: null, unconfirmed: true, hash, cause: e });
+    }
     const ev = rc.logs.map((l) => { try { return poolC.interface.parseLog(l); } catch (_) { return null; } }).find((e) => e && e.name === "Borrowed");
     loanId = ev ? ev.args.loanId : null;
     dueAt = ev ? ev.args.dueAt : null; // when to have settleLoans() run by, so the line is never defaulted

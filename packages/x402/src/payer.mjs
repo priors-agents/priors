@@ -170,8 +170,9 @@ function settlementOf(response) {
 }
 
 // A redirect is never followed by default: a signed payment header must not travel to a host the caller did not
-// name, and a 3xx is handed back as the answer (its Location is the caller's to judge).
-const asRequest = (input, init) => new Request(input, { redirect: "manual", ...(init || {}) });
+// name, and a 3xx is handed back as the answer (its Location is the caller's to judge). `init.redirect ?? "manual"`,
+// not a spread default: `{ redirect: undefined }` must not turn following back on (GHSA-rg6j).
+const asRequest = (input, init) => new Request(input, { ...(init || {}), redirect: init?.redirect ?? "manual" });
 
 /**
  * fetchImpl with a per-request timeout (`timeoutMs`, 0 = none) and an overall `signal`, both optional.
@@ -221,11 +222,42 @@ export async function resend(input, paymentHeaders, { init, fetchImpl = globalTh
   return { response, pending, ...(pending ? { paymentHeaders } : {}) };
 }
 
-/** A purchase's identity: the method and the URL without its fragment (a fragment never reaches the merchant). */
-function purchaseKey(req) {
+/** JSON with sorted keys and no whitespace: two bodies that are the same JSON value are the same purchase. */
+function canonicalJson(v) {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;
+  if (v && typeof v === "object") return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(v[k])}`).join(",")}}`;
+  return JSON.stringify(v);
+}
+/** Every number in a JSON text is one a double holds exactly (at most 15 significant digits, in range): a longer one,
+ *  such as a 20-digit id, would read the same as its neighbours, so such a body is keyed by its bytes instead. */
+const exactNumbers = (text) => (text.replace(/"(?:[^"\\]|\\.)*"/g, "").match(/\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g) || []).every((n) => {
+  const digits = n.split(/[eE]/)[0].replace(".", "").replace(/^0+/, "").replace(/0+$/, "");
+  const x = Math.abs(Number(n));
+  return digits === "" || (digits.length <= 15 && x >= 1e-300 && x < Infinity);
+});
+/**
+ * A purchase's identity: the method, the URL without its fragment (a fragment never reaches the merchant), and the
+ * body (GHSA-xqp9), as a SHA-256: a JSON body by its value (key order and whitespace do not make a second purchase), a
+ * form by its fields (not the boundary it was sent with), any other body by its bytes. No body: method and URL only.
+ * @param {Request} req
+ * @returns {Promise<string>}
+ */
+export async function purchaseKey(req) {
   const u = new URL(req.url);
   u.hash = "";
-  return `${req.method} ${u.href}`;
+  const head = `${req.method} ${u.href}`;
+  const bytes = req.body ? new Uint8Array(await req.clone().arrayBuffer()) : new Uint8Array(0);
+  if (bytes.length === 0) return head;
+  const type = req.headers.get("content-type") || "";
+  let canon = null;
+  if (/json/i.test(type)) {
+    try { const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); if (exactNumbers(text)) canon = "json:" + canonicalJson(JSON.parse(text)); } catch (_) { /* not JSON: by its bytes */ }
+  } else {
+    const boundary = /^multipart\/form-data;.*boundary="?([^";]+)"?/i.exec(type)?.[1];
+    if (boundary) canon = "form:" + Buffer.from(bytes).toString("latin1").split(boundary).join("");
+  }
+  const digest = ethers.sha256(canon !== null ? ethers.toUtf8Bytes(canon) : ethers.concat([ethers.toUtf8Bytes("raw:"), bytes]));
+  return `${head} body:${digest.slice(2)}`;
 }
 /** Seconds an unsettled authorization is kept past its validBefore, for clock skew between the payer and the chain. */
 export const SKEW_SECONDS = 60;
@@ -261,7 +293,7 @@ export function createPayer(opts = {}) {
 
   async function payOne(input, init) {
     const base = asRequest(input, init);
-    const key = purchaseKey(base);
+    const key = await purchaseKey(base);
     const nowS = Math.floor(Date.now() / 1000);
     for (const [k, v] of unsettled) if (v.validBefore + SKEW_SECONDS <= nowS) unsettled.delete(k);
     const out = unsettled.get(key);

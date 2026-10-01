@@ -25,6 +25,7 @@ export const STOCK_VAULT_ABI = [
   "function recordBonusBps(uint256 id) view returns (uint256)",
   "function openLinesOf(address token) view returns (uint256)",
   "function borrowRoom(uint256 id) view returns (uint256)",
+  "function held(address token) view returns (uint256)",
   "function epochRoom() view returns (uint256)",
   `function getPosition(uint256 id) view returns (${POSITION_T})`,
   `function open(uint256 id, address token, uint256 amount, ${CONSENT_T} c, bytes sig) returns (uint256)`,
@@ -55,6 +56,26 @@ export const STOCK_ASSETS = Object.freeze(STOCKS.assets.map((a) => Object.freeze
 const lc = (a) => String(a || "").toLowerCase();
 const vaultIface = new ethers.Interface(STOCK_VAULT_ABI);
 const feedIface = new ethers.Interface(FEED_ABI);
+const BALANCE_ABI = ["function balanceOf(address) view returns (uint256)"];
+const balanceIface = new ethers.Interface(BALANCE_ABI);
+
+/**
+ * What the vault would pay a position of `amount` now (the vault's `_payout`): all of it while the vault holds what it
+ * owes of the token (`held`), else its share, amount x balance / held, after an issuer burn from the vault.
+ */
+export function payoutOf(amount, held, balance) {
+  const a = BigInt(amount), h = BigInt(held), b = BigInt(balance);
+  return h === 0n || b >= h ? a : (a * b) / h;
+}
+
+/** The payout of position `p` (`{ token, amount }`) read from the chain, or `p.amount` when it cannot be read. */
+async function payoutRead(vault, p) {
+  try {
+    const at = vault.target ?? (await vault.getAddress());
+    const [held, balance] = await Promise.all([vault.held(p.token), new ethers.Contract(p.token, BALANCE_ABI, vault.runner).balanceOf(at)]);
+    return payoutOf(p.amount, held, balance);
+  } catch (_) { return BigInt(p.amount); }
+}
 
 /** The stock vault as a contract on `runner`; a string address or a Contract. */
 export const stockVaultContract = (vault, runner) => (typeof vault === "string" ? new ethers.Contract(vault, STOCK_VAULT_ABI, runner) : vault);
@@ -97,7 +118,8 @@ export async function ltvOf(vault, token, agentId = 0n) {
 /**
  * Agent `agentId`'s stock position, or null when it has none. Amounts are bigints: `amount` in the token's own units,
  * `value`, `line` and `borrowRoom` in USDG base units (6 decimals). `value` is null while the vault will not price the
- * token for new credit (a stale price, a paused oracle or a lending hold: `hold`).
+ * token for new credit (a stale price, a paused oracle or a lending hold: `hold`). After an issuer burn from the vault
+ * the position carries `payout`, what the vault would pay it now (less than `amount`), and `value` prices that.
  */
 export async function stockPosition(vault, agentId, { assets = STOCK_ASSETS } = {}) {
   const p = await vault.getPosition(BigInt(agentId));
@@ -105,12 +127,13 @@ export async function stockPosition(vault, agentId, { assets = STOCK_ASSETS } = 
   if (status === 0) return null;
   const token = ethers.getAddress(p.token);
   const asset = assets.find((a) => lc(a.token) === lc(token)) || null;
+  const payout = await payoutRead(vault, { token, amount: p.amount });
   const [[ok, value], borrowRoom, hold, ltvBps] = await Promise.all([
-    vaultValueOf(vault, token, p.amount), vault.borrowRoom(BigInt(agentId)), vault.lendStatus(token).then(Number).catch(() => 0), ltvOf(vault, token, agentId),
+    vaultValueOf(vault, token, payout), vault.borrowRoom(BigInt(agentId)), vault.lendStatus(token).then(Number).catch(() => 0), ltvOf(vault, token, agentId),
   ]);
   return {
     agentId: BigInt(agentId), depositor: p.depositor, owner: p.owner, token, symbol: asset ? asset.symbol : null,
-    decimals: asset ? asset.decimals : null, amount: p.amount, value: ok ? value : null, ltvBps,
+    decimals: asset ? asset.decimals : null, amount: p.amount, ...(payout < BigInt(p.amount) ? { payout } : {}), value: ok ? value : null, ltvBps,
     line: BigInt(p.line), borrowRoom: BigInt(borrowRoom), hold, holdReason: HOLD_REASONS[hold] || (hold ? `hold ${hold}` : ""),
     status, statusName: POSITION_STATUS[status] || `status ${status}`, closing: p.closing, openedAt: Number(p.openedAt),
   };
@@ -119,7 +142,7 @@ export async function stockPosition(vault, agentId, { assets = STOCK_ASSETS } = 
 /** The collateral block of a credit report (creditStatus, /v1/report, the MCP): what backs a stock line. */
 export function collateralOf(pos) {
   if (!pos) return null;
-  return { token: pos.token, symbol: pos.symbol, decimals: pos.decimals, amount: pos.amount, value: pos.value, ltvBps: pos.ltvBps, borrowRoom: pos.borrowRoom, hold: pos.hold, holdReason: pos.holdReason, status: pos.statusName, closing: pos.closing };
+  return { token: pos.token, symbol: pos.symbol, decimals: pos.decimals, amount: pos.amount, ...(pos.payout !== undefined ? { payout: pos.payout } : {}), value: pos.value, ltvBps: pos.ltvBps, borrowRoom: pos.borrowRoom, hold: pos.hold, holdReason: pos.holdReason, status: pos.statusName, closing: pos.closing };
 }
 
 /** What a line can draw: the pool's `available`, capped by the stock vault's `borrowRoom` for a stock line. */
@@ -180,16 +203,27 @@ export async function stockPositions(provider, vaultAddress, agentIds, { assets 
     { target: v, iface: vaultIface, fn: "valueOf", args: [p.token, p.amount] },
     { target: v, iface: vaultIface, fn: "lendStatus", args: [p.token] },
     { target: v, iface: vaultIface, fn: "ltvOf", args: [id, p.token] }, // with the agent's record bonus
+    { target: v, iface: vaultIface, fn: "held", args: [p.token] },
+    { target: p.token, iface: balanceIface, fn: "balanceOf", args: [v] },
   ]), { multicall, blockTag });
+  // after an issuer burn from the vault a position is paid its share: price that (one more round, only then)
+  const payouts = open.map(({ p }, i) => {
+    const [, , , held, bal] = second.slice(i * 5, i * 5 + 5);
+    return held.ok && bal.ok ? payoutOf(p.amount, held.value, bal.value) : BigInt(p.amount);
+  });
+  const shortIdx = open.map((_, i) => i).filter((i) => payouts[i] < BigInt(open[i].p.amount));
+  const repriced = shortIdx.length ? await readMany(provider, shortIdx.map((i) => ({ target: v, iface: vaultIface, fn: "valueOf", args: [open[i].p.token, payouts[i]] })), { multicall, blockTag }) : [];
   const out = Object.fromEntries(ids.map((id) => [String(id), null]));
   open.forEach(({ id, p, room }, i) => {
-    const [val, hold, ltv] = second.slice(i * 3, i * 3 + 3);
+    const [first, hold, ltv] = second.slice(i * 5, i * 5 + 3);
+    const k = shortIdx.indexOf(i);
+    const val = k < 0 ? first : repriced[k];
     const token = ethers.getAddress(p.token);
     const asset = assets.find((a) => lc(a.token) === lc(token)) || null;
     const status = Number(p.status), h = hold.ok ? Number(hold.value) : 0;
     out[String(id)] = {
       agentId: id, depositor: p.depositor, owner: p.owner, token, symbol: asset ? asset.symbol : null, decimals: asset ? asset.decimals : null,
-      amount: p.amount, value: val.ok && val.value[0] ? val.value[1] : null, ltvBps: ltv.ok ? BigInt(ltv.value) : ltvDefault,
+      amount: p.amount, ...(k < 0 ? {} : { payout: payouts[i] }), value: val.ok && val.value[0] ? val.value[1] : null, ltvBps: ltv.ok ? BigInt(ltv.value) : ltvDefault,
       line: BigInt(p.line), borrowRoom: room.ok ? BigInt(room.value) : 0n, hold: h, holdReason: HOLD_REASONS[h] || (h ? `hold ${h}` : ""),
       status, statusName: POSITION_STATUS[status] || `status ${status}`, closing: p.closing, openedAt: Number(p.openedAt),
     };

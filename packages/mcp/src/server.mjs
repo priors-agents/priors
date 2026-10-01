@@ -128,7 +128,11 @@ const when = (t) => new Date(Number(t) * 1000).toISOString().replace(".000Z", "Z
 const tokens = (units, decimals) => (Number.isInteger(decimals) ? ethers.formatUnits(units, decimals).replace(/\.0$/, "") : String(units));
 /** One line for the stock collateral behind a line (creditStatus.collateral, or a stockPosition). */
 export function collateralText(c, symbol = c.symbol, decimals = c.decimals) {
-  const what = symbol ? `${tokens(c.amount, decimals)} ${symbol}` : `${c.amount} base units of ${c.token}`;
+  const held = symbol ? `${tokens(c.amount, decimals)} ${symbol}` : `${c.amount} base units of ${c.token}`;
+  // after an issuer burn from the vault the position is paid its share (`payout`), which `value` prices
+  const what = c.payout !== undefined && c.payout !== null
+    ? `${symbol ? `${tokens(c.payout, decimals)} ${symbol}` : `${c.payout} base units of ${c.token}`}, of ${symbol ? tokens(c.amount, decimals) : c.amount} deposited: an issuer burn left the vault short,`
+    : held;
   return `Backed by ${what}${c.value !== null ? ` worth ${usd(c.value)} to the vault` : " (not priced for new loans right now)"}, at ${Number(c.ltvBps) / 100}% loan-to-value: ${usd(c.borrowRoom)} can be drawn now.`
     + (c.hold ? ` New loans wait: ${c.holdReason || "a lending hold"}.` : "") + (c.closing ? " Closing: no new loans." : "");
 }
@@ -173,11 +177,12 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   const sleep = deps.sleep; // undefined: the library's own
   const requestTimeoutMs = deps.requestTimeoutMs ?? 15_000;
   const callBudgetMs = deps.callBudgetMs ?? 45_000; // under the MCP clients' usual 60 s request timeout
-  // Payments signed and not (yet) counted as paid, by "METHOD url": until validBefore the merchant can still cash
-  // them, so another pay_url for the same purchase resends that payment instead of signing a second one.
+  // Payments signed and not (yet) counted as paid, by purchase (X.purchaseKey: the method, the URL without its fragment,
+  // and the body): until validBefore the merchant can still cash them, so another pay_url for the same purchase resends
+  // that payment instead of signing a second one.
   const outstanding = new Map();
   // One money call at a time (pay_url, borrow, repay): MCP clients may send tool calls concurrently, and each check
-  // above (an outstanding payment for this URL, the session totals) must see the previous call's result (Codex review).
+  // above (an outstanding payment for this purchase, the session totals) must see the previous call's result (Codex review).
   let moneyQueue = Promise.resolve();
   // The time budget counts from the call's arrival, not from its turn: a call queued behind a slow one must still answer
   // before the client gives up (a client timeout hides the "do not retry" answer and invites a retry).
@@ -406,9 +411,12 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       let json = false; try { JSON.parse(body); json = true; } catch (_) { /* text */ }
       init.body = body; init.headers = { "content-type": json ? "application/json" : "text/plain; charset=utf-8" };
     }
+    // The method, the URL without its fragment (url#a and url#b are the same purchase) and the body: another body at the
+    // same URL is another purchase, quoted and priced on its own (GHSA-xqp9).
+    const purchase = await X.purchaseKey(new Request(u.href, init));
     const target = new URL(u.href);
-    target.hash = ""; // a fragment never reaches the merchant: url#a and url#b are the same purchase
-    const purchase = `${method} ${target.href}`;
+    target.hash = "";
+    const urlOnly = `${method} ${target.href}`; // the whole key without a body, and every key written before the body was in it
     const now = Math.floor(Date.now() / 1000);
     // Kept for the payer's clock-skew margin past validBefore: the chain's clock may be behind this machine's.
     for (const [k, v] of outstanding) if (!live(v, now)) outstanding.delete(k); // the file drops them on its next write
@@ -420,6 +428,13 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     // the purchase in the file under the lock before the 402 request, or derive the EIP-3009 nonce per purchase.
     const lines = [];
     const prior = outstanding.get(purchase);
+    // A payment kept without its body (by an earlier version, or for a call without one) cannot be matched to a call with
+    // a body: resending it could serve another purchase, signing could pay this one twice. Nothing is done until it expires.
+    const unmatched = !prior && purchase !== urlOnly ? outstanding.get(urlOnly) : undefined;
+    if (unmatched) {
+      const until = when(unmatched.validBefore + X.SKEW_SECONDS);
+      throw new ToolError(`A payment of ${usd(unmatched.price)} to ${unmatched.payTo} for ${urlOnly} was signed earlier and kept without its request body (by an earlier version of this server, or for a call without a body), and the merchant may still settle it until ${until}. It cannot be told apart from this purchase, so nothing was signed: do NOT call pay_url again for this URL before ${until}; check wallet_balance.`);
+    }
     let r;
     let signedPrice = null; // what the payer checked and signed, never a merchant field read again here
     if (prior) {
@@ -439,11 +454,13 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       try { r = await payer.pay(url, init); } catch (e) {
         // What the error carries was done: a loan taken and a payment signed are counted, whatever failed after.
         if (e?.borrowed > 0n) session.borrowed += e.borrowed;
+        // A borrow sent whose answer was lost may have mined (GHSA-v9xj): counted above, and said, never "nothing done".
+        if (e?.unconfirmed) throw new ToolError(`A borrow of ${usd(e.borrowed)} was sent${e.hash ? ` (tx ${e.hash})` : ""} and its answer was lost (${explain(e.cause ?? e)}), so it may have opened a loan: check credit_status, and repay it with the repay tool before its due date. Nothing was signed or paid.`);
         if (e?.signed) {
           if (signedPrice === null) { signedPrice = maxPrice; session.spent += maxPrice; await record(purchase, { ...e.signed, price: maxPrice, payTo: e.requirement.payTo }); } // not reached: onSigned ran
           const price = signedPrice;
           const until = when(e.signed.validBefore + X.SKEW_SECONDS);
-          throw new ToolError(`A payment of ${usd(price)} to ${e.requirement.payTo} was signed, then the request failed (${explain(e)}). The merchant may still settle it until ${until}, so do NOT call pay_url again for this URL before ${until}; check wallet_balance.${e.borrowed > 0n ? ` Borrowed ${usd(e.borrowed)}${e.loanId !== null ? ` as loan #${e.loanId}` : ""}: repay it with the repay tool.` : ""}`);
+          throw new ToolError(`A payment of ${usd(price)} to ${e.requirement.payTo} was signed, then the request failed (${explain(e)}). The merchant may still settle it until ${until}, so do NOT call pay_url again for this purchase (the same method, URL and body) before ${until}; check wallet_balance.${e.borrowed > 0n ? ` Borrowed ${usd(e.borrowed)}${e.loanId !== null ? ` as loan #${e.loanId}` : ""}: repay it with the repay tool.` : ""}`);
         }
         const loan = e?.borrowed > 0n ? ` ${usd(e.borrowed)} was borrowed${e.loanId !== null ? ` as loan #${e.loanId}` : ""} before it failed: repay it with the repay tool.` : "";
         if (e?.name === "TimeoutError" || e?.name === "AbortError") throw new ToolError(`${method} ${u.href} did not answer in time. Nothing was signed or paid.${loan}`);
@@ -465,7 +482,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       lines.unshift(`Paid ${usd(r.paid)}${r.x402Version ? ` (x402 v${r.x402Version})` : ""} to ${r.requirement.payTo} for ${method} ${u.href}: ${status}.${tx ? (TX_RE.test(String(tx)) ? ` Settlement tx ${tx}.` : " (The merchant's settlement id is not a transaction hash; not shown.)") : ""}`);
     } else {
       const until = when(r.signed.validBefore + X.SKEW_SECONDS);
-      lines.unshift(`A payment of ${usd(signedPrice)} to ${r.requirement.payTo} was signed and sent (${status}), and the merchant may still settle it until ${until}, so do NOT call pay_url again for this URL before ${until}; check wallet_balance. A later call for this URL only resends this same payment.`);
+      lines.unshift(`A payment of ${usd(signedPrice)} to ${r.requirement.payTo} was signed and sent (${status}), and the merchant may still settle it until ${until}, so do NOT call pay_url again for this purchase (the same method, URL and body) before ${until}; check wallet_balance. A later call for this purchase only resends this same payment.`);
     }
     const loc = r.response.status >= 300 && r.response.status < 400 ? r.response.headers.get("location") : null;
     if (loc) lines.push(`The server redirected (not followed): ${fenced(oneLine(loc, 500), "redirect target")}`);
@@ -603,7 +620,15 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     await needController(id);
     const q = await credit.quote(id, amount, term);
     if (dry_run) return `Quote for agent #${id}: borrow ${usd(amount)} for ${days} days, fee ${usd(q.fee)}, ${usd(q.due)} due at the end. Nothing was borrowed.`;
-    const r = await credit.borrow(id, amount, term);
+    let r;
+    try { r = await credit.borrow(id, amount, term); } catch (e) {
+      // sent, and its answer lost: it may have mined, so it is counted and said (GHSA-v9xj)
+      if (e?.unconfirmed) {
+        session.borrowed += e.borrowed > 0n ? e.borrowed : amount;
+        throw new ToolError(`A borrow of ${usd(amount)} for agent #${id} was sent${e.hash ? ` (tx ${e.hash})` : ""} and its answer was lost (${explain(e.cause ?? e)}), so it may have opened a loan: check credit_status before borrowing again, and repay it with the repay tool before its due date.`);
+      }
+      throw e;
+    }
     session.borrowed += r.principal;
     return `Borrowed ${usd(r.principal)} for agent #${id}${r.loanId !== null ? ` as loan #${r.loanId}` : ""}: fee ${usd(r.fee)}, so ${usd(r.principal + r.fee)} is due${r.dueAt ? ` by ${when(r.dueAt)}` : ""}. The USDG is in ${wallet.address}. Tx ${r.hash}.`;
   }));

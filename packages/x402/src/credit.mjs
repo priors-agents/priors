@@ -57,12 +57,23 @@ export const STOCK_VAULT_ABI = [
   "function lendStatus(address token) view returns (uint8)",
   "function ltvOf(uint256 id, address token) view returns (uint256)", // id 0: the stock's own; else with the agent's record bonus
   "function borrowRoom(uint256 id) view returns (uint256)",
+  "function held(address token) view returns (uint256)", // what the vault owes of a token, all positions together
 ];
 /** Why the stock vault holds new loans on a token (StockVault.lendStatus; 0: no hold). */
 export const STOCK_HOLDS = ["", "the price moved sharply", "a multiplier change", "the token is paused", "the token blocks the vault"];
 const POSITION_STATUS = ["none", "open", "closed", "seized", "written off"];
 /** The vault's own `valueOf`: on an ethers Contract, `vault.valueOf` is Object.prototype.valueOf, not the function. */
 const vaultValueOf = (vault, token, amount) => (typeof vault.getFunction === "function" ? vault.getFunction("valueOf")(token, amount) : vault.valueOf(token, amount));
+/** What the vault would pay position `p` now (its `_payout`): all of it, or after an issuer burn from the vault its
+ *  share, amount x balance / held. `p.amount` when that cannot be read. */
+async function payoutOf(vault, p) {
+  try {
+    const at = vault.target ?? (await vault.getAddress());
+    const [held, balance] = await Promise.all([vault.held(p.token), new ethers.Contract(p.token, ERC20_ABI, vault.runner).balanceOf(at)]);
+    const a = BigInt(p.amount), h = BigInt(held), b = BigInt(balance);
+    return h === 0n || b >= h ? a : (a * b) / h;
+  } catch (_) { return BigInt(p.amount); }
+}
 export const LOAN_STATUS = ["none", "active", "repaid", "defaulted"];
 const LOAN_ACTIVE = 1n;
 
@@ -84,6 +95,26 @@ export function explainRevert(err, iface = new ethers.Interface(POOL_ABI)) {
     }
   }
   return err?.shortMessage || err?.reason || err?.message || String(err);
+}
+
+/**
+ * Send a borrow and wait for its receipt. Once the transaction may have left, a lost answer (the broadcast's or the
+ * receipt's) may hide a loan that mined: it throws BORROW_UNCONFIRMED carrying the amount as `borrowed` (`loanId` and
+ * `dueAt` unknown, `unconfirmed: true`, the tx `hash` when known), for the caller to count and to tell its user to check
+ * and repay (GHSA-v9xj). Only CALL_EXCEPTION (ethers raises it for a refused estimate, before anything is sent, and for
+ * a mined revert) and INSUFFICIENT_FUNDS (no gas: refused before it was sent) mean nothing was borrowed: rethrown as is.
+ */
+async function sendBorrow(poolC, args, amount, prefix) {
+  let tx;
+  try {
+    tx = await poolC.borrow(...args);
+    return { tx, rc: await tx.wait() };
+  } catch (e) {
+    if (e?.code === "CALL_EXCEPTION" || e?.code === "INSUFFICIENT_FUNDS") throw e;
+    const hash = typeof tx?.hash === "string" ? tx.hash : null;
+    throw new PayError("BORROW_UNCONFIRMED", `${prefix}a borrow of ${amount} was sent${hash ? ` (tx ${hash})` : ""} and its answer was lost (${e?.shortMessage || e?.message || String(e)}): it may have opened a loan`,
+      { borrowed: amount, loanId: null, dueAt: null, unconfirmed: true, hash, cause: e });
+  }
 }
 
 /**
@@ -114,7 +145,7 @@ export async function borrowGap({ signer, pool, agentId, price, balance, maxBorr
   if (poolC.borrow && typeof poolC.borrow.staticCall === "function") {
     try { await poolC.borrow.staticCall(agentId, amount, term, to, fee); } catch (e) { throw new PayError("BORROW_WOULD_REVERT", `pay: borrow would revert: ${explainRevert(e, poolC.interface)}`); }
   }
-  const rc = await (await poolC.borrow(agentId, amount, term, to, fee)).wait();
+  const { rc } = await sendBorrow(poolC, [agentId, amount, term, to, fee], amount, "pay: ");
   const ev = (rc?.logs || []).map((l) => { try { return poolC.interface.parseLog(l); } catch (_) { return null; } }).find((e) => e && e.name === "Borrowed");
   return { borrowed: amount, loanId: ev ? ev.args.loanId : null, dueAt: ev ? ev.args.dueAt : null, fee, term };
 }
@@ -176,12 +207,13 @@ export async function stockCollateral(c, id, sponsor) {
   if (c._stockRoot === undefined) c._stockRoot = await c.stockVault.agentId();
   if (BigInt(sponsor) !== BigInt(c._stockRoot) || BigInt(c._stockRoot) === 0n) return null;
   const p = await c.stockVault.getPosition(BigInt(id));
+  const payout = await payoutOf(c.stockVault, p);
   const [[ok, value], borrowRoom, hold, ltvBps] = await Promise.all([
-    vaultValueOf(c.stockVault, p.token, p.amount), c.stockVault.borrowRoom(BigInt(id)), c.stockVault.lendStatus(p.token).then(Number).catch(() => 0),
+    vaultValueOf(c.stockVault, p.token, payout), c.stockVault.borrowRoom(BigInt(id)), c.stockVault.lendStatus(p.token).then(Number).catch(() => 0),
     c.stockVault.ltvOf(BigInt(id), p.token).then(BigInt).catch(async () => BigInt((await c.stockVault.params()).ltvBps)),
   ]);
   return {
-    token: p.token, amount: p.amount, value: ok ? value : null, ltvBps, borrowRoom: BigInt(borrowRoom), hold, holdReason: STOCK_HOLDS[hold] || (hold ? `hold ${hold}` : ""),
+    token: p.token, amount: p.amount, ...(payout < BigInt(p.amount) ? { payout } : {}), value: ok ? value : null, ltvBps, borrowRoom: BigInt(borrowRoom), hold, holdReason: STOCK_HOLDS[hold] || (hold ? `hold ${hold}` : ""),
     status: POSITION_STATUS[Number(p.status)] || `status ${p.status}`, closing: p.closing,
   };
 }
@@ -220,13 +252,14 @@ export async function stockPosition(c, id, assets = []) {
   if (!c.stockVault) throw new PayError("NO_STOCK_VAULT", "Priors has no stock vault configured (not deployed yet)");
   const p = await c.stockVault.getPosition(BigInt(id));
   if (Number(p.status) === 0) return null;
+  const payout = await payoutOf(c.stockVault, p);
   const [[ok, value], borrowRoom, hold, ltvBps] = await Promise.all([
-    vaultValueOf(c.stockVault, p.token, p.amount), c.stockVault.borrowRoom(BigInt(id)), c.stockVault.lendStatus(p.token).then(Number).catch(() => 0),
+    vaultValueOf(c.stockVault, p.token, payout), c.stockVault.borrowRoom(BigInt(id)), c.stockVault.lendStatus(p.token).then(Number).catch(() => 0),
     c.stockVault.ltvOf(BigInt(id), p.token).then(BigInt).catch(async () => BigInt((await c.stockVault.params()).ltvBps)),
   ]);
   const a = assets.find((x) => String(x.token).toLowerCase() === String(p.token).toLowerCase()) || null;
   return {
-    agentId: BigInt(id), token: p.token, symbol: a ? a.symbol : null, decimals: a ? a.decimals : null, amount: p.amount, value: ok ? value : null, ltvBps,
+    agentId: BigInt(id), token: p.token, symbol: a ? a.symbol : null, decimals: a ? a.decimals : null, amount: p.amount, ...(payout < BigInt(p.amount) ? { payout } : {}), value: ok ? value : null, ltvBps,
     line: BigInt(p.line), borrowRoom: BigInt(borrowRoom), hold, holdReason: STOCK_HOLDS[hold] || (hold ? `hold ${hold}` : ""),
     status: POSITION_STATUS[Number(p.status)] || `status ${p.status}`, closing: p.closing, depositor: p.depositor, openedAt: Number(p.openedAt),
   };
@@ -273,8 +306,7 @@ export async function borrowLine(c, signer, agentId, amount, termSeconds) {
   const me = await signer.getAddress();
   const args = [BigInt(agentId), amount, q.term, me, q.fee];
   try { await pool.borrow.staticCall(...args); } catch (e) { throw new PayError("BORROW_WOULD_REVERT", `borrow would revert: ${explainRevert(e, pool.interface)}`); }
-  const tx = await pool.borrow(...args);
-  const rc = await tx.wait();
+  const { tx, rc } = await sendBorrow(pool, args, amount, "");
   const ev = rc.logs.map((l) => { try { return pool.interface.parseLog(l); } catch (_) { return null; } }).find((e) => e && e.name === "Borrowed");
   return { hash: tx.hash, loanId: ev ? ev.args.loanId : null, principal: amount, fee: ev ? ev.args.fee : q.fee, dueAt: ev ? Number(ev.args.dueAt) : null };
 }

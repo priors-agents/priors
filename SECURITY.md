@@ -127,8 +127,9 @@ than trusting this file. It does not read the v2 record: for v2, compare each ad
 zeroed, metadata stripped). The v2 set matched on 2026-09-25; `seatVaultV4` and `seatSizerV4` matched on
 2026-09-29, and so did V3's `seatSizer`. For the stock vault the record holds the proxy (`StockVaultProxy`): what
 matches `forge build` of `src/StockVault.sol` is the implementation behind it (its ERC-1967 implementation slot):
-`0x8Be04c08De0158c88F84875DAe181054c30734fA` since the upgrade of 2026-09-30, which matched that day (the first one,
-`0xF781b2634254d7819E9E17BfFc9D18C54C32008b`, matched on 2026-09-29).
+`0x32F1c32A8bdDCd72B18A4f97dc815F50099ad0A5` since the upgrade of 2026-10-01, which matched that day (before it,
+`0x8Be04c08De0158c88F84875DAe181054c30734fA` matched on 2026-09-30 and the first one,
+`0xF781b2634254d7819E9E17BfFc9D18C54C32008b`, on 2026-09-29).
 
 An independent rediscovery of a fixed issue is still worth telling us about, and we will say so and
 credit the work. It is not a new finding.
