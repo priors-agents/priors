@@ -31,6 +31,18 @@ afterwards.
 Severity is our judgement, argued in writing with you, not a number we pick in private. If you disagree with
 where we land, say so — the reasoning is the part we will publish.
 
+**The client packages (`@priors/x402`, `@priors/mcp`, `sdk/float.mjs`): what counts as a loss.** The client loses a
+user money when it pays what the user did not authorise: a second signature for one purchase, a payment signed above
+the per-call cap (`max_price_usd`) or past the session cap (`PRIORS_MAX_SPEND_USD`) in force when it was signed, a
+payment to another address or on another chain than the one quoted, or a borrow the borrow caps do not count. That is
+Medium, one award per root cause (P-10 and P-16 in [docs/SECURITY-v2.md](docs/SECURITY-v2.md)). It is not a loss, and
+at most Low: one authorization the user signed within those caps being settled once, whether for the request it was
+signed for or for a retry or another request that reused it, even when a later quote would have been lower; a
+merchant charging a price it quoted under the caller's caps; a merchant not delivering what it was paid for (a merchant
+can do that with any client). Caps bound what a merchant can take, they do not make a merchant honest. A ratio ("10x
+overpaid") does not move a finding up a tier: what counts is whether money moved that the user had not signed for
+within their caps.
+
 ## In scope
 
 The v2 contracts on Robinhood Chain (chain 4663), live since block 71,702,460, and the ones added to the set since:
