@@ -92,7 +92,7 @@ export interface CreatePayerOptions {
   maxSleepMs?: number;
   sleep?: (ms: number) => Promise<void>;
   /** Called with each signed payment before it is sent, so a caller can keep its own record across processes;
-   *  awaited, and its failure never stops the payment. */
+   *  awaited. If it throws, the payment is not sent and pay() rejects with NOT_RECORDED. */
   onSigned?: (s: { purchase: string; paymentHeaders: Record<string, string>; validBefore: number; price: bigint; requirement: any; x402Version: number; borrowed?: bigint; loanId?: bigint | null }) => void | Promise<void>;
 }
 
@@ -146,8 +146,9 @@ export declare const DEFAULT_TIMEOUT_MS: number;
 export declare const MAX_BODY_BYTES: number;
 /** Seconds an unsettled payment is kept past its validBefore, for a chain clock behind the payer's: 60. */
 export declare const SKEW_SECONDS: number;
-/** A purchase's identity: "METHOD url" (the URL without its fragment), plus " body:<sha256>" when there is a body (a JSON
- *  body by its value, a form by its fields, any other body by its bytes). The key `onSigned` receives as `purchase`. */
+/** A purchase's identity: "METHOD url" (the URL as the merchant reads it: no fragment, query fields in name order, one
+ *  spelling of each escape), plus " body:<sha256>" when there is a body (a JSON body by its value, a urlencoded or
+ *  multipart form by its fields, any other body by its bytes). The key `onSigned` receives as `purchase`. */
 export declare function purchaseKey(req: Request): Promise<string>;
 /** A response body as text, at most `max` bytes (default MAX_BODY_BYTES); the rest is cancelled, not read. `cut` says it was. */
 export declare function readCapped(response: Response | null | undefined, max?: number): Promise<{ text: string; cut: boolean }>;

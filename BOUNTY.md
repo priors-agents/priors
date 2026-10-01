@@ -141,7 +141,7 @@ ones:
   automatically (self-service mode, on) once the agent's owner has posted a 5 USDG bond in `InviteBond`: the bond
   comes back once the agent has repaid 3 qualified loans (or holds no line 4 days after the deposit), and goes to
   the Safe if the agent defaults. Without a bond,
-  an invite still needs an admin's approval. New treasury lines are capped at $25 a week by treasury v4's
+  an invite still needs an admin's approval. New treasury lines are capped at $100 a week by treasury v4's
   `epochCap`; one person taking the week's first lines within that cap, bond paid, is a listed residual (AI-1), not
   a finding. A seat needs a staker's $PRIORS and a repaid record: new seats go to the growth seat vault (V4), a $50
   line after 10 repaid loans, since SeatVaultV3 (3 repaid loans) is full. A backer needs the owner's consent. Credit

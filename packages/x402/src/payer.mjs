@@ -116,10 +116,14 @@ export function createUsdgClient({ signer, maxPrice = DEFAULT_MAX_PRICE, maxVali
     .setSpendControls({ allowedAssets: [{ network: robinhood.network, asset, maxAmountPerPayment: cap.toString() }] });
 }
 
+/** A payTo is a 0x address: ethers also accepts an ICAP "XE..." form, whose 30 characters the merchant chooses and
+ *  pay_url would print outside its fence (own audit 2026-10-01). */
+const isPayTo = (a) => typeof a === "string" && /^0x[0-9a-fA-F]{40}$/.test(a) && ethers.isAddress(a);
+
 /** First v2 `exact` USDG requirement on eip155:4663 this payer can sign (EIP-3009, USDG's domain). */
 export function pickV2Requirement(accepts, asset = robinhood.usdg) {
   return (Array.isArray(accepts) ? accepts : []).find((r) => r && r.scheme === "exact" && r.network === robinhood.network && sameAddr(r.asset, asset)
-    && /^\d+$/.test(String(r.amount)) && ethers.isAddress(r.payTo || "")
+    && /^\d+$/.test(String(r.amount)) && isPayTo(r.payTo)
     && (!r.extra?.assetTransferMethod || r.extra.assetTransferMethod === "eip3009")
     && (!r.extra?.name || r.extra.name === robinhood.eip712.name) && (!r.extra?.version || r.extra.version === robinhood.eip712.version)) || null;
 }
@@ -127,7 +131,7 @@ export function pickV2Requirement(accepts, asset = robinhood.usdg) {
 /** First v1 `exact` USDG requirement on Robinhood Chain (sdk/float.mjs `pickRequirement`). */
 export function pickV1Requirement(accepts, asset = robinhood.usdg) {
   return (Array.isArray(accepts) ? accepts : []).find((r) => r && r.scheme === "exact" && ROBINHOOD_NETWORKS.has(r.network) && sameAddr(r.asset, asset)
-    && /^\d+$/.test(String(r.maxAmountRequired)) && ethers.isAddress(r.payTo || "")) || null;
+    && /^\d+$/.test(String(r.maxAmountRequired)) && isPayTo(r.payTo)) || null;
 }
 
 /**
@@ -234,53 +238,73 @@ function canonicalNumber(n) {
   if (digits.length <= 15 && x >= 1e-300 && x < Infinity) return JSON.stringify(Number(n));
   return `${sign}${digits}e${BigInt(exp) - BigInt(frac.length) + BigInt(all.length - trimmed.length)}`;
 }
-/** A JSON text with sorted keys, no whitespace and one spelling per string and number, read from the text itself (not
- *  JSON.parse's doubles): two bodies that are the same JSON value are the same purchase. Throws if it is not JSON. */
+/** A valid JSON text with sorted keys, no whitespace and one spelling per string and number, read from the text itself
+ *  (not JSON.parse's doubles): two bodies that are the same JSON value are the same purchase. An explicit stack and a
+ *  character scan, no recursion and no backtracking regex, so no valid body is too deep or too long for it (own audit
+ *  2026-10-01: a body nested 10,000 deep, or a 16M-character string, fell back to its bytes and was signed twice). */
 function canonicalJson(text) {
-  JSON.parse(text);
+  const n = text.length;
   let i = 0;
-  const take = (re) => { re.lastIndex = i; const t = re.exec(text)[0]; i = re.lastIndex; return t; };
-  const WS = /[ \t\n\r]*/y, STR = /"(?:[^"\\]|\\.)*"/y, NUM = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y, LIT = /true|false|null/y;
-  const value = () => {
-    take(WS);
-    let out;
-    if (text[i] === "{") {
-      i++; take(WS);
-      const members = new Map(); // the last of a repeated key, as JSON.parse reads it
-      if (text[i] === "}") i++;
-      else do { take(WS); const k = JSON.parse(take(STR)); take(WS); i++; members.set(k, value()); } while (text[i++] === ",");
-      out = `{${[...members.keys()].sort().map((k) => `${JSON.stringify(k)}:${members.get(k)}`).join(",")}}`;
-    } else if (text[i] === "[") {
-      i++; take(WS);
-      const items = [];
-      if (text[i] === "]") i++;
-      else do items.push(value()); while (text[i++] === ",");
-      out = `[${items.join(",")}]`;
-    } else if (text[i] === '"') out = JSON.stringify(JSON.parse(take(STR)));
-    else if (text[i] === "-" || (text[i] >= "0" && text[i] <= "9")) out = canonicalNumber(take(NUM));
-    else out = take(LIT);
-    take(WS);
-    return out;
-  };
-  return value();
+  const ws = () => { while (i < n && (text[i] === " " || text[i] === "\t" || text[i] === "\n" || text[i] === "\r")) i++; };
+  const str = () => { const s = i++; while (text[i] !== '"') i += text[i] === "\\" ? 2 : 1; i++; return JSON.parse(text.slice(s, i)); };
+  const stack = []; // open containers: { obj: Map (the last of a repeated key, as JSON.parse reads it), key } or { arr }
+  for (;;) {
+    ws();
+    let v;
+    const c = text[i];
+    if (c === "{") {
+      i++; ws();
+      if (text[i] === "}") { i++; v = "{}"; } else { const key = str(); ws(); i++; stack.push({ obj: new Map(), key }); continue; }
+    } else if (c === "[") {
+      i++; ws();
+      if (text[i] === "]") { i++; v = "[]"; } else { stack.push({ arr: [] }); continue; }
+    } else if (c === '"') v = JSON.stringify(str());
+    else if (c === "-" || (c >= "0" && c <= "9")) { const s = i; while (i < n && "+-.eE0123456789".includes(text[i])) i++; v = canonicalNumber(text.slice(s, i)); }
+    else { v = text.startsWith("true", i) ? "true" : text.startsWith("false", i) ? "false" : "null"; i += v.length; }
+    // the value goes into its container; every container the next character closes becomes a value in turn
+    for (;;) {
+      const top = stack[stack.length - 1];
+      if (!top) return v;
+      if (top.arr) top.arr.push(v); else top.obj.set(top.key, v);
+      ws();
+      if (text[i++] === ",") { if (top.obj) { ws(); top.key = str(); ws(); i++; } break; }
+      stack.pop();
+      v = top.arr ? `[${top.arr.join(",")}]` : `{${[...top.obj.keys()].sort().map((k) => `${JSON.stringify(k)}:${top.obj.get(k)}`).join(",")}}`;
+    }
+  }
+}
+/** A URL as the merchant reads it: what WHATWG URL leaves apart but servers read alike is written one way (own audit
+ *  2026-10-01): the fragment and a trailing dot of the host dropped, path escapes of unreserved characters decoded and
+ *  the others in upper case (RFC 3986 6.2.2), the query as form fields sorted by name ("+" and %20 alike, repeated names
+ *  kept in order) and an empty "?" dropped. Two URLs it merges at worst share one authorization, settled once. */
+function purchaseUrl(url) {
+  const u = new URL(url);
+  u.hash = "";
+  if (u.hostname.endsWith(".")) u.hostname = u.hostname.slice(0, -1);
+  u.pathname = u.pathname.replace(/%[0-9a-fA-F]{2}/g, (m) => { const ch = String.fromCharCode(parseInt(m.slice(1), 16)); return /[A-Za-z0-9._~-]/.test(ch) ? ch : m.toUpperCase(); });
+  if (u.search) u.searchParams.sort(); else u.search = "";
+  return u.href;
 }
 /**
- * A purchase's identity: the method, the URL without its fragment (a fragment never reaches the merchant), and the
- * body (GHSA-xqp9), as a SHA-256: a JSON body by its value (key order and whitespace do not make a second purchase), a
- * form by its fields (not the boundary it was sent with), any other body by its bytes. No body: method and URL only.
+ * A purchase's identity: the method, the URL as the merchant reads it (purchaseUrl: a fragment never reaches it), and
+ * the body (GHSA-xqp9), as a SHA-256: a JSON body by its value (key order and whitespace do not make a second purchase),
+ * a urlencoded or multipart form by its fields, any other body by its bytes. No body: method and URL only.
  * @param {Request} req
  * @returns {Promise<string>}
  */
 export async function purchaseKey(req) {
-  const u = new URL(req.url);
-  u.hash = "";
-  const head = `${req.method} ${u.href}`;
+  const head = `${req.method} ${purchaseUrl(req.url)}`;
   const bytes = req.body ? new Uint8Array(await req.clone().arrayBuffer()) : new Uint8Array(0);
   if (bytes.length === 0) return head;
   const type = req.headers.get("content-type") || "";
   let canon = null;
   if (/json/i.test(type)) {
-    try { canon = "json:" + canonicalJson(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch (_) { /* not JSON: by its bytes */ }
+    let text = null;
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); JSON.parse(text); } catch (_) { text = null; /* not JSON: by its bytes */ }
+    // valid JSON is keyed by its value, never by its bytes: should that ever throw, nothing is signed
+    if (text !== null) canon = "json:" + canonicalJson(text);
+  } else if (/^application\/x-www-form-urlencoded/i.test(type)) {
+    try { const p = new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); p.sort(); canon = "urlencoded:" + p.toString(); } catch (_) { /* not UTF-8: by its bytes */ }
   } else {
     const boundary = /^multipart\/form-data;.*boundary="?([^";]+)"?/i.exec(type)?.[1];
     if (boundary) canon = "form:" + Buffer.from(bytes).toString("latin1").split(boundary).join("");
@@ -377,8 +401,15 @@ export function createPayer(opts = {}) {
       }
       unsettled.set(key, { paymentHeaders, validBefore, price, requirement: req, x402Version: version });
       // Before the payment leaves: a caller that keeps its own record (the MCP server's state file) writes it now, so a
-      // process that dies while the request is in flight cannot lose the only copy. Its failure never stops the payment.
-      if (typeof onSigned === "function") { try { await onSigned({ purchase: key, paymentHeaders, validBefore, price, requirement: req, x402Version: version, borrowed: loan.borrowed, loanId: loan.loanId }); } catch (_) { /* best effort */ } }
+      // process that dies while the request is in flight cannot lose the only copy. If it cannot, the payment is not
+      // sent: an unrecorded payment is one a restart would sign again (own audit 2026-10-01). This signature never leaves.
+      if (typeof onSigned === "function") {
+        try { await onSigned({ purchase: key, paymentHeaders, validBefore, price, requirement: req, x402Version: version, borrowed: loan.borrowed, loanId: loan.loanId }); } catch (err) {
+          unsettled.delete(key);
+          paymentHeaders = undefined;
+          throw new PayError("NOT_RECORDED", `the payment was signed but could not be recorded (${err?.message || err}), so it was not sent`, { cause: err });
+        }
+      }
       const r = await resend(base, paymentHeaders, resendOpts);
       if (r.response.ok) unsettled.delete(key);
       const settlement = r.response.ok ? settlementOf(r.response) : undefined;

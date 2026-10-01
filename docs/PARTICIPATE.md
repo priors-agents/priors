@@ -47,7 +47,7 @@ Other v2 changes:
 | `maxUtilizationBps` | **10000** (N-2) |
 | Lender hold | 7 days; withdrawing sooner leaves 0.5% for the lenders who stayed |
 | Minimum root stake | $10 |
-| Treasury v4 (root #6228) | first line $5 · raise to $25 after 3 qualified loans, 14 days, score ≥ 100 · $25 of new lines per 7-day epoch · idle lines reclaimed after 30 days |
+| Treasury v4 (root #6228) | first line $5 · raise to $25 after 3 qualified loans, 14 days, score ≥ 100 · $100 of new lines per 7-day epoch · idle lines reclaimed after 30 days |
 | Seats V3 (root #6234) | seat ≈ $25 of $PRIORS, resized with the price by the SeatSizer `0xd24B…5E61` within [10,000, 2,000,000] (12,000 on 2026-09-25; 10,000, the floor, on 2026-09-29) · line $5 · 50% of the seat burnt on a default · at most 10 open seats (all 10 open on 2026-09-29) · $50 of new lines per 7-day epoch |
 | Seat gates | the agent has repaid at least 3 loans; a seat idle 30 days can be expired by anyone |
 | Growth seats V4 (root #6466, live since 2026-09-29) | seat ≈ 5 lines of $PRIORS (120,000 at deployment, resized by its own SeatSizer `0x97C4…8777` within [110,000, 20,000,000]) · line $50 · 50% of the seat burnt on a default · agent has repaid at least 10 loans · loans of at most 7 days · 20 open seats · $1,000 of new lines per 7-day epoch · protocol seats closed |
@@ -81,9 +81,10 @@ else.
   chain, a file that differs from the published deployment is refused unless `PRIORS_ALLOW_CUSTOM_ADDRESSES=1` is
   exported in the shell (a `.env` cannot set it).
   **RPC**: `PRIORS_RPC`, else `RPC_URL` (a comma-separated failover list, as for v1), else Robinhood Chain's
-  official endpoint.
-- **Identity lookup**: the key's identity minted since the v2 deploy is found automatically; an older one (for
-  example a v1 agent) needs `PRIORS_AGENT_ID`.
+  official endpoint. On a real chain, an RPC that a `.env` names must be one of the public endpoints `.env.example`
+  lists, unless it is exported in the shell or `PRIORS_ALLOW_CUSTOM_RPC=1` is (a `.env` cannot set it).
+- **Identity lookup**: the key's identity minted to it since the v2 deploy is found automatically; an older one (for
+  example a v1 agent), or one transferred to the key, needs `PRIORS_AGENT_ID`.
 - **Two seat vaults**: with `seatVaultV4` in the record, `join --seat` takes the staker's offer on the growth seat
   vault (V4) if there is one, else on V3, and `status` reads the seat on whichever vault sponsors the agent.
 - **Exit codes**: 0 done, 1 failed, 2 usage or configuration, 3 waiting on someone else (no seat offer yet).

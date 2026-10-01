@@ -5,7 +5,7 @@
 //   const { priors, agentWallet, dep, chainId } = await resolve();
 //
 // Order of precedence, highest first:
-//   POOL / TREASURY / USDC env vars   -> explicit addresses, any chain
+//   POOL / TREASURY / USDC env vars   -> explicit addresses (on a real chain only with PRIORS_ALLOW_CUSTOM_ADDRESSES=1 exported)
 //   deployments/<chainId>.json        -> whatever `npm run devnet` or a real deployment wrote
 //
 // The signer comes from PRIVATE_KEY. On a local dev chain (31337) a deterministic throwaway wallet is derived
@@ -28,8 +28,11 @@ export const ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
  * Deliberately minimal: `KEY=value`, `#` comments, optional surrounding quotes. An already-set variable wins, so
  * `RPC_URL=... npx priors doctor` still overrides the file.
  */
-/** Variables this process took from a .env file (not exported by the user): an opt-in must never come from there. */
+/** Variables this process took from a .env file (not exported by the user), by upper-cased name: an opt-in must never
+ *  come from there, and on Windows a lower-cased name in a .env reads as the upper-cased one (own audit 2026-10-01). */
 const fromDotEnv = new Set();
+/** `name` (upper case) was exported as "1" in the shell, not read from a .env. */
+const optedIn = (name) => process.env[name] === "1" && !fromDotEnv.has(name);
 export function loadDotEnv(file = join(ROOT, ".env")) {
   if (!existsSync(file)) return {};
   const loaded = {};
@@ -42,8 +45,9 @@ export function loadDotEnv(file = join(ROOT, ".env")) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
     let value = line.slice(eq + 1).trim();
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
+    else value = value.replace(/\s+#.*$/, ""); // `KEY=value # note`: the note is not part of the value (a key with it was printed whole)
     loaded[key] = value;
-    if (process.env[key] === undefined) { process.env[key] = value; fromDotEnv.add(key); }
+    if (process.env[key] === undefined) { process.env[key] = value; fromDotEnv.add(key.toUpperCase()); }
   }
   return loaded;
 }
@@ -62,6 +66,26 @@ export const deploymentPath = (chainId) => join(ROOT, "deployments", `${chainId}
 export const deploymentPathV2 = (chainId) => join(ROOT, "deployments", `${chainId}.v2.json`);
 /** Robinhood Chain's official endpoint: the default for the v2 tools, which have no local devnet. */
 export const MAINNET_RPC = "https://rpc.mainnet.chain.robinhood.com";
+/** The public Robinhood Chain endpoints .env.example names (mainnet, and the testnet). */
+const PUBLIC_RPC_HOSTS = new Set(["rpc.mainnet.chain.robinhood.com", "robinhood-rpc.publicnode.com", "rpc.ordofi.network", "rpc.testnet.chain.robinhood.com"]);
+
+/**
+ * On a real chain, an RPC that a .env names must be one of the public endpoints: a .env in a directory the user did not
+ * write could otherwise point the tools at a node that lies about which identity and which loans are the user's, and
+ * have them sign a repayment of someone else's loan (own audit 2026-10-01). An RPC exported in the shell, or given in
+ * code, is the user's choice, as is any RPC once PRIORS_ALLOW_CUSTOM_RPC=1 is exported (a .env cannot set it).
+ */
+function checkRpcSource(name, rpcs, chainId) {
+  if (!name || chainId === DEV_CHAIN || !fromDotEnv.has(name) || optedIn("PRIORS_ALLOW_CUSTOM_RPC")) return;
+  const host = (u) => { try { return new URL(u).hostname; } catch (_) { return ""; } };
+  if (rpcs.every((u) => PUBLIC_RPC_HOSTS.has(host(u)))) return;
+  throw new Error(`${name} comes from a .env file and names an RPC endpoint other than Robinhood Chain's public ones, which could misreport which identity and loans are yours: refused. Export it in your shell instead, or export PRIORS_ALLOW_CUSTOM_RPC=1 (a .env cannot set either).`);
+}
+/** A private key as 64 hex digits (with or without 0x), else an error that does not repeat it. */
+function checkKey(pk, name) {
+  if (!/^(0x)?[0-9a-fA-F]{64}$/.test(pk)) throw new Error(`${name} is not a valid private key (64 hex digits)`);
+  return pk;
+}
 
 // --- money ---------------------------------------------------------------------------------------------------
 // USDG has 6 decimals on chain and the SDK speaks whole dollars, so this conversion happens in a dozen places.
@@ -99,7 +123,7 @@ export class NoDeployment extends Error {
       `no deployment for chain ${chainId}.\n` +
         (chainId === DEV_CHAIN
           ? "  run `npm run devnet` first (it starts a local chain and deploys the pool)."
-          : "  the CreditPool is not deployed on this chain yet. Set POOL and TREASURY explicitly, or run\n" +
+          : "  the CreditPool is not deployed on this chain yet. Export POOL and TREASURY with PRIORS_ALLOW_CUSTOM_ADDRESSES=1, or run\n" +
             "  `npm run devnet` for a local chain. See the Status section of the README.")
     );
     this.chainId = chainId;
@@ -264,6 +288,14 @@ export async function resolve(opts = {}) {
   }
 
   const file = readDeployment(chainId) || {};
+  // POOL/TREASURY/USDC can come from a .env in whatever directory the CLI runs in: on a real chain they must match the
+  // published deployment unless PRIORS_ALLOW_CUSTOM_ADDRESSES=1 is exported (C-1's rule, which covered the v2 tools
+  // only; own audit 2026-10-01: a .env's POOL took a v1 `repay` user's whole USDG balance).
+  if (chainId !== DEV_CHAIN && !optedIn("PRIORS_ALLOW_CUSTOM_ADDRESSES")) {
+    const pinned = { POOL: file.creditPool, TREASURY: file.treasurySponsor, USDC: file.usdc };
+    const differ = Object.keys(pinned).filter((k) => process.env[k] && String(process.env[k]).toLowerCase() !== String(pinned[k] || "").toLowerCase());
+    if (differ.length) throw new Error(`${differ.join(", ")} differ from the published deployment for chain ${chainId}, so they could send your USDG elsewhere: refused. To use them anyway, export PRIORS_ALLOW_CUSTOM_ADDRESSES=1 in your shell (a .env cannot set it).`);
+  }
   const dep = {
     chainId,
     creditPool: process.env.POOL || file.creditPool,
@@ -281,7 +313,8 @@ export async function resolve(opts = {}) {
   // `.env.example` ships `PRIVATE_KEY=0x` as a placeholder. Copied and left unfilled it is present-but-useless,
   // and handing it to ethers produces an opaque "invalid BytesLike" instead of "you have not set a key yet".
   const rawPk = opts.privateKey || process.env.PRIVATE_KEY;
-  const pk = rawPk && rawPk !== "0x" && rawPk !== "0x0" ? rawPk : undefined;
+  const pk = rawPk && rawPk !== "0x" && rawPk !== "0x0" ? checkKey(rawPk.trim(), "PRIVATE_KEY") : undefined;
+  if (pk && !opts.rpc) checkRpcSource(process.env.RPC_URL ? "RPC_URL" : null, rpcs, chainId);
   let signer = null;
   let derived = false;
   if (pk) {
@@ -328,7 +361,7 @@ export async function resolveV2(opts = {}) {
   // A PRIORS_ADDRESSES file can come from a .env in whatever directory the CLI runs in, which is not always the user's
   // own (private report GHSA-xw44): on a real chain its money-moving addresses must be the published ones, unless the
   // user exported PRIORS_ALLOW_CUSTOM_ADDRESSES=1 in the shell (never read from a .env). The dev chain is left free.
-  if (!opts.addressesFile && file && chainId !== DEV_CHAIN && !(process.env.PRIORS_ALLOW_CUSTOM_ADDRESSES === "1" && !fromDotEnv.has("PRIORS_ALLOW_CUSTOM_ADDRESSES"))) {
+  if (!opts.addressesFile && file && chainId !== DEV_CHAIN && !optedIn("PRIORS_ALLOW_CUSTOM_ADDRESSES")) {
     const pinned = readDeploymentV2(chainId);
     const keys = ["pool", "usdg", "registry", "priors", "lens", "treasuryV4", "seatVault", "seatVaultV4", "stockVault", "inviteBond"];
     const differ = pinned ? keys.filter((k) => addresses[k] !== undefined && pinned[k] !== undefined && String(addresses[k]).toLowerCase() !== String(pinned[k]).toLowerCase()) : ["no published deployment for this chain"];
@@ -338,7 +371,8 @@ export async function resolveV2(opts = {}) {
     }
   }
   const rawPk = opts.privateKey || process.env.PRIORS_KEY || process.env.PRIVATE_KEY;
-  const pk = rawPk && rawPk !== "0x" && rawPk !== "0x0" ? rawPk.trim() : undefined;
+  const pk = rawPk && rawPk !== "0x" && rawPk !== "0x0" ? checkKey(rawPk.trim(), "PRIORS_KEY") : undefined;
+  if (pk && !opts.rpc) checkRpcSource(process.env.PRIORS_RPC ? "PRIORS_RPC" : process.env.RPC_URL ? "RPC_URL" : null, rpcs, chainId);
   let signer = null;
   // A plain Wallet, as the v2 client is tested with: every write waits for its receipt before the next is sent.
   if (pk) signer = new ethers.Wallet(pk, provider);

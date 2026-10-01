@@ -22,7 +22,7 @@
 //                          wallet (default ~/.local/state/priors-mcp; "off": memory only)
 import { readFileSync, writeFileSync, mkdirSync, renameSync, openSync, closeSync, statSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -143,7 +143,8 @@ const clean = (s, n) => short(String(s ?? "").replace(/[\u0000-\u0008\u000b\u000
 function dollars(v, what) {
   if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ToolError(`${what} must be a non-negative number of US dollars`);
   const s = v.toFixed(6);
-  if (Math.abs(Number(s) - v) > 1e-9) throw new ToolError(`${what} has more than 6 decimals`);
+  // never rounded up: 0.0999999995 is not a cap of 0.10 (own audit 2026-10-01)
+  if (Math.abs(Number(s) - v) > 1e-9 || Number(s) - v > 1e-12) throw new ToolError(`${what} has more than 6 decimals`);
   return X.toAtomicUsdg(`$${s}`, what);
 }
 function envDollars(env, name, dflt) {
@@ -234,7 +235,8 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     const parts = [env.PRIORS_RPC];
     try {
       const u = new URL(env.PRIORS_RPC);
-      parts.push(u.href, u.host, u.username, u.password);
+      // the hostname alone too: with a port, u.host is "name:port", and a DNS error names the bare hostname
+      parts.push(u.href, u.host, u.hostname, u.hostname.replace(/^\[|\]$/g, ""), u.username, u.password);
       for (const seg of u.pathname.split("/")) if (seg.length >= 8) parts.push(seg, decodeURIComponent(seg));
       for (const v of u.searchParams.values()) if (v.length >= 8) parts.push(v);
     } catch (_) { /* not a URL: the literal is still cut */ }
@@ -252,8 +254,12 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   // The payments this wallet signed and has not seen settle outlive the process (a restart, or the client closing its
   // session, starts a new one): one file per wallet under PRIORS_STATE_DIR (default ~/.local/state/priors-mcp; "off"
   // disables it), owner-only. It holds signed authorizations, each payable only to the merchant it was sent to, never the key.
+  // A leading ~ is the home directory (an MCP client's JSON config is not shell-expanded); a relative path would depend
+  // on the directory each client starts the server in, so two sessions of one wallet would keep two files (own audit).
   const stateRaw = String(env.PRIORS_STATE_DIR ?? "").trim();
-  const stateDir = /^(off|none|false|0)$/i.test(stateRaw) ? null : stateRaw || join(homedir(), ".local", "state", "priors-mcp");
+  const stateHome = stateRaw === "~" || stateRaw.startsWith("~/") ? join(homedir(), stateRaw.slice(1)) : stateRaw;
+  if (stateHome && !/^(off|none|false|0)$/i.test(stateHome) && !isAbsolute(stateHome)) throw new Error(`PRIORS_STATE_DIR must be an absolute path (or start with ~/), not "${stateRaw}"`);
+  const stateDir = /^(off|none|false|0)$/i.test(stateRaw) ? null : stateHome || join(homedir(), ".local", "state", "priors-mcp");
   const stateFile = wallet && stateDir ? join(stateDir, `outstanding-${wallet.address.toLowerCase()}.json`) : null;
   // An entry is { paymentHeaders, validBefore, price (bigint), payTo }: only what this server wrote, never the merchant's
   // own requirement object (its fields are the merchant's to choose). On disk the price is a decimal string; each entry
@@ -304,13 +310,23 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   }
   /** Entries another server wrote since: merged in before any decision to sign. */
   function refresh() { if (stateFile) for (const [k, e] of readState()) if (!outstanding.has(k)) outstanding.set(k, e); }
+  /** Kept on file before the payment leaves; a failure throws, and the payer then does not send it (own audit: a
+   *  record silently lost made a restart or another session sign again). */
   async function record(key, e) {
+    if (stateFile) await locked(() => { const m = readState(); m.set(key, e); writeState(m); });
     outstanding.set(key, e);
-    if (stateFile) { try { await locked(() => { const m = readState(); m.set(key, e); writeState(m); }); } catch (_) { /* best effort: memory still holds it */ } }
   }
-  async function forget(key) {
-    outstanding.delete(key);
-    if (stateFile) { try { await locked(() => { const m = readState(); if (m.delete(key)) writeState(m); }); } catch (_) { /* best effort */ } }
+  /** After the payment is sent and cannot be unsent: the file is best effort, memory always holds it. */
+  async function recordSent(key, e) {
+    outstanding.set(key, e);
+    if (stateFile) { try { await locked(() => { const m = readState(); m.set(key, e); writeState(m); }); } catch (_) { /* best effort */ } }
+  }
+  /** A settled payment is forgotten only where the entry is that same authorization: another session of this wallet may
+   *  have signed its own for the purchase meanwhile (the P-15 race), and it stays cashable until it expires (own audit). */
+  async function forget(key, paymentHeaders) {
+    const same = (e) => e && JSON.stringify(e.paymentHeaders) === JSON.stringify(paymentHeaders);
+    if (same(outstanding.get(key))) outstanding.delete(key);
+    if (stateFile) { try { await locked(() => { const m = readState(); if (same(m.get(key)) && m.delete(key)) writeState(m); }); } catch (_) { /* best effort */ } }
   }
   refresh();
   const contracts = C.creditContracts({ runner: provider, addresses: { pool: addresses.pool, lens: addresses.lens, usdg: addresses.usdg, registry: addresses.registry, stockVault: addresses.stockVault || null } });
@@ -329,14 +345,15 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     agentsOf: (addr) => discoverAgents(addr),
   };
 
-  // The registry is not enumerable: find identities minted or sent to `addr` since the v2 deploy, keep what it owns.
+  // The registry is not enumerable: find identities minted to `addr` since the v2 deploy, keep what it owns. Only a mint
+  // counts: anyone can transfer an identity with an open loan to this wallet, and `repay` would then pay it (own audit).
   async function discoverAgents(addr) {
     const T = ethers.id("Transfer(address,address,uint256)");
     const latest = await provider.getBlockNumber();
     const from = Number(addresses.deployBlock || Math.max(0, latest - 50_000));
     const ids = new Set();
     for (let b = from; b <= latest; b += 50_000) {
-      const logs = await provider.getLogs({ address: addresses.registry, topics: [T, null, ethers.zeroPadValue(addr, 32)], fromBlock: b, toBlock: Math.min(latest, b + 49_999) });
+      const logs = await provider.getLogs({ address: addresses.registry, topics: [T, ethers.zeroPadValue(ethers.ZeroAddress, 32), ethers.zeroPadValue(addr, 32)], fromBlock: b, toBlock: Math.min(latest, b + 49_999) });
       for (const l of logs) ids.add(BigInt(l.topics[3]));
     }
     const mine = [];
@@ -414,15 +431,14 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     // The method, the URL without its fragment (url#a and url#b are the same purchase) and the body: another body at the
     // same URL is another purchase, quoted and priced on its own (GHSA-xqp9).
     const purchase = await X.purchaseKey(new Request(u.href, init));
-    const target = new URL(u.href);
-    target.hash = "";
-    const urlOnly = `${method} ${target.href}`; // the whole key without a body, and every key written before the body was in it
+    const urlOnly = await X.purchaseKey(new Request(u.href, { method })); // the key without a body, as keys were before the body was in them
     const now = Math.floor(Date.now() / 1000);
     // Kept for the payer's clock-skew margin past validBefore: the chain's clock may be behind this machine's.
     for (const [k, v] of outstanding) if (!live(v, now)) outstanding.delete(k); // the file drops them on its next write
     refresh(); // a payment another server of this wallet (another session) signed for this purchase is resent, not signed again
     // SHORTCUT: two sessions of one wallet paying the same URL in the same instant (between this read and the other's
-    // onSigned, about one 402 round trip) can still both sign: onSigned records a payment, it cannot veto one. Ceiling:
+    // onSigned, about one 402 round trip) can still both sign: onSigned records a payment, it does not look for another
+    // session's. Ceiling:
     // one extra payment of at most max_price_usd to the merchant the user chose, counted in each session's cap (the
     // P-15 class, Low). Upgrade trigger: a report of it, or agents running pay_url concurrently on one wallet: reserve
     // the purchase in the file under the lock before the 402 request, or derive the EIP-3009 nonce per purchase.
@@ -449,27 +465,29 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       let agentId;
       if (maxBorrow > 0n) { agentId = await resolveAgent(); await needController(agentId); }
       const payer = X.createPayer({ signer, maxPrice, maxBorrow, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}), ...(maxBorrow > 0n ? { pool: addresses.pool, agentId } : {}),
-        // Counted when signed, at the price the payer checked and signed (a v1 requirement's `amount` is the merchant's text).
-        onSigned: async (s) => { signedPrice = s.price; session.spent += s.price; await record(purchase, { paymentHeaders: s.paymentHeaders, validBefore: s.validBefore, price: s.price, payTo: s.requirement.payTo }); } });
+        // Recorded, then counted, when signed, at the price the payer checked and signed (a v1 requirement's `amount` is the
+        // merchant's text). A record that cannot be kept throws, and the payer does not send the payment.
+        onSigned: async (s) => { await record(purchase, { paymentHeaders: s.paymentHeaders, validBefore: s.validBefore, price: s.price, payTo: s.requirement.payTo }); signedPrice = s.price; session.spent += s.price; } });
       try { r = await payer.pay(url, init); } catch (e) {
         // What the error carries was done: a loan taken and a payment signed are counted, whatever failed after.
         if (e?.borrowed > 0n) session.borrowed += e.borrowed;
         // A borrow sent whose answer was lost may have mined (GHSA-v9xj): counted above, and said, never "nothing done".
         if (e?.unconfirmed) throw new ToolError(`A borrow of ${usd(e.borrowed)} was sent${e.hash ? ` (tx ${e.hash})` : ""} and its answer was lost (${explain(e.cause ?? e)}), so it may have opened a loan: check credit_status, and repay it with the repay tool before its due date. Nothing was signed or paid.`);
         if (e?.signed) {
-          if (signedPrice === null) { signedPrice = maxPrice; session.spent += maxPrice; await record(purchase, { ...e.signed, price: maxPrice, payTo: e.requirement.payTo }); } // not reached: onSigned ran
+          if (signedPrice === null) { signedPrice = maxPrice; session.spent += maxPrice; await recordSent(purchase, { ...e.signed, price: maxPrice, payTo: e.requirement.payTo }); } // not reached: onSigned ran
           const price = signedPrice;
           const until = when(e.signed.validBefore + X.SKEW_SECONDS);
           throw new ToolError(`A payment of ${usd(price)} to ${e.requirement.payTo} was signed, then the request failed (${explain(e)}). The merchant may still settle it until ${until}, so do NOT call pay_url again for this purchase (the same method, URL and body) before ${until}; check wallet_balance.${e.borrowed > 0n ? ` Borrowed ${usd(e.borrowed)}${e.loanId !== null ? ` as loan #${e.loanId}` : ""}: repay it with the repay tool.` : ""}`);
         }
         const loan = e?.borrowed > 0n ? ` ${usd(e.borrowed)} was borrowed${e.loanId !== null ? ` as loan #${e.loanId}` : ""} before it failed: repay it with the repay tool.` : "";
+        if (e?.code === "NOT_RECORDED") throw new ToolError(`A payment was signed but could not be written to PRIORS_STATE_DIR (${explain(e.cause ?? e)}), so it was not sent and nothing can be settled. Fix that directory, or set PRIORS_STATE_DIR=off to keep payments in this process's memory only, then call again.${loan}`);
         if (e?.name === "TimeoutError" || e?.name === "AbortError") throw new ToolError(`${method} ${u.href} did not answer in time. Nothing was signed or paid.${loan}`);
         if (loan) throw new ToolError(`${explain(e)}.${loan}`);
         throw e;
       }
       if (r.signed && signedPrice === null) { // not reached: onSigned counted and recorded it
         signedPrice = maxPrice; session.spent += maxPrice;
-        if (r.paid === 0n) await record(purchase, { ...r.signed, price: maxPrice, payTo: r.requirement.payTo });
+        if (r.paid === 0n) await recordSent(purchase, { ...r.signed, price: maxPrice, payTo: r.requirement.payTo });
       }
       if (r.borrowed > 0n) { session.borrowed += r.borrowed; lines.push(`Borrowed ${usd(r.borrowed)} from the Priors line for agent #${agentId}${r.loanId !== null ? ` as loan #${r.loanId}` : ""}${r.dueAt ? `, due ${when(r.dueAt)}` : ""}. Repay it with the repay tool before then.`); }
       else if (r.requirement) lines.push("Nothing was borrowed.");
@@ -477,7 +495,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     const status = r.timedOut ? "no answer in time" : r.transportError ? "the connection was lost" : `HTTP ${r.response.status}`;
     if (!r.requirement) lines.unshift(`No payment was asked for: ${method} ${u.href} answered ${status}. Nothing was paid.`);
     else if (r.paid > 0n) {
-      await forget(purchase);
+      await forget(purchase, r.signed?.paymentHeaders);
       const tx = r.settlement?.transaction;
       lines.unshift(`Paid ${usd(r.paid)}${r.x402Version ? ` (x402 v${r.x402Version})` : ""} to ${r.requirement.payTo} for ${method} ${u.href}: ${status}.${tx ? (TX_RE.test(String(tx)) ? ` Settlement tx ${tx}.` : " (The merchant's settlement id is not a transaction hash; not shown.)") : ""}`);
     } else {

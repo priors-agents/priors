@@ -37,7 +37,8 @@ block `seatSizerV4Block` 75,614,955) is its own SeatSizer, which owns it; the Sa
 SeatVaultV3. `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it (the SDK's stock-line calls use `stockVault`
 from it; `priors-v2 join --seat` takes a staker's offer on `seatVaultV4` first, else on `seatVault`);
 `PRIORS_ADDRESSES` points them at another file; on a real chain a file whose addresses differ from the published record
-is refused unless `PRIORS_ALLOW_CUSTOM_ADDRESSES=1` is exported in the shell (a `.env` cannot set it).
+is refused unless `PRIORS_ALLOW_CUSTOM_ADDRESSES=1` is exported in the shell (a `.env` cannot set it). The same opt-in
+governs the v1 tools' `POOL`, `TREASURY` and `USDC` overrides on a real chain.
 
 ```json
 {

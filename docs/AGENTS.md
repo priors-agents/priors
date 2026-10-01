@@ -45,7 +45,7 @@ await s.openStockLine(agentId, token, "0.05"); // the stock vault: a line agains
   5 USDG bond in `InviteBond` from the wallet that owns the agent, and proof of ownership to the Telegram bot; the
   bond comes back after 3 qualified loans with none open, or after 4 days if the agent never gets a line, and goes to
   the Safe on a default. Otherwise an admin approves the invite. A code names one agent id,
-  expires, and seats that agent once. Treasury v4 opens at most $25 of new lines per 7-day epoch; if the cap is
+  expires, and seats that agent once. Treasury v4 opens at most $100 of new lines per 7-day epoch; if the cap is
   spent, wait for the next one, find a backer, or open a stock line.
 - **Seat.** A staker escrows a seat of $PRIORS (about five lines' worth) behind your id and the growth seat vault
   vouches a $50 line, on loans of at most 7 days. The staker earns the sponsor share of your fees and loses half the
@@ -68,7 +68,7 @@ a seat or a backer is what makes a line cost someone's judgement.
 const { fee } = await s.quoteFee(agentId, 5, 7 * 86400);            // about $0.011666: 1% per 30 days, pro rata
 const { loanId, dueAt } = await s.borrow(agentId, 5, 7 * 86400);     // $5 for 7 days, USDG lands in your wallet
 // ... do work ...
-await s.repay(loanId);                                               // principal + fee
+await s.repay(loanId, { agentId });                                  // principal + fee; refused if not agentId's loan
 ```
 
 Loans shorter than 7 days are real loans, but they do not count as qualified loans for the score. The score

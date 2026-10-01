@@ -5,10 +5,13 @@
 //   node scripts/test-sdk-v2.mjs
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ethers } from "ethers";
-import { PriorsV2, toUnits, fmtUsdg, extendPriorsV2 } from "../sdk/priors-v2.mjs";
+import { PriorsV2, POOL_V2_ABI, toUnits, fmtUsdg, extendPriorsV2 } from "../sdk/priors-v2.mjs";
 import { pay, resend, signPayment, pickRequirement, FloatError, DEFAULT_MAX_PRICE } from "../sdk/float.mjs";
 import { USDG_MAINNET, TRANSFER_WITH_AUTHORIZATION_TYPES, domainFor, decodePaymentHeader, FACILITATOR_URL } from "../sdk/x402.mjs";
 import { readDeploymentV2, readDeployment } from "../sdk/env.mjs";
@@ -255,6 +258,126 @@ await check("the v2 CLI is declared as a package bin, next to the v1 one", () =>
   const pkg = JSON.parse(readFileSync("package.json", "utf8"));
   assert.equal(pkg.bin["priors-v2"], "bin/priors-v2.mjs");
   assert.equal(pkg.bin.priors, "bin/priors.mjs");
+});
+
+// Own audit, 2026-10-01: what a CLI or the client could be made to pay for someone else.
+/* A chain-4663 stub for the CLIs and the client: eth_call answered by `call({ to, data })` (a hex result, or undefined
+   for an error), eth_getLogs by `logs(filter)`. Every request is kept, so a test can say what was asked and sent. */
+function chain({ call = () => undefined, logs = () => [] } = {}) {
+  const seen = [];
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const reqs = [].concat(JSON.parse(body));
+      const out = reqs.map((r) => {
+        seen.push(r);
+        const ok = (result) => ({ jsonrpc: "2.0", id: r.id, result });
+        if (r.method === "eth_chainId") return ok("0x1237");
+        if (r.method === "eth_blockNumber") return ok(ethers.toQuantity(71_702_470));
+        if (r.method === "eth_call") { const v = call(r.params[0]); if (v !== undefined) return ok(v); }
+        if (r.method === "eth_getLogs") return ok(logs(r.params[0]));
+        return { jsonrpc: "2.0", id: r.id, error: { code: -32601, message: `unexpected ${r.method}` } };
+      });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(Array.isArray(JSON.parse(body)) ? out : out[0]));
+    });
+  });
+  return new Promise((ok) => server.listen(0, "127.0.0.1", () => ok({ server, seen, url: `http://127.0.0.1:${server.address().port}` })));
+}
+const bin = (name) => fileURLToPath(new URL(`../bin/${name}`, import.meta.url));
+/** A CLI run that lets this process answer its RPC (spawnSync would block the stub). A variable given as undefined is
+ *  left out, so the .env in `cwd` can set it; the others are empty, so a maintainer's own .env cannot. */
+const run = (name, args, env = {}, cwd = process.cwd()) => new Promise((ok) => {
+  const vars = { PATH: process.env.PATH, HOME: process.env.HOME, PRIORS_KEY: "", PRIVATE_KEY: "", RPC_URL: "", PRIORS_RPC: "", POOL: "", ...env };
+  for (const k of Object.keys(vars)) if (vars[k] === undefined) delete vars[k];
+  const c = spawn(process.execPath, [bin(name), ...args], { cwd, env: vars });
+  let stdout = "", stderr = "";
+  c.stdout.on("data", (d) => (stdout += d)); c.stderr.on("data", (d) => (stderr += d));
+  const t = setTimeout(() => c.kill(), 30_000);
+  c.on("close", (status) => { clearTimeout(t); ok({ status, stdout, stderr }); });
+});
+const inDir = (dotenv) => { const d = mkdtempSync(join(tmpdir(), "priors-cwd-")); writeFileSync(join(d, ".env"), dotenv); return d; };
+const sel = (sig) => ethers.id(sig).slice(0, 10);
+const REG = readDeploymentV2(4663).registry.toLowerCase();
+
+await check("audit SD-1: priors-v2 takes only an identity minted to the key, never one transferred to it", async () => {
+  const me = ethers.Wallet.createRandom();
+  const T = ethers.id("Transfer(address,address,uint256)");
+  const zero = ethers.zeroPadValue(ethers.ZeroAddress, 32);
+  const filters = [];
+  const c = await chain({
+    call: ({ to, data }) => (to.toLowerCase() !== REG ? undefined : data.startsWith(sel("balanceOf(address)")) ? ethers.toBeHex(1, 32) : data.startsWith(sel("ownerOf(uint256)")) ? ethers.zeroPadValue(me.address, 32) : undefined),
+    // a stranger pushed agent #6567 to this key: a Transfer from them, not a mint
+    logs: (f) => { filters.push(f); return f.topics?.[1] ? [] : [{ address: REG, topics: [T, ethers.zeroPadValue("0x" + "ab".repeat(20), 32), ethers.zeroPadValue(me.address, 32).toLowerCase(), ethers.toBeHex(6567, 32)], data: "0x", blockNumber: "0x1", blockHash: "0x" + "00".repeat(32), transactionHash: "0x" + "00".repeat(32), transactionIndex: "0x0", logIndex: "0x0", removed: false }]; },
+  });
+  try {
+    const r = await run("priors-v2.mjs", ["status"], { PRIORS_KEY: me.privateKey, PRIORS_RPC: c.url });
+    assert.ok(filters.length > 0 && filters.every((f) => String(f.topics?.[1]).toLowerCase() === zero), `the search must ask for mints only: ${JSON.stringify(filters.map((f) => f.topics))}`);
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stderr, /PRIORS_AGENT_ID/);
+    assert.ok(!/#6567/.test(r.stdout), `the pushed agent was taken: ${r.stdout}`);
+  } finally { c.server.close(); }
+});
+
+await check("audit SD-2: PriorsV2.repay needs the caller's agent, and refuses another agent's loan, or one of an agent the key does not control, before any approval, even when the RPC vouches for it", async () => {
+  const me = ethers.Wallet.createRandom();
+  const pool = new ethers.Interface(POOL_V2_ABI);
+  const P = readDeploymentV2(4663).pool.toLowerCase();
+  const loan = [9n, 1n, 10_000000n, 23_333n, 0n, 0n, 0n, "0x" + "ab".repeat(20), 1n, 2n, 3n, 0n, 0n, 1];
+  let controls = true; // a lying RPC says this key controls agent #9
+  const c = await chain({ call: ({ to, data }) => (to.toLowerCase() !== P ? undefined : data.startsWith(sel("getLoan(uint256)")) ? pool.encodeFunctionResult("getLoan", [loan]) : data.startsWith(sel("isController(uint256,address)")) ? ethers.toBeHex(controls ? 1 : 0, 32) : undefined) });
+  try {
+    const s = new PriorsV2({ signer: me.connect(new ethers.JsonRpcProvider(c.url, 4663, { staticNetwork: true })), addresses: readDeploymentV2(4663) });
+    await assert.rejects(s.repay(14_285), /name the agent whose loan this is/);
+    await assert.rejects(s.repay(14_285, { agentId: 7 }), /agent #9's, not #7's/);
+    controls = false;
+    await assert.rejects(s.repay(14_285, { agentId: 9 }), /does not control/);
+    assert.ok(!c.seen.some((r) => /send|estimate/i.test(r.method)), `something was sent: ${c.seen.map((r) => r.method)}`);
+  } finally { c.server.close(); }
+});
+
+await check("audit SD-3: on a real chain, an RPC a .env names must be a documented public endpoint, unless exported", async () => {
+  const c = await chain();
+  const dir = inDir(`PRIORS_RPC=${c.url}\n`);
+  try {
+    const key = ethers.Wallet.createRandom().privateKey;
+    const r = await run("priors-v2.mjs", ["status"], { PRIORS_KEY: key, PRIORS_RPC: undefined }, dir);
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stderr, /PRIORS_RPC comes from a \.env file/);
+    assert.ok(!r.stderr.includes(c.url), "the RPC is not printed");
+    const shell = await run("priors-v2.mjs", ["status"], { PRIORS_KEY: key, PRIORS_RPC: c.url }, dir);
+    assert.ok(!/comes from a \.env file/.test(shell.stderr), `an exported RPC is the user's choice: ${shell.stderr}`);
+  } finally { c.server.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+await check("audit SD-4: the v1 CLI refuses POOL/TREASURY/USDC from a .env on a real chain unless the opt-in is exported", async () => {
+  const c = await chain();
+  const dir = inDir("POOL=0x000000000000000000000000000000000000bEEF\n");
+  try {
+    const r = await run("priors.mjs", ["score", "1"], { RPC_URL: c.url, POOL: undefined }, dir);
+    assert.notEqual(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stderr + r.stdout, /differ from the published/);
+  } finally { c.server.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+await check("audit SD-6: a key in a .env is never printed: an inline comment is not part of it, and a malformed one is refused by name", async () => {
+  const c = await chain();
+  const key = ethers.Wallet.createRandom().privateKey;
+  for (const line of [`PRIVATE_KEY=${key} # deployer`, `PRIVATE_KEY=${key.slice(0, -1)}zz`]) {
+    const dir = inDir(`${line}\n`);
+    try {
+      const r = await run("priors.mjs", ["score", "1"], { RPC_URL: c.url, PRIVATE_KEY: undefined }, dir);
+      assert.ok(!(r.stdout + r.stderr).toLowerCase().includes(key.slice(2, 40).toLowerCase()), `the key was printed: ${r.stdout}${r.stderr}`);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+  c.server.close();
+});
+
+await check("audit SD-7: priors-v2 refuses --agent rather than ignore it (PRIORS_AGENT_ID names the identity)", () => {
+  const r = cli(["status", "--agent", "6228"], { PRIORS_KEY: ethers.Wallet.createRandom().privateKey });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /unknown option --agent/);
 });
 
 console.log(failed ? `\ntest-sdk-v2: ${failed} failed, ${passed} passed` : `\ntest-sdk-v2: all ${passed} good`);

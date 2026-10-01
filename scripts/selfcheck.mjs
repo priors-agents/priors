@@ -353,9 +353,10 @@ if (!skipChain) {
     });
 
     check("dev-only commands refuse a chain that is not a dev chain", () => {
-      // Point warp at a real chain: it must refuse on the cheat-method probe, not on a transaction.
+      // Point warp at a real chain: it must refuse on the cheat-method probe, not on a transaction. The chain's own
+      // record names the pool (an override there would be refused first: POOL needs PRIORS_ALLOW_CUSTOM_ADDRESSES).
       const r = sh(process.execPath, ["bin/priors.mjs", "warp", "1"], {
-        env: { ...process.env, RPC_URL: "https://rpc.mainnet.chain.robinhood.com", POOL: "0x0000000000000000000000000000000000000001" },
+        env: { ...process.env, RPC_URL: "https://rpc.mainnet.chain.robinhood.com", POOL: "" },
         timeout: 60_000,
       });
       if (r.status === 0) throw new Error("warp exited 0 against a real chain");

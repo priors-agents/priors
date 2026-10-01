@@ -44,7 +44,7 @@ dedicated agent wallet holding only what the agent may spend.
 | variable | default | |
 |---|---|---|
 | `PRIORS_KEY` | none | the agent wallet's private key; without it only the read-only tools work |
-| `PRIORS_AGENT_ID` | looked up from the identity registry | the Priors agent id the wallet acts for (the lookup finds only identities the wallet received since the v2 deploy; set it for an older one, or when the wallet holds several) |
+| `PRIORS_AGENT_ID` | looked up from the identity registry | the Priors agent id the wallet acts for (the lookup finds only identities minted to the wallet since the v2 deploy, never one transferred to it; set it for an older or a bought one, or when the wallet holds several) |
 | `PRIORS_RPC` | `https://rpc.mainnet.chain.robinhood.com` | JSON-RPC endpoint (a private URL is redacted from every answer) |
 | `PRIORS_FACILITATOR` | `https://facilitator.priors.trade` | where `find_services` lists merchants |
 | `PRIORS_MAX_PRICE_USD` | `1.00` | ceiling on what `pay_url` may be told to pay per call |
@@ -54,7 +54,7 @@ dedicated agent wallet holding only what the agent may spend.
 | `PRIORS_ALLOW_LOCAL` | off | `1` lets `pay_url` reach `http://localhost` and private addresses (local testing only) |
 | `PRIORS_SCORE_V2` | `https://priors.trade/api/score-v2` | where `score_of` reads Priors Score v2; `off` shows the on-chain score only |
 | `PRIORS_STOCK_VAULT` | the bundled deployments file's `stockVault` | the stock vault the stock tools and `credit_status` read |
-| `PRIORS_STATE_DIR` | `~/.local/state/priors-mcp` | where the payments signed and not yet settled are kept (one owner-only file per wallet, never the key, with a short-lived `.lock` beside it while it is written), so a restart, a new session or another session of the same wallet resends them instead of signing again; `off` keeps them in memory only |
+| `PRIORS_STATE_DIR` | `~/.local/state/priors-mcp` | where the payments signed and not yet settled are kept (one owner-only file per wallet, never the key, with a short-lived `.lock` beside it while it is written), so a restart, a new session or another session of the same wallet resends them instead of signing again. An absolute path, or one starting with `~/` (a relative one is refused at start). A payment that cannot be written there is not sent. `off` keeps them in memory only |
 
 Contract addresses (pool, lens, registry, USDG) come from `deployments/4663.v2.json`, bundled in the package, and the
 accepted stock tokens from `deployments/stock-assets.4663.json`. The stock vault's address (live since 2026-09-28)
@@ -69,7 +69,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.2.5"],
+      "args": ["-y", "@priors/mcp@0.2.6"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -91,7 +91,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.2.5"],
+      "args": ["-y", "@priors/mcp@0.2.6"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -101,7 +101,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 }
 ```
 
-or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.2.5`
+or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.2.6`
 (the key is expanded by your shell from the environment; do not paste it on the command line).
 
 ## Try it

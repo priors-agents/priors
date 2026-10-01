@@ -11,11 +11,12 @@
 //
 // Environment (the key is never read from argv and never printed; .env is loaded like the v1 tools):
 //   PRIORS_KEY        the agent owner's private key (PRIVATE_KEY is accepted too)
-//   PRIORS_RPC        JSON-RPC endpoint(s), comma-separated failover (else RPC_URL, else Robinhood Chain's official RPC)
+//   PRIORS_RPC        JSON-RPC endpoint(s), comma-separated failover (else RPC_URL, else Robinhood Chain's official RPC);
+//                     from a .env, only the public endpoints .env.example lists, unless PRIORS_ALLOW_CUSTOM_RPC=1 is exported
 //   PRIORS_ADDRESSES  path to a v2 addresses JSON (default: deployments/<chainId>.v2.json in this package). With
 //                     seatVaultV4, `join --seat` accepts the offer on whichever seat vault it waits, and `status`
 //                     reads the seat on the vault that sponsors the agent: the SDK handles both
-//   PRIORS_AGENT_ID   which identity to use, when the key owns more than one or it predates the v2 deploy
+//   PRIORS_AGENT_ID   which identity to use, when the key owns more than one, or it predates the v2 deploy or was transferred to the key
 //
 // Exit codes: 0 done, 1 failed, 2 usage or configuration error, 3 registered but waiting on someone else
 // (a seat offer that does not exist yet).
@@ -43,7 +44,7 @@ function parseArgs(argv) {
     else if (a === "-h" || a === "--help") flags.help = true;
     else if (a.startsWith("--")) {
       const k = a.slice(2);
-      if (!["invite", "seat", "days", "uri", "agent"].includes(k)) throw new UsageError(`unknown option ${a}`);
+      if (!["invite", "seat", "days", "uri"].includes(k)) throw new UsageError(`unknown option ${a}`);
       if (i + 1 >= argv.length) throw new UsageError(`${a} needs a value`);
       flags[k] = argv[++i];
     } else pos.push(a);
@@ -76,7 +77,8 @@ const when = (t) => new Date(t * 1000).toISOString().replace(".000Z", "Z");
 
 /**
  * The identity this key acts for: PRIORS_AGENT_ID, else the one the invite names if the key owns it, else the one
- * identity it holds that was minted to it since the v2 deploy. null if it holds none.
+ * identity it holds that was minted to it since the v2 deploy. null if it holds none. Only a mint counts: anyone can
+ * transfer an identity with an open loan to this key, and `repay` would then pay that loan (own audit 2026-10-01).
  */
 async function findAgent(sdk, me, addresses, hint) {
   const reg = await sdk._registry();
@@ -95,14 +97,14 @@ async function findAgent(sdk, me, addresses, hint) {
   const from = Number(addresses.deployBlock || Math.max(0, latest - 50_000));
   const ids = new Set();
   for (let b = from; b <= latest; b += 50_000) {
-    const logs = await sdk.provider.getLogs({ address: await reg.getAddress(), topics: [T, null, ethers.zeroPadValue(me, 32)], fromBlock: b, toBlock: Math.min(latest, b + 49_999) });
+    const logs = await sdk.provider.getLogs({ address: await reg.getAddress(), topics: [T, ethers.zeroPadValue(ethers.ZeroAddress, 32), ethers.zeroPadValue(me, 32)], fromBlock: b, toBlock: Math.min(latest, b + 49_999) });
     for (const l of logs) ids.add(BigInt(l.topics[3]));
   }
   const mine = [];
   for (const id of ids) if (await owns(id)) mine.push(Number(id));
   if (mine.length === 1) return mine[0];
   if (mine.length > 1) throw new UsageError(`this key owns identities ${mine.map((i) => "#" + i).join(", ")}: set PRIORS_AGENT_ID to pick one`);
-  throw new UsageError("this key owns an identity minted before the v2 deploy: set PRIORS_AGENT_ID to its id");
+  throw new UsageError("this key owns an identity that was not minted to it since the v2 deploy (minted earlier, or transferred to it): set PRIORS_AGENT_ID to the id you mean to use, only one you know is yours");
 }
 
 async function needAgent(sdk, me, addresses) {
@@ -186,7 +188,7 @@ async function repay(flags) {
   const open = (await sdk.openLoans(id)).sort((x, y) => x.dueAt - y.dueAt || x.loanId - y.loanId);
   if (open.length === 0) { console.log(`agent #${id} has no open loan`); return; }
   for (const l of flags.all ? open : open.slice(0, 1)) {
-    const r = await sdk.repay(l.loanId);
+    const r = await sdk.repay(l.loanId, { agentId: id }); // the pool refuses a loan that is not this agent's
     console.log(`repaid loan #${l.loanId}: ${usd(r.paid)}, tx ${r.hash}`);
   }
   await printStatus(sdk, addresses, id);

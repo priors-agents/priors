@@ -14,7 +14,7 @@
 //            await p.redeemInvite(agentId, "priors-invite:<id>:<expiry>:<sig>")   // treasury v4 first line
 //            await p.acceptSeat(agentId, staker)                                  // a staker's seat offer
 //            const { loanId } = await p.borrow(agentId, 5, 7 * 86400)             // $5 for 7 days
-//            await p.repay(loanId); await p.openLoans(agentId); await p.status(agentId)
+//            await p.repay(loanId, { agentId }); await p.openLoans(agentId); await p.status(agentId)
 //   stocks   (addresses.stockVault) await p.stockAssets(); await p.stockPosition(agentId)
 //            await p.openStockLine(agentId, token, "0.05")                        // deposit and open the line
 //            await p.addCollateral(agentId, "0.01"); await p.closeStockLine(agentId)
@@ -568,13 +568,22 @@ export class PriorsV2 {
     return { hash: rc.hash, loanId: Number(ev.args.loanId), principal: ev.args.principal, fee: ev.args.fee, dueAt: Number(ev.args.dueAt) };
   }
 
-  /** Repay a loan in full; approves USDG for exactly what is due, bound to the loan's agent and amount. */
-  async repay(loanId) {
+  /**
+   * Repay a loan of `agentId` in full; approves USDG for exactly what is due. `agentId` is the caller's own agent, and
+   * the pool refuses the loan if it is another agent's, whatever the RPC says (own audit 2026-10-01: the loan's agent
+   * id, read from the RPC, was passed back, so the pool's check could not fail and a lying RPC or a wrong loan id paid a
+   * stranger's loan; P-7's controller guard was missing too).
+   */
+  async repay(loanId, { agentId } = {}) {
+    if (agentId === undefined || agentId === null) throw new Error("repay(loanId, { agentId }): name the agent whose loan this is; the pool refuses the loan if it is another agent's");
     const l = await this.pool.getLoan(loanId);
     if (Number(l.status) !== 1) throw new Error(`loan #${loanId} is not active (${LOAN_STATUS[Number(l.status)]})`);
+    if (BigInt(agentId) !== l.agentId) throw new Error(`loan #${loanId} is agent #${l.agentId}'s, not #${agentId}'s: not repaid`);
+    const me = await this.me();
+    if (!(await this.pool.isController(l.agentId, me))) throw new Error(`loan #${loanId} belongs to agent #${l.agentId}, which ${me} does not control: not repaid`);
     const due = l.principal + l.fee;
     await this._ensure(await this._usdg(), await this.pool.getAddress(), due, `repay(${loanId})`);
-    const rc = await sendChecked(this.pool, "repay", [loanId, l.agentId, due], this._ifaces);
+    const rc = await sendChecked(this.pool, "repay", [loanId, BigInt(agentId), due], this._ifaces);
     return { hash: rc.hash, loanId: Number(loanId), paid: due };
   }
 
