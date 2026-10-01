@@ -222,19 +222,48 @@ export async function resend(input, paymentHeaders, { init, fetchImpl = globalTh
   return { response, pending, ...(pending ? { paymentHeaders } : {}) };
 }
 
-/** JSON with sorted keys and no whitespace: two bodies that are the same JSON value are the same purchase. */
-function canonicalJson(v) {
-  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;
-  if (v && typeof v === "object") return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(v[k])}`).join(",")}}`;
-  return JSON.stringify(v);
-}
-/** Every number in a JSON text is one a double holds exactly (at most 15 significant digits, in range): a longer one,
- *  such as a 20-digit id, would read the same as its neighbours, so such a body is keyed by its bytes instead. */
-const exactNumbers = (text) => (text.replace(/"(?:[^"\\]|\\.)*"/g, "").match(/\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g) || []).every((n) => {
-  const digits = n.split(/[eE]/)[0].replace(".", "").replace(/^0+/, "").replace(/0+$/, "");
+/** A JSON number by its value, every digit kept: one a double holds exactly (at most 15 significant digits, in range) as
+ *  JSON.stringify writes it; any other, such as a 20-digit id or 1e400, as its significant digits and power of ten
+ *  (GHSA-7m69: a double would read it the same as its neighbours, and keying such a body by its bytes made the same
+ *  body, re-spelled, a second purchase). */
+function canonicalNumber(n) {
+  const [, sign, int, frac = "", exp = "0"] = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(n);
+  const all = int + frac, trimmed = all.replace(/0+$/, ""), digits = trimmed.replace(/^0+/, "");
+  if (digits === "") return "0";
   const x = Math.abs(Number(n));
-  return digits === "" || (digits.length <= 15 && x >= 1e-300 && x < Infinity);
-});
+  if (digits.length <= 15 && x >= 1e-300 && x < Infinity) return JSON.stringify(Number(n));
+  return `${sign}${digits}e${BigInt(exp) - BigInt(frac.length) + BigInt(all.length - trimmed.length)}`;
+}
+/** A JSON text with sorted keys, no whitespace and one spelling per string and number, read from the text itself (not
+ *  JSON.parse's doubles): two bodies that are the same JSON value are the same purchase. Throws if it is not JSON. */
+function canonicalJson(text) {
+  JSON.parse(text);
+  let i = 0;
+  const take = (re) => { re.lastIndex = i; const t = re.exec(text)[0]; i = re.lastIndex; return t; };
+  const WS = /[ \t\n\r]*/y, STR = /"(?:[^"\\]|\\.)*"/y, NUM = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y, LIT = /true|false|null/y;
+  const value = () => {
+    take(WS);
+    let out;
+    if (text[i] === "{") {
+      i++; take(WS);
+      const members = new Map(); // the last of a repeated key, as JSON.parse reads it
+      if (text[i] === "}") i++;
+      else do { take(WS); const k = JSON.parse(take(STR)); take(WS); i++; members.set(k, value()); } while (text[i++] === ",");
+      out = `{${[...members.keys()].sort().map((k) => `${JSON.stringify(k)}:${members.get(k)}`).join(",")}}`;
+    } else if (text[i] === "[") {
+      i++; take(WS);
+      const items = [];
+      if (text[i] === "]") i++;
+      else do items.push(value()); while (text[i++] === ",");
+      out = `[${items.join(",")}]`;
+    } else if (text[i] === '"') out = JSON.stringify(JSON.parse(take(STR)));
+    else if (text[i] === "-" || (text[i] >= "0" && text[i] <= "9")) out = canonicalNumber(take(NUM));
+    else out = take(LIT);
+    take(WS);
+    return out;
+  };
+  return value();
+}
 /**
  * A purchase's identity: the method, the URL without its fragment (a fragment never reaches the merchant), and the
  * body (GHSA-xqp9), as a SHA-256: a JSON body by its value (key order and whitespace do not make a second purchase), a
@@ -251,7 +280,7 @@ export async function purchaseKey(req) {
   const type = req.headers.get("content-type") || "";
   let canon = null;
   if (/json/i.test(type)) {
-    try { const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); if (exactNumbers(text)) canon = "json:" + canonicalJson(JSON.parse(text)); } catch (_) { /* not JSON: by its bytes */ }
+    try { canon = "json:" + canonicalJson(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch (_) { /* not JSON: by its bytes */ }
   } else {
     const boundary = /^multipart\/form-data;.*boundary="?([^";]+)"?/i.exec(type)?.[1];
     if (boundary) canon = "form:" + Buffer.from(bytes).toString("latin1").split(boundary).join("");
