@@ -162,6 +162,10 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
 
 ## Changelog
 
+- **inputs, 2026-10-01** (all versions): a change of hands after an agent's v1 loans restarts its record too, read
+  from the identity registry's transfers (`ownerSince` in `buildInputs`), since v1 loans carry no owner; a transfer
+  before every v1 loan (the mint) changes nothing, and an agent with no v1 loan is read from its v2 loans as before.
+  Found by our own audit of the public repo; no agent is known to have changed hands after its v1 history.
 - **inputs, 2026-09-29** (all versions): a backer's 30 days count from when its current owner took the id, read
   from the identity registry's transfers, not from its enrolment: a bought aged id is a new backer (private report
   GHSA-6f8j). No published score changed: no backer id had changed hands after enrolling.

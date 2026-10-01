@@ -94,14 +94,22 @@ export function makeClusters(snapshot, links = { clusters: [] }, agentWallets = 
   return { byId, walletsOf, declaredBy, clusterOfAgent, clusterOfWallet };
 }
 
-/** When the agent's current owner took it over: the first loan after the last one taken under another owner. */
-function ownershipChangedAt(agent, loans, now) {
-  const withOwner = loans.filter((l) => l.owner).sort((x, y) => Number(x.issuedAt) - Number(y.issuedAt));
+/**
+ * When the agent's current owner took it over: the first loan after the last one taken under another owner. v1 loans
+ * carry no owner, so a sale after v1 history is read from `transferredAt` (the agent's last registry transfer) when a
+ * v1 loan came before it; a transfer before every v1 loan (its mint) moves nothing (own audit 2026-10-01).
+ */
+function ownershipChangedAt(agent, loans, now, transferredAt) {
+  const byIssue = [...loans].sort((x, y) => Number(x.issuedAt) - Number(y.issuedAt));
+  const withOwner = byIssue.filter((l) => l.owner);
   let lastOther = -1;
   withOwner.forEach((l, i) => { if (lc(l.owner) !== lc(agent.owner)) lastOther = i; });
-  if (lastOther < 0) return 0;
   const next = withOwner[lastOther + 1];
-  return next ? Number(next.issuedAt) : now; // not borrowed since the change: the record starts now
+  const fromLoans = lastOther < 0 ? 0 : next ? Number(next.issuedAt) : now; // not borrowed since the change: the record starts now
+  const sold = Number(transferredAt) || 0;
+  if (!(sold > 0) || !byIssue.some((l) => l.era === "v1" && Number(l.issuedAt) < sold)) return fromLoans;
+  const after = byIssue.find((l) => Number(l.issuedAt) >= sold);
+  return Math.max(fromLoans, after ? Number(after.issuedAt) : now);
 }
 
 /**
@@ -116,10 +124,13 @@ function ownershipChangedAt(agent, loans, now) {
  *   backerOwnerSince { [agentId]: seconds }        the last registry transfer of each backer id (sdk/x402-income.mjs
  *                                                  updateBackerTenure): a backer's 30 days count from then when it is
  *                                                  later than its enrolment. Absent: from its enrolment.
+ *   ownerSince    { [agentId]: seconds }           the last registry transfer of an agent id (same reader): a sale
+ *                                                  after its v1 loans restarts its record, as v2 loans' owners show
+ *                                                  a sale after v2 loans. Absent: from the loans alone.
  *   pending       { payers: [...], wallets: [...] } netting still being read (sdk/x402-income.mjs): payments from
  *                                                  those payers, or to a cluster holding one of those wallets, wait
  */
-export function buildInputs(snapshot, { links, income = [], agentWallets = {}, transfers = [], repayers = {}, payerScores = {}, pending = {}, backerOwnerSince = {}, now, weights = DEFAULT_WEIGHTS } = {}) {
+export function buildInputs(snapshot, { links, income = [], agentWallets = {}, transfers = [], repayers = {}, payerScores = {}, pending = {}, backerOwnerSince = {}, ownerSince = {}, now, weights = DEFAULT_WEIGHTS } = {}) {
   const t = Number(now ?? snapshot.meta?.timestamp);
   if (!Number.isFinite(t) || t <= 0) throw new TypeError("score-v2 inputs: pass `now` (or a snapshot with meta.timestamp)");
   const K = makeClusters(snapshot, links, agentWallets);
@@ -204,7 +215,7 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
     const id = Number(a.id);
     const mine = K.clusterOfAgent(id);
     const raw = loansBy.get(a.id) || [];
-    const since = ownershipChangedAt(a, raw, t);
+    const since = ownershipChangedAt(a, raw, t, ownerSince?.[id]);
     const inc = (incomeOf.get(id) || []).sort((x, y) => x.at - y.at || (x.payer < y.payer ? -1 : x.payer > y.payer ? 1 : 0) || x.amount - y.amount);
 
     const loans = raw.map((l) => {

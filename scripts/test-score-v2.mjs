@@ -160,6 +160,23 @@ check("F17 a bought backer is new: its 30 days count from when its current owner
   assert.equal(one(mk(), 1).detail.repaidByOthers, 3, "no transfer history given: from its enrolment, as before");
 });
 
+check("own audit SD-8: a v1-era agent sold after its v1 history restarts too, from the registry's transfer (v1 loans carry no owner)", () => {
+  const mk = () => ({ meta: { timestamp: NOW }, agents: [agent(1, "0xBUYER", { sponsor: 2 }), agent(2, "0xB", { isRoot: true, enrolledAt: NOW - 400 * DAY })],
+    loans: [0, 1, 2].map((i) => repaid(1, 2, 50, 90 - i * 10, 9, { era: "v1", id: 100 + i })),
+    events: [0, 1, 2].map((i) => ({ kind: "FeeSplit", era: "v1", loanId: 100 + i, sponsor: 2 })) });
+  const before = one(mk(), 1);
+  assert.equal(before.flags.ownershipChanged, false, "the premise: v1 loans alone show no change of hands");
+  const sold = one(mk(), 1, { ownerSince: { 1: NOW - 5 * DAY } });
+  assert.equal(sold.flags.ownershipChanged, true);
+  assert.equal(sold.detail.repaidByOthers, 0);
+  assert.equal(pts(sold, "age"), 0);
+  // its last transfer is its mint, before the v1 loans: nothing changed hands after the history, nothing moves
+  assert.deepEqual(one(mk(), 1, { ownerSince: { 1: NOW - 200 * DAY } }), before);
+  // a transfer before any v1 loan of a v2-only agent is the v2 loans' business, as before
+  const v2 = { meta: { timestamp: NOW }, events: [], agents: [agent(1, "0xA", { sponsor: 2 }), agent(2, "0xB", { isRoot: true, enrolledAt: NOW - 400 * DAY })], loans: [0, 1, 2].map((i) => repaid(1, 2, 50, 90 - i * 10, 9, { owner: "0xA" })) };
+  assert.deepEqual(one(v2, 1, { ownerSince: { 1: NOW - 5 * DAY } }), one(v2, 1));
+});
+
 check("F2 rungs need time: 3 backed loans inside two weeks stay 'started', and 'earned' needs 30 days since the first", () => {
   const quick = scoreV2(base({ loans: [loan(50, 7, { ago: 12 }), loan(50, 7, { ago: 11 }), loan(50, 7, { ago: 10 })] }));
   assert.equal(quick.rung, 1);

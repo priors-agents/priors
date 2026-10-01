@@ -310,7 +310,7 @@ corrected in T10 above.
 | C-7 | Low | On Windows, environment names are case-insensitive, so `priors_allow_custom_addresses=1` in a `.env` read as C-1's exported opt-in. | **Fixed:** names a `.env` set are compared case-insensitively. |
 | C-8 | Low | A key in a `.env` with an inline `# comment`, or otherwise malformed, was printed whole in the v1 CLI's error. | **Fixed:** an unquoted ` # comment` is not part of the value, and a key is checked before use and never repeated. |
 | C-9 | Info | `priors-v2` accepted `--agent` and ignored it, so a command could act on another identity than the one named. | **Fixed:** `--agent` is refused (`PRIORS_AGENT_ID` names the identity). |
-| S-2 | Info | Score v2 reads a change of hands from the owners of v2 loans only: an agent sold before its first v2 loan (a v1-era one) keeps its record in the score. | **Residual (display only):** no such agent exists today; the fix is to read the registry's transfers for borrowers as S-1 does for backers. |
+| S-2 | Info | Score v2 read a change of hands from the owners of v2 loans only: an agent sold after its v1 history (v1 loans carry no owner) kept that record in its score. | **Fixed (`sdk/score-v2-inputs.mjs`, display only):** `buildInputs` takes the agent's last registry transfer (`ownerSince`, as S-1 does for backers) and restarts the record when it came after a v1 loan; published scores follow once Priors' publisher passes it. No agent is known to have changed hands after its v1 history. |
 
 ## Reproducing
 
