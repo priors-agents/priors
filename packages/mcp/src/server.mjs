@@ -313,7 +313,13 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   /** Kept on file before the payment leaves; a failure throws, and the payer then does not send it (own audit: a
    *  record silently lost made a restart or another session sign again). */
   async function record(key, e) {
-    if (stateFile) await locked(() => { const m = readState(); m.set(key, e); writeState(m); });
+    if (stateFile) await locked(() => {
+      const m = readState(), cur = m.get(key); // readState keeps live entries only
+      // GHSA-mvvh: another session's authorization for this purchase is still out: never overwrite it and
+      // never send a second one (the payer drops this signature unsent, NOT_RECORDED); the next call resends that one.
+      if (cur && JSON.stringify(cur.paymentHeaders) !== JSON.stringify(e.paymentHeaders)) throw Object.assign(new Error("another session of this wallet has a payment out for this purchase"), { code: "OTHER_SESSION", prior: cur });
+      m.set(key, e); writeState(m);
+    });
     outstanding.set(key, e);
   }
   /** After the payment is sent and cannot be unsent: the file is best effort, memory always holds it. */
@@ -436,12 +442,13 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     // Kept for the payer's clock-skew margin past validBefore: the chain's clock may be behind this machine's.
     for (const [k, v] of outstanding) if (!live(v, now)) outstanding.delete(k); // the file drops them on its next write
     refresh(); // a payment another server of this wallet (another session) signed for this purchase is resent, not signed again
-    // SHORTCUT: two sessions of one wallet paying the same URL in the same instant (between this read and the other's
-    // onSigned, about one 402 round trip) can still both sign: onSigned records a payment, it does not look for another
-    // session's. Ceiling:
-    // one extra payment of at most max_price_usd to the merchant the user chose, counted in each session's cap (the
-    // P-15 class, Low). Upgrade trigger: a report of it, or agents running pay_url concurrently on one wallet: reserve
-    // the purchase in the file under the lock before the 402 request, or derive the EIP-3009 nonce per purchase.
+    // Two sessions of one wallet paying the same purchase in the same instant (between this read and the other's
+    // onSigned) both sign, but only the first record() keeps its payment: the second finds it on file under the lock and
+    // drops its own signature unsent, and a later call resends the first (GHSA-mvvh).
+    // SHORTCUT: the lock is best effort (a writer stops waiting after 2 s), so behind a lock held that long both payments
+    // can still be recorded and sent. Ceiling: one extra payment of at most max_price_usd to the merchant the user chose,
+    // counted in each session's cap (the P-15 class, Low). Upgrade trigger: a report of it: derive the EIP-3009 nonce
+    // per purchase.
     const lines = [];
     const prior = outstanding.get(purchase);
     // A payment kept without its body (by an earlier version, or for a call without one) cannot be matched to a call with
@@ -480,6 +487,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
           throw new ToolError(`A payment of ${usd(price)} to ${e.requirement.payTo} was signed, then the request failed (${explain(e)}). The merchant may still settle it until ${until}, so do NOT call pay_url again for this purchase (the same method, URL and body) before ${until}; check wallet_balance.${e.borrowed > 0n ? ` Borrowed ${usd(e.borrowed)}${e.loanId !== null ? ` as loan #${e.loanId}` : ""}: repay it with the repay tool.` : ""}`);
         }
         const loan = e?.borrowed > 0n ? ` ${usd(e.borrowed)} was borrowed${e.loanId !== null ? ` as loan #${e.loanId}` : ""} before it failed: repay it with the repay tool.` : "";
+        if (e?.code === "NOT_RECORDED" && e.cause?.code === "OTHER_SESSION") { outstanding.set(purchase, e.cause.prior); throw new ToolError(`Another session of this wallet signed a payment of ${usd(e.cause.prior.price)} for this purchase a moment ago, and it may still settle until ${when(e.cause.prior.validBefore + X.SKEW_SECONDS)}. Nothing was sent from this call and no payment of its own is out: calling pay_url again resends that same payment, never a new one.${loan}`); }
         if (e?.code === "NOT_RECORDED") throw new ToolError(`A payment was signed but could not be written to PRIORS_STATE_DIR (${explain(e.cause ?? e)}), so it was not sent and nothing can be settled. Fix that directory, or set PRIORS_STATE_DIR=off to keep payments in this process's memory only, then call again.${loan}`);
         if (e?.name === "TimeoutError" || e?.name === "AbortError") throw new ToolError(`${method} ${u.href} did not answer in time. Nothing was signed or paid.${loan}`);
         if (loan) throw new ToolError(`${explain(e)}.${loan}`);

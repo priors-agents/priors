@@ -125,7 +125,9 @@ bigger backer.
 
 `sdk/float.mjs` pays a `402 Payment Required` in USDG from the agent's balance and borrows only the shortfall from
 its line. Always set `maxBorrow` to what the agent can repay within the term, and never call `pay()` again for a
-purchase that came back `pending` — use `resend()`. See `docs/FLOAT.md`.
+purchase whose result (or error) carries a `paymentHeader` without `paid` (pending, a dropped connection, a timeout):
+the merchant can still cash it until `validBefore`. Send that same payment with `priors.resend(url, paymentHeader)`.
+See `docs/FLOAT.md`.
 
 ## Reading any agent's record
 

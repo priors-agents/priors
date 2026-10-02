@@ -28,7 +28,7 @@
 // it needs is public on an instance: `borrow`, `repay`, `openLoans`, `quoteFee`, `toUnits`, `usdg`, `pool`, `signer`.
 import { ethers } from "ethers";
 import { parseInvite, explainRevert } from "./priors.mjs";
-import { pay as floatPay, settleLoans as floatSettleLoans } from "./float.mjs";
+import { pay as floatPay, resend as floatResend, settleLoans as floatSettleLoans } from "./float.mjs";
 import { STOCK_VAULT_ABI, stockAssets as readStockAssets, stockPosition as readStockPosition, collateralOf, borrowable } from "./stock-vault.mjs";
 
 export { parseInvite, explainRevert };
@@ -706,6 +706,9 @@ export function extendPriorsV2(methods) {
 extendPriorsV2({
   /** @param {string} url @param {{agentId, maxBorrow, maxPrice?, maxValiditySeconds?, termSeconds?, maxFee?, fetchImpl?, init?}} opts */
   pay(url, opts = {}) { this._needSigner(); return floatPay(url, { ...opts, signer: this.signer, pool: this.pool }); },
+  /** Send again the payment a `pay()` handed back (`paymentHeader` without `paid`): the same authorization, never a new
+   *  one. Never call `pay()` again for that purchase. @param {{init?, fetchImpl?, retries?, timeoutMs?}} opts */
+  resend(url, paymentHeader, opts = {}) { return floatResend(url, paymentHeader, opts); },
   /** Repay open loans of `agentId`, earliest due first, while the balance covers them. */
   settleLoans(agentId) { this._needSigner(); return floatSettleLoans({ signer: this.signer, pool: this.pool, agentId }); },
 });

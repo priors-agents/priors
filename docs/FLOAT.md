@@ -28,8 +28,8 @@ const r = await priors.pay("https://merchant.example/api/thing", {
 await priors.settleLoans(agentId);                     // later, once the agent has been paid: repay, earliest due first
 ```
 
-The functional form is `pay(url, { signer, pool, agentId, ... })` and `settleLoans({ signer, pool, agentId })`
-from `priors/float`.
+The functional form is `pay(url, { signer, pool, agentId, ... })`, `resend(url, paymentHeader)` and
+`settleLoans({ signer, pool, agentId })` from `priors/float`; `priors.resend(url, paymentHeader)` is the same `resend`.
 
 ## What `pay()` does
 
@@ -51,7 +51,8 @@ from `priors/float`.
    and an error thrown after the loan or the signature carries them with `borrowed`, `loanId` and `dueAt`.
 
 ⛔ **Never call `pay()` again for a purchase that returned a `paymentHeader` without `paid`.** Until `validBefore`
-the merchant can still cash it, so a second `pay()` would sign a second payment. Use `resend()` with that header.
+the merchant can still cash it, so a second `pay()` would sign a second payment. Use `priors.resend(url, paymentHeader)` (or
+`resend` from `priors/float`) with that header. `pay()` keeps no memory of earlier calls: this rule is the caller's to keep.
 
 No redirect is followed unless `init.redirect` says so (a signed payment never travels to a host you did not name),
 merchant bodies are read up to 256 KB, and calls from one wallet run one at a time, so two purchases never both

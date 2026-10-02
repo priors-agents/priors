@@ -83,6 +83,14 @@ await check("PriorsV2 needs a pool and a provider, and refuses writes without a 
   await assert.rejects(() => p.deposit(5), /needs a signer/);
   assert.throws(() => p.pay("https://example.invalid"), /needs a signer/);
 });
+await check("priors.resend() sends the header pay() handed back, unchanged, and signs nothing (GHSA-x4jj: the resend the docs point to)", async () => {
+  const p = new PriorsV2({ provider: new ethers.JsonRpcProvider("http://127.0.0.1:1", 4663, { staticNetwork: true }), addresses: readDeploymentV2(4663) });
+  const seen = [];
+  const fetchImpl = async (_u, init) => { seen.push(new Headers(init.headers).get("X-PAYMENT")); return new Response("ok", { status: 200 }); };
+  const r = await p.resend("https://m.example/x", "HEADER", { fetchImpl, sleep: async () => {} });
+  assert.equal(r.response.status, 200);
+  assert.deepEqual(seen, ["HEADER"], "the same authorization, once; no signer was needed");
+});
 await check("extendPriorsV2 refuses to overwrite a method, so float's pay() cannot be replaced silently", () => {
   assert.throws(() => extendPriorsV2({ pay() {} }), /already exists/);
   assert.throws(() => extendPriorsV2({ borrow() {} }), /already exists/);

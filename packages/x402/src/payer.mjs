@@ -297,29 +297,77 @@ export async function purchaseKey(req) {
   const bytes = req.body ? new Uint8Array(await req.clone().arrayBuffer()) : new Uint8Array(0);
   if (bytes.length === 0) return head;
   const type = req.headers.get("content-type") || "";
+  const essence = type.split(";")[0].trim().toLowerCase();
   let canon = null;
-  if (/json/i.test(type)) {
+  // A form is told by its media type, before the JSON arm: a boundary or a parameter that holds "json" does not make a
+  // form JSON (GHSA-79g3: such a form failed JSON.parse and was keyed by its bytes, boundary included).
+  if (essence === "multipart/form-data") {
+    const boundary = mediaTypeParams(type)?.get("boundary");
+    const fields = boundary ? multipartFields(bytes, boundary) : null;
+    if (fields !== null) canon = "form:" + fields;
+  } else if (essence === "application/x-www-form-urlencoded") {
+    try { const p = new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); p.sort(); canon = "urlencoded:" + p.toString(); } catch (_) { /* not UTF-8: by its bytes */ }
+  } else if (/json/i.test(type)) {
     let text = null;
     try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); JSON.parse(text); } catch (_) { text = null; /* not JSON: by its bytes */ }
     // valid JSON is keyed by its value, never by its bytes: should that ever throw, nothing is signed
     if (text !== null) canon = "json:" + canonicalJson(text);
-  } else if (/^application\/x-www-form-urlencoded/i.test(type)) {
-    try { const p = new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); p.sort(); canon = "urlencoded:" + p.toString(); } catch (_) { /* not UTF-8: by its bytes */ }
-  } else {
-    const boundary = /^multipart\/form-data;.*boundary="?([^";]+)"?/i.exec(type)?.[1];
-    const fields = boundary ? multipartFields(bytes, boundary) : null;
-    if (fields !== null) canon = "form:" + fields;
   }
   const digest = ethers.sha256(canon !== null ? ethers.toUtf8Bytes(canon) : ethers.concat([ethers.toUtf8Bytes("raw:"), bytes]));
   return `${head} body:${digest.slice(2)}`;
 }
 
+const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+/** The parameters after a header's first value (`; a=b; c="d"`), as form parsers read them: a Map by lower-case name,
+ *  a quoted value unquoted, whitespace around ";" and "=" ignored (Go's and Python's parsers accept it; busboy and
+ *  undici refuse such a request, so merging it costs nothing). null if a parameter does not parse, or a name repeats
+ *  with another value (which one a parser takes is the parser's). */
+function headerParams(s) {
+  const params = new Map();
+  const re = /[ \t]*;[ \t]*(?:([^\s=;"]+)[ \t]*=[ \t]*("(?:[^"\\]|\\[\s\S])*"|[^";]*?))?[ \t]*(?=;|$)/y;
+  for (let i = 0; i < s.length; ) {
+    re.lastIndex = i;
+    const p = re.exec(s);
+    if (!p || re.lastIndex === i) return null;
+    i = re.lastIndex;
+    if (p[1] === undefined) continue; // an empty ";"
+    const k = p[1].toLowerCase(), v = p[2].startsWith('"') ? p[2].slice(1, -1).replace(/\\([\s\S])/g, "$1") : p[2];
+    if (params.has(k) && params.get(k) !== v) return null;
+    params.set(k, v);
+  }
+  return params;
+}
+/** A media type's parameters (headerParams), or null if it is not `type/subtype` followed by parameters. */
+function mediaTypeParams(s) {
+  const mt = /^[ \t]*[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+[ \t]*/.exec(s);
+  return mt ? headerParams(s.slice(mt[0].length)) : null;
+}
+/** A part's media type as form parsers read it (GHSA-3h5x): the type in lower case (text/plain when the part names
+ *  none) and its charset unless it is UTF-8, the default every parser applies (busboy decodes a field by it); a
+ *  file's other parameters too (undici's File.type keeps them), sorted by name. Parameter order, quoting, case and
+ *  whitespace do not count. A media type that does not parse is kept as 0.2.7 wrote it. */
+function partMediaType(raw, isFile) {
+  if (raw === undefined) return "text/plain";
+  const params = mediaTypeParams(raw);
+  if (!params) return raw.toLowerCase().replace(/[ \t]*([;=])[ \t]*/g, "$1");
+  const kept = [];
+  for (const [k, v] of params) {
+    if (k === "charset") { const c = v.toLowerCase() === "utf8" ? "utf-8" : v.toLowerCase(); if (c !== "utf-8") kept.push([k, c]); }
+    else if (isFile) kept.push([k, v]);
+  }
+  kept.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return raw.split(";")[0].trim().toLowerCase() + kept.map(([k, v]) => `;${k}=${TOKEN.test(v) ? v : JSON.stringify(v)}`).join("");
+}
+/** Transfer encodings that leave the bytes as they are; any other (quoted-printable, base64) Go and Python decode. */
+const IDENTITY_CTE = new Set(["7bit", "8bit", "binary"]);
 /**
  * A multipart/form-data body by its fields, as a form parser reads it (RFC 7578, GHSA-85hm): each part by its name,
- * its file name if it has one, its media type (text/plain when the part names none) and its value's bytes, the parts
- * sorted by name (stably: repeated fields keep their order, as URLSearchParams.sort does). The boundary, the preamble
- * and the epilogue, header names' case and whether a name is quoted do not count. Anything that is not a well-formed
- * form returns null, and the body is then keyed by its bytes.
+ * its file name if it has one, its media type (partMediaType), what else a parser can read differently (a transfer
+ * encoding that is not the identity, an RFC 8187 parameter such as filename*, as written) and its value's bytes, the
+ * parts sorted by name (stably: repeated fields keep their order, as URLSearchParams.sort does). The boundary, the
+ * preamble and the epilogue, header names' case, whether a name is quoted, parameter order and spelling, and part
+ * headers no form parser reads (GHSA-cpvc) do not count. Anything that is not a well-formed form returns null, and the
+ * body is then keyed by its bytes.
  */
 function multipartFields(bytes, boundary) {
   const s = Buffer.from(bytes).toString("latin1");
@@ -335,21 +383,22 @@ function multipartFields(bytes, boundary) {
     const headers = new Map();
     for (const line of m[1].split("\r\n")) {
       const h = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*(.*?)[ \t]*$/.exec(line); // a folded or broken line is not a form
-      if (!h || headers.has(h[1].toLowerCase())) return null;
-      headers.set(h[1].toLowerCase(), h[2]);
+      if (!h) return null;
+      const k = h[1].toLowerCase();
+      if (k !== "content-disposition" && k !== "content-type" && k !== "content-transfer-encoding") continue; // no parser reads it
+      if (headers.has(k)) return null; // two of a header a parser reads: which one it takes is the parser's
+      headers.set(k, h[2]);
     }
-    const cd = /^form-data((?:[ \t]*;[ \t]*[^\s=;]+[ \t]*=[ \t]*(?:"(?:[^"\\]|\\.)*"|[^\s";]*))*)[ \t]*$/i.exec(headers.get("content-disposition") || "");
-    if (!cd) return null;
-    const params = {};
-    for (const p of cd[1].matchAll(/;[ \t]*([^\s=;]+)[ \t]*=[ \t]*("(?:[^"\\]|\\.)*"|[^\s";]*)/g)) {
-      const k = p[1].toLowerCase();
-      if (!["name", "filename"].includes(k) || k in params) return null; // filename*, or anything else: by its bytes
-      params[k] = p[2].startsWith('"') ? p[2].slice(1, -1).replace(/\\(.)/g, "$1") : p[2];
-    }
-    if (params.name === undefined) return null;
-    const mediaType = (headers.get("content-type") ?? "text/plain").toLowerCase().replace(/[ \t]*([;=])[ \t]*/g, "$1");
-    const other = [...headers].filter(([k]) => k !== "content-disposition" && k !== "content-type").map(([k, v]) => `${k}:${v}`).sort();
-    parts.push([params.name, params.filename ?? null, mediaType, other, Buffer.from(m[2], "latin1").toString("hex")]);
+    const cd = /^form-data(?=[ \t;]|$)/i.exec(headers.get("content-disposition") || "");
+    const params = cd ? headerParams(headers.get("content-disposition").slice(cd[0].length)) : null;
+    if (!params || !params.has("name")) return null;
+    const filename = params.has("filename") ? params.get("filename") : null;
+    // filename* (busboy and Go read it in place of filename) or any RFC 8187 parameter: kept as written, not a reason
+    // to key the form by its bytes, boundary included (GHSA-79g3). Other disposition parameters no parser reads.
+    const extra = [...params].filter(([k]) => k.endsWith("*")).map(([k, v]) => `${k}=${v}`);
+    const cte = (headers.get("content-transfer-encoding") ?? "7bit").toLowerCase();
+    if (!IDENTITY_CTE.has(cte)) extra.push(`content-transfer-encoding:${cte}`);
+    parts.push([params.get("name"), filename, partMediaType(headers.get("content-type"), filename !== null), extra.sort(), Buffer.from(m[2], "latin1").toString("hex")]);
   }
   parts.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
   return JSON.stringify(parts);
