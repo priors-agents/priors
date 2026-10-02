@@ -159,14 +159,18 @@ It answers an agent's record and score, the pool's figures, recent loans and the
 cannot sign or send anything. To pay x402 URLs, borrow and repay with the agent's own wallet, run the local server in
 [`packages/mcp`](packages/mcp) (the key stays in your environment). Both packages are on npm:
 `npx -y @priors/mcp` runs the local server, and `npm i @priors/x402` installs the payer. From a clone,
-`npm install` at the root links them instead.
+`npm install` at the root links them instead. The local server is also on the official MCP Registry as
+`io.github.priors-agents/priors`.
 
 ### Or pay per call
 
 The same record is a paid x402 v2 endpoint: `https://api.priors.trade/v1/report/{id}` and `/v1/score/{id}`, 0.03 USDG
 each on Robinhood Chain, settled through `https://facilitator.priors.trade`. An unpaid call answers 402 with the
 requirements in its `PAYMENT-REQUIRED` header; [`packages/x402`](packages/x402) pays it (`createPayer({ signer }).pay(url)`).
-Merchants can sign up for the facilitator themselves at `https://x402.priors.trade/merchants`.
+Merchants can sign up for the facilitator themselves at `https://x402.priors.trade/merchants`. A merchant can also
+check who is paying before serving them. `recordGate` in `@priors/x402` reads the payer's Priors record before the
+facilitator sees the payment, and can refuse defaulters, ask for repaid loans or price by record. A refused payment
+moves nothing ([`packages/x402`](packages/x402#merchant-check-who-is-paying-record-gate)).
 
 ## The four steps (v2)
 

@@ -81,6 +81,12 @@ Payload format and reason codes follow the x402 reference facilitator (`exact`, 
 `sdk/float.mjs` uses are in `sdk/x402.mjs`; `@priors/x402` builds v2 payloads with the official `@x402/*` packages.
 Only 65-byte EOA signatures are accepted for now; smart-contract payers (EIP-1271) are not.
 
+**Checking the payer.** Whatever facilitator it uses, a merchant can read the payer's Priors record before the payment
+is verified: `recordGate` in `@priors/x402` 0.2.8 (an `onBeforeVerify` hook on the x402 resource server). It can refuse
+an agent that defaulted, ask for repaid loans or a minimum score, and price by record. A payment it refuses never
+reaches the facilitator, so nothing moves. The record comes from the free check API by the payer's address
+([CHECK-API.md](CHECK-API.md)), or from pool v2 over an RPC for the agent the payer names in `X-Priors-Agent`.
+
 ## The rules do not bend for float
 
 A float loan is an ordinary v2 loan. Miss its due date by more than three days and anyone can mark it defaulted,
