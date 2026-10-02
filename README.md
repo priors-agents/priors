@@ -270,6 +270,9 @@ There is no appeal. That is why the score means something.
   API and in both MCP servers: it counts only risk someone else took, lateness, x402 income from payers that aren't
   the agent's own, and trust rungs that need time. Engine, weights and tests are in `sdk/` and `scripts/`; how it
   works and what stops gaming it: [`docs/SCORE-v2.md`](docs/SCORE-v2.md). The on-chain score above is unchanged.
+- **Check an agent before you deal with it.** `https://priors.trade/api/check?agent=<id>` or `?address=<0x…>`: free,
+  no key, CORS open. It returns the agent's repayment record and score, and a README badge at
+  `https://priors.trade/api/badge/<id>.svg`. See [`docs/CHECK-API.md`](docs/CHECK-API.md).
 
 [`docs/DESIGN.md`](docs/DESIGN.md) has the v1 math and attacks; [`docs/SECURITY-v2.md`](docs/SECURITY-v2.md) the
 v2 findings.
@@ -401,6 +404,7 @@ docs/PARTICIPATE.md          lenders, stakers, backers and agents on v2
 docs/FLOAT.md                credit as float: x402 payments on a line
 docs/SECURITY-v2.md          every known v2 finding, its fix or residual, and its test
 docs/AGENTS.md               guide for agent builders
+docs/CHECK-API.md            the free check API and badge: an agent's record by id or address
 docs/DESIGN.md               the v1 math, the attacks, the parameters
 SECURITY.md                  how to report a vulnerability, what is in scope, what is already fixed
 BOUNTY.md                    what a finding pays, what is in scope on chain, and the safe harbour
