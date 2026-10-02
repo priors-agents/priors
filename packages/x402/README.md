@@ -89,14 +89,25 @@ An agent pays it with `@x402/mcp`'s client and this package's USDG client:
 
 The payer's Priors record is what it has borrowed and repaid on Robinhood Chain, and whether it ever defaulted.
 `recordGate` reads it before the facilitator sees the payment. A payment the merchant's policy refuses is never
-verified or settled: no money moves, and the client gets the usual 402 with the reason (`priors_payer_defaulted`,
-`priors_record_too_short`, `priors_score_too_low`, `priors_price_not_entitled`, `priors_record_unavailable`).
+verified or settled: no money moves, and the client gets the usual 402. The reason (`priors_payer_defaulted`,
+`priors_record_too_short`, `priors_score_too_low`, `priors_price_not_entitled`, `priors_record_unavailable`) is the
+`error` field of its `PAYMENT-REQUIRED` header (base64 JSON), not the body.
 
 ```js
 import { createResourceServer, recordGate } from "@priors/x402";
 
-const server = createResourceServer({ apiKey: process.env.PRIORS_FACILITATOR_KEY });
+const server = createResourceServer({ apiKey: process.env.PRIORS_MERCHANT_KEY });
 recordGate({ refuseDefaulted: true, minRepaid: 1 }).attach(server); // then paymentMiddleware(routes, server) as above
+```
+
+**On a local fork.** Read the record from the fork, not mainnet, and settle on the fork: `facilitator.priors.trade`
+only settles on Robinhood Chain itself. `createResourceServer` takes any x402 v2 facilitator client as
+`facilitatorClient`; agent001's sandbox runs one that pays the gas from a fork-only wallet
+([`src/facilitator-local.mjs`](https://github.com/priors-agents/agent001/blob/main/src/facilitator-local.mjs)).
+
+```js
+const server = createResourceServer({ facilitatorClient: myForkFacilitator });
+recordGate({ source: "chain", rpc: "http://127.0.0.1:8545", minRepaid: 1 }).attach(server);
 ```
 
 | option | default | |
@@ -143,6 +154,10 @@ console.log(response.status, await response.json(), { paid, borrowed, loanId, du
 // once the agent has been paid by its client:
 await payer.settleLoans(); // repays open loans, earliest due first; do it before dueAt
 ```
+
+To a merchant whose record gate reads the chain, name the agent the wallet controls:
+`payer.pay(url, { headers: { "x-priors-agent": "1234" } })`. A refusal comes back as a 402 whose reason is the
+`error` field of the `PAYMENT-REQUIRED` header.
 
 Amounts: a `bigint` or integer is atomic USDG (6 decimals: `100000n` = $0.10); a string with `$` is dollars.
 
