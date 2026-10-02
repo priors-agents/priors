@@ -1,0 +1,60 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.priors-agents/priors",
+  "title": "Priors",
+  "description": "Pay x402 APIs in USDG on Robinhood Chain, borrow and repay a Priors credit line, check records.",
+  "websiteUrl": "https://priors.trade",
+  "repository": {
+    "url": "https://github.com/priors-agents/priors",
+    "source": "github",
+    "subfolder": "packages/mcp"
+  },
+  "version": "0.2.8",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@priors/mcp",
+      "version": "0.2.8",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "PRIORS_KEY",
+          "description": "Private key of a dedicated agent wallet on Robinhood Chain; without it only the read-only tools work",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "PRIORS_AGENT_ID",
+          "description": "The wallet's Priors (ERC-8004) agent id, when it cannot be looked up",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "PRIORS_MAX_PRICE_USD",
+          "description": "Most one x402 call may cost (default 1.00)",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "PRIORS_MAX_SPEND_USD",
+          "description": "Most x402 payments may total while the server runs (default 5)",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "PRIORS_MAX_BORROW_USD",
+          "description": "Most one loan may be (default 25)",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
