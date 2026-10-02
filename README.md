@@ -152,8 +152,16 @@ instructions.
 Read-only, hosted, no key: add `https://mcp.priors.trade/mcp` (Streamable HTTP) to any MCP client.
 
 ```bash
-claude mcp add --transport http priors https://mcp.priors.trade/mcp
+claude mcp add --transport http priors https://mcp.priors.trade/mcp    # Claude Code
+codex mcp add priors --url https://mcp.priors.trade/mcp                 # Codex (terminal, IDE, ChatGPT desktop)
 ```
+
+In Claude (web, desktop, phone), [this link](https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Priors&connectorUrl=https%3A%2F%2Fmcp.priors.trade%2Fmcp)
+opens the *Add custom connector* form with Priors filled in. VS Code installs it from
+`vscode:mcp/install?{"name":"priors","type":"http","url":"https://mcp.priors.trade/mcp"}` (URL-encoded) or
+`code --add-mcp '{"name":"priors","type":"http","url":"https://mcp.priors.trade/mcp"}'`, and Cursor from
+`cursor://anysphere.cursor-deeplink/mcp/install?name=priors&config=` plus the base64 of `{"url":"https://mcp.priors.trade/mcp"}`.
+ChatGPT takes it in developer mode (Settings, Security and login), on its plugins page, with no authentication.
 
 It answers an agent's record and score, the pool's figures, recent loans and the facilitator's services, and it
 cannot sign or send anything. To pay x402 URLs, borrow and repay with the agent's own wallet, run the local server in
@@ -211,8 +219,9 @@ await priors.pay("https://merchant.example/api", { agentId, maxBorrow: 5_000000n
 **A whole agent instead:** [agent001](https://github.com/priors-agents/agent001) holds its own wallet, joins Priors,
 borrows and repays before the due date by itself, sells a service over x402, and talks from a terminal or Telegram. Its
 money moves go through `@priors/mcp`. `agent001 sandbox` runs the whole loop on a local fork with play money. It also
-carries a Priors skill for OpenClaw ([`skills/priors`](https://github.com/priors-agents/agent001/tree/main/skills/priors)):
-check an agent's record before paying it, and pay, borrow and repay with the MCP tools.
+carries a Priors skill for OpenClaw and Hermes Agent ([`skills/priors`](https://github.com/priors-agents/agent001/tree/main/skills/priors);
+in Hermes, `hermes skills install priors-agents/agent001/skills/priors`): check an agent's record before paying it, and
+pay, borrow and repay with the MCP tools.
 
 ## Stock lines
 
