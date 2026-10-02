@@ -46,7 +46,7 @@ No key, no account, CORS open, cached for 30 seconds. Send exactly one of `agent
       "links": { "badge": "https://priors.trade/api/badge/437.svg", "page": "https://priors.trade/agent?id=437" }
     }
   ],
-  "attestations": { "chain": "eip155:4663", "registry": "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63", "attester": "0x…" }
+  "attestations": { "chain": "eip155:4663", "registry": "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63", "attester": "0x613854463bb854225306b9b18bdb451a78430a73" }
 }
 ```
 
@@ -71,13 +71,19 @@ cached for 5 minutes.
 ## Read it on chain instead
 
 Priors publishes each agent's score to the ERC-8004 reputation registry on Robinhood Chain, from one dedicated attester
-address that owns no agent. Anyone can post feedback with tags that look like ours, so only the entries from the attester
-named in `attestations.attester` are Priors'. Pass that address as `clientAddresses`:
+address that owns no agent: **`0x613854463BB854225306b9b18bdb451A78430a73`** (also in `attestations.attester`). Anyone
+can post feedback with tags that look like ours, so only that address's entries are Priors'. Pass it as
+`clientAddresses`:
 
 ```solidity
 // ReputationRegistry 0x8004BAa17C55a88189AE136b182e5fdA19dE9b63 on chain 4663
-getSummary(agentId, [attester], "priors-score", "") // returns (count, summaryValue, summaryValueDecimals)
+getSummary(agentId, [0x613854463BB854225306b9b18bdb451A78430a73], "priors-score", "")
+// returns (count, summaryValue, summaryValueDecimals): count 1, the score (0 to 1000), 0 decimals
 ```
 
-The attester posts when an agent's score or rung changes or it defaults, and revokes its previous entry first, so the
-summary is the current score.
+Each entry is the Priors Score v2 as `value` (0 decimals), `tag1` `priors-score`, `tag2` `rung-<n>/v<weights version>`
+(for example `rung-0/v2.0.1`), and `feedbackURI` this API's record of the agent. The attester checks once an hour and
+posts when an agent first has a score above 0, when it defaults (value 0), when its rung or the weights version
+changes, when the score moves by 25 points or more, or when an entry is 30 days old and the score differs. It revokes
+its previous entry first, so there is one live entry per agent and the summary is that score. No entry means no Priors
+score yet. The entry can lag the API by up to an hour, and by under 25 points.
