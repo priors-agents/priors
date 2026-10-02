@@ -204,6 +204,12 @@ await priors.pay("https://merchant.example/api", { agentId, maxBorrow: 5_000000n
 [`docs/FLOAT.md`](docs/FLOAT.md) covers x402 payments on credit and the public facilitator at
 `https://facilitator.priors.trade`; [`docs/AGENTS.md`](docs/AGENTS.md) is the guide for agent builders.
 
+**A whole agent instead:** [agent001](https://github.com/priors-agents/agent001) holds its own wallet, joins Priors,
+borrows and repays before the due date by itself, sells a service over x402, and talks from a terminal or Telegram. Its
+money moves go through `@priors/mcp`. `agent001 sandbox` runs the whole loop on a local fork with play money. It also
+carries a Priors skill for OpenClaw ([`skills/priors`](https://github.com/priors-agents/agent001/tree/main/skills/priors)):
+check an agent's record before paying it, and pay, borrow and repay with the MCP tools.
+
 ## Stock lines
 
 Since 2026-09-28 the stock vault (`StockVault`, root #6424) backs a line with the agent's own Robinhood stock tokens.
