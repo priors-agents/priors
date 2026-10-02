@@ -3,7 +3,7 @@
 //   node scripts/test-x402-income.mjs
 import assert from "node:assert/strict";
 import { ethers } from "ethers";
-import { pairPayments, scanPayments, scanTransfers, TOPICS, getLogsAdaptive, DeadlineError, readAgentWallets, readRepayers, updateIncome, updateBackerTenure } from "../sdk/x402-income.mjs";
+import { pairPayments, pairPermit2, scanPayments, scanTransfers, TOPICS, PERMIT2_PROXIES, getLogsAdaptive, DeadlineError, readAgentWallets, readRepayers, updateIncome, updateBackerTenure } from "../sdk/x402-income.mjs";
 import { scoreV2, DEFAULT_WEIGHTS as W } from "../sdk/score-v2.mjs";
 import { buildInputs, scoreAll } from "../sdk/score-v2-inputs.mjs";
 
@@ -42,6 +42,7 @@ await check("the scan asks only for transfers from the block range's payers to a
     async getLogs(f) {
       calls.push(f);
       if (f.topics[0] === TOPICS.AUTH_USED) return f.fromBlock <= 150 && 150 <= f.toBlock ? [auth("0x05", 0, A(1), 150)] : [];
+      if (f.topics[0] === TOPICS.SETTLED || f.topics[0] === TOPICS.SETTLED_WITH_PERMIT) return []; // no Permit2 settle here
       assert.deepEqual(f.topics[1], [topic(A(1))]);
       assert.deepEqual(f.topics[2], [topic(A(9))]);
       return [xfer("0x05", 1, A(1), A(9), 7, 150)];
@@ -54,6 +55,73 @@ await check("the scan asks only for transfers from the block range's payers to a
   assert.equal(calls.filter((c) => c.topics[0] === TOPICS.AUTH_USED).length, 3);
   const stopped = await scanPayments(provider, { usdg: A(7), wallets: [A(9)], fromBlock: 1, toBlock: 300, chunk: 100, deadline: Date.now() - 1 });
   assert.equal(stopped.scannedTo, 0); // nothing done, resume from block 1
+});
+
+// x402 through Permit2 (the `upto` scheme, and `exact` without EIP-3009): Permit2 moves the USDG (one Transfer, no event
+// of its own), then the x402 proxy emits Settled() or SettledWithPermit() (x402-foundation/x402, x402UptoPermit2Proxy.sol)
+const [EXACT_PROXY, UPTO_PROXY] = PERMIT2_PROXIES;
+const settled = (tx, index, block = 100, proxy = UPTO_PROXY, withPermit = false) => ({ transactionHash: tx, index, blockNumber: block, address: proxy, topics: [withPermit ? TOPICS.SETTLED_WITH_PERMIT : TOPICS.SETTLED], data: "0x" });
+
+await check("Permit2: the USDG transfer right before an x402 proxy's Settled() or SettledWithPermit() is a payment", () => {
+  const p = pairPermit2([settled("0x21", 6), settled("0x22", 3, 100, EXACT_PROXY, true)], [xfer("0x21", 5, A(1), A(9), 4200), xfer("0x22", 2, A(2), A(9), 50)]);
+  assert.deepEqual(p.map((x) => [x.payer, x.payTo, x.amount]), [[A(1), A(9), "4200"], [A(2), A(9), "50"]]);
+});
+
+await check("Permit2: a Settled() from any other contract, or a transfer that is not the log right before it, is no payment", () => {
+  assert.deepEqual(pairPermit2([settled("0x23", 6, 100, A(0xbad))], [xfer("0x23", 5, A(1), A(9), 4200)]), []);
+  assert.deepEqual(pairPermit2([settled("0x24", 6)], [xfer("0x24", 4, A(1), A(9), 4200)]), []);
+  assert.deepEqual(pairPermit2([settled("0x25", 6)], [xfer("0x99", 5, A(1), A(9), 4200)]), []);
+  // the proxy's other events (an EIP-2612 permit that failed) are not a settle
+  const failed = { ...settled("0x26", 6), topics: [ethers.id("EIP2612PermitFailedWithReason(address,address,string)"), topic(A(7)), topic(A(1))] };
+  assert.deepEqual(pairPermit2([failed], [xfer("0x26", 5, A(1), A(9), 4200)]), []);
+});
+
+/** A chain of logs for scanPayments: answers each filter (address, topics, blocks) and records it. */
+function logChain(logs) {
+  const calls = [];
+  const has = (want, t) => want == null || (Array.isArray(want) ? want : [want]).map((x) => x.toLowerCase()).includes(String(t).toLowerCase());
+  return { calls,
+    async getLogs(f) {
+      calls.push(f);
+      return logs.filter((l) => l.blockNumber >= f.fromBlock && l.blockNumber <= f.toBlock && (!l.address || !f.address || has(f.address, l.address))
+        && f.topics.every((t, i) => has(t, l.topics[i])));
+    },
+    async getBlock(n) { return { timestamp: 1000 + n }; } };
+}
+
+await check("Permit2: the scan finds a Permit2 payment to an agent wallet next to the signed ones, and a plain transfer is not one", async () => {
+  const W = A(9), USDG = A(7);
+  const chain = logChain([
+    auth("0x31", 0, A(1), 150), { ...xfer("0x31", 1, A(1), W, 30000, 150), address: USDG },
+    { ...xfer("0x32", 7, A(2), W, 4200, 160), address: USDG }, settled("0x32", 8, 160),
+    { ...xfer("0x33", 0, A(3), W, 777, 170), address: USDG },
+  ]);
+  const r = await scanPayments(chain, { usdg: USDG, wallets: [W], fromBlock: 1, toBlock: 300, chunk: 100 });
+  assert.deepEqual(r.payments.map((x) => [x.payer, x.amount, x.via || "eip3009", x.at]), [[A(1), "30000", "eip3009", 1150], [A(2), "4200", "permit2", 1160]]);
+});
+
+await check("Permit2: a transfer with an authorization before it and a Settled() after it is still one payment", async () => {
+  const W = A(9), USDG = A(7);
+  const chain = logChain([auth("0x34", 0, A(1), 150), { ...xfer("0x34", 1, A(1), W, 30000, 150), address: USDG }, settled("0x34", 2, 150)]);
+  const r = await scanPayments(chain, { usdg: USDG, wallets: [W], fromBlock: 1, toBlock: 200, chunk: 200 });
+  assert.equal(r.payments.length, 1);
+});
+
+await check("Permit2 costs four one-value queries per window, and transfers are asked for only where a settle happened", async () => {
+  const W = A(9), USDG = A(7);
+  const quiet = logChain([]);
+  await scanPayments(quiet, { usdg: USDG, wallets: [W], fromBlock: 1, toBlock: 300, chunk: 100 });
+  const proxyCalls = quiet.calls.filter((f) => f.topics[0] === TOPICS.SETTLED || f.topics[0] === TOPICS.SETTLED_WITH_PERMIT);
+  assert.equal(proxyCalls.length, 12, "4 per window, 3 windows");
+  // one address and one topic value per query: the Robinhood Chain node refuses lists over wide ranges
+  assert.ok(proxyCalls.every((f) => typeof f.address === "string" && f.topics.length === 1 && typeof f.topics[0] === "string"));
+  assert.equal(quiet.calls.filter((f) => f.topics[0] === TOPICS.TRANSFER && f.topics[1] == null).length, 0, "no settle, no transfer query");
+  const busy = logChain([{ ...xfer("0x35", 7, A(2), W, 4200, 160), address: USDG }, settled("0x35", 8, 160), settled("0x36", 3, 170)]);
+  await scanPayments(busy, { usdg: USDG, wallets: [W], fromBlock: 1, toBlock: 300, chunk: 100 });
+  const asked = busy.calls.filter((f) => f.topics[0] === TOPICS.TRANSFER && f.topics[1] == null);
+  assert.equal(asked.length, 1, "one transfer query around settles close together");
+  assert.ok(asked[0].fromBlock <= 160 && asked[0].toBlock >= 160 && asked[0].fromBlock >= 101 && asked[0].toBlock <= 200);
+  assert.deepEqual(asked[0].topics[2], [topic(W)]);
 });
 
 await check("transfers sent back to payers are read the same way, with no block lookups (only amounts matter)", async () => {
@@ -269,22 +337,27 @@ await check("audit F4: income can't lift a thin record to the earned rung", () =
 });
 
 // ---------------------------------------------------------------- the index (resumable, incremental)
-/** A tiny chain: signed payments and plain transfers of one token, declared wallets, receipts. Records every query. */
-function fakeChain({ payments = [], transfers = [], wallets = {}, failWallets = new Set(), receipts = {} } = {}) {
+/**
+ * A tiny chain: signed payments, Permit2 payments (`permit2`: the transfer, then the proxy's Settled()) and plain
+ * transfers of one token, declared wallets, receipts. Records every query.
+ */
+function fakeChain({ payments = [], permit2 = [], transfers = [], wallets = {}, failWallets = new Set(), receipts = {} } = {}) {
   const calls = [];
   const hex = (a) => ethers.zeroPadValue(a, 32).toLowerCase();
-  const inSet = (want, t) => want == null || (Array.isArray(want) ? want.map((x) => x.toLowerCase()) : [want.toLowerCase()]).includes(t.toLowerCase());
+  const inSet = (want, t) => want == null || (Array.isArray(want) ? want.map((x) => x.toLowerCase()) : [want.toLowerCase()]).includes(String(t).toLowerCase());
   const logs = [];
   payments.forEach((p, i) => { logs.push(auth("0xp" + i, 0, p.payer, p.block)); logs.push(xfer("0xp" + i, 1, p.payer, p.payTo, p.amount, p.block)); });
+  permit2.forEach((p, i) => { logs.push(xfer("0xq" + i, 3, p.payer, p.payTo, p.amount, p.block)); logs.push(settled("0xq" + i, 4, p.block)); });
   transfers.forEach((x, i) => logs.push(xfer("0xt" + i, 0, x.from, x.to, x.amount, x.block)));
+  const kindOf = (t) => (t === TOPICS.AUTH_USED ? "auth" : t === TOPICS.SETTLED || t === TOPICS.SETTLED_WITH_PERMIT ? "settled" : "transfer");
   const mc = new ethers.Interface(["function aggregate3((address target, bool allowFailure, bytes callData)[] calls) payable returns ((bool success, bytes returnData)[] returnData)"]);
   const reg = new ethers.Interface(["function getAgentWallet(uint256) view returns (address)"]);
   return {
     calls,
     async getLogs(f) {
-      calls.push({ kind: f.topics[0] === TOPICS.AUTH_USED ? "auth" : "transfer", from: f.fromBlock, to: f.toBlock, t1: f.topics[1], t2: f.topics[2] });
+      calls.push({ kind: kindOf(f.topics[0]), from: f.fromBlock, to: f.toBlock, t1: f.topics[1], t2: f.topics[2] });
       return logs.filter((l) => l.topics[0] === f.topics[0] && l.blockNumber >= f.fromBlock && l.blockNumber <= f.toBlock
-        && inSet(f.topics[1], l.topics[1]) && (f.topics[2] === undefined || inSet(f.topics[2], l.topics[2])));
+        && (!l.address || inSet(f.address, l.address)) && inSet(f.topics[1], l.topics[1]) && (f.topics[2] === undefined || inSet(f.topics[2], l.topics[2])));
     },
     async getBlock(n) { return { timestamp: NOW - 1000 + n }; },
     async call(tx) {
@@ -315,6 +388,48 @@ await check("index: a new payment wallet is backfilled on its own while the main
   assert.ok(chain.calls.some((c) => c.kind === "auth" && c.from === 101 && c.to === 120), "the main cursor moved on");
   assert.deepEqual(r.state.payments.map((p) => p.payTo).sort(), [W1, W2].map((x) => x.toLowerCase()).sort());
   assert.equal(r.complete, true);
+});
+
+await check("index: a new index reads Permit2 payments from the start, through the same cursor as the signed ones", async () => {
+  const chain = fakeChain({ payments: [{ payer: P1, payTo: W1, amount: 1_000_000, block: 40 }], permit2: [{ payer: P2, payTo: W1, amount: 2_000_000, block: 50 }], wallets: { 1: W1 } });
+  const r = await updateIncome(chain, null, opts(snapOf([agent(1, W1)]), 100));
+  assert.deepEqual(r.state.payments.map((p) => [p.payer, p.amount, p.via || "eip3009"]), [[P1.toLowerCase(), "1000000", "eip3009"], [P2.toLowerCase(), "2000000", "permit2"]]);
+  assert.equal(r.state.permit2Backfill, null, "nothing to re-read");
+  assert.deepEqual(r.state.payers, [P1, P2].map((x) => x.toLowerCase()).sort(), "a Permit2 payer is netted like any other");
+  assert.equal(r.complete, true);
+});
+
+/** The state an index built before Permit2 counted would hold: no Permit2 marker, and no Permit2 payment read. */
+const beforePermit2 = (state) => {
+  const s = JSON.parse(JSON.stringify(state));
+  delete s.permit2; delete s.permit2Backfill;
+  s.payments = s.payments.filter((p) => p.via !== "permit2");
+  return s;
+};
+
+await check("index: an index read before Permit2 counted re-reads Permit2 alone over what it had read, once", async () => {
+  const chain = fakeChain({ payments: [{ payer: P1, payTo: W1, amount: 1_000_000, block: 40 }], permit2: [{ payer: P2, payTo: W1, amount: 2_000_000, block: 50 }], wallets: { 1: W1 } });
+  const old = beforePermit2((await updateIncome(chain, null, opts(snapOf([agent(1, W1)]), 100))).state);
+  chain.calls.length = 0;
+  const r = await updateIncome(chain, old, opts(snapOf([agent(1, W1)]), 120));
+  assert.ok(!chain.calls.some((c) => c.kind === "auth" && c.from <= 100), "the signed payments already read are not read again");
+  assert.ok(chain.calls.some((c) => c.kind === "settled" && c.from === 10 && c.to === 100), "Permit2 alone over the part already read");
+  assert.ok(chain.calls.some((c) => c.kind === "auth" && c.from === 101 && c.to === 120), "the main cursor moved on");
+  assert.deepEqual(r.state.payments.map((p) => [p.block, p.via || "eip3009"]), [[40, "eip3009"], [50, "permit2"]]);
+  assert.equal(r.state.permit2Backfill, null, "done: never re-read again");
+  assert.equal(r.state.permit2, true);
+  chain.calls.length = 0;
+  await updateIncome(chain, r.state, opts(snapOf([agent(1, W1)]), 120));
+  assert.ok(!chain.calls.some((c) => c.kind === "settled" && c.from <= 100), "the next run does not re-read it");
+});
+
+await check("index: a Permit2 re-read still in progress never holds scores back, and says how far it has to go", async () => {
+  const chain = fakeChain({ permit2: [{ payer: P2, payTo: W1, amount: 2_000_000, block: 50 }], wallets: { 1: W1 } });
+  const old = beforePermit2((await updateIncome(chain, null, opts(snapOf([agent(1, W1)]), 100))).state);
+  const r = await updateIncome(chain, old, opts(snapOf([agent(1, W1)]), 100, { deadline: Date.now() - 1 }));
+  assert.equal(r.complete, true, "like a new wallet's backfill: income is only smaller for now");
+  assert.deepEqual(r.state.permit2Backfill, { next: 10, until: 100 });
+  assert.equal(r.scan.permit2Backfill, 91, "blocks left to re-read");
 });
 
 await check("index: a new payer backfills only its own netting transfers", async () => {

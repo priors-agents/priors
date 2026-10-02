@@ -76,6 +76,14 @@ reads those two events from the chain, so every facilitator counts, not only Pri
 on Robinhood Chain (apps move large amounts this way), so the scan lists the authorizations first and then asks only
 for the transfers from those payers to agent wallets; the transfer must be the log right after its authorization.
 
+An x402 payment can also be settled through Permit2 (the `upto` scheme, and `exact` on a token without EIP-3009):
+Permit2 moves the USDG, then the x402 proxy that called it emits `Settled()` or `SettledWithPermit()`
+(`x402ExactPermit2Proxy` `0x402085…0001`, `x402UptoPermit2Proxy` `0x4020A4…0002`, the same address on every chain).
+The scan lists those events too (four queries per window, one address and one topic each) and, only around them, the
+transfers to agent wallets; the transfer must be the log right before the event. Both routes count the same way:
+same wallets, same netting, same filters. An index read before this re-reads Permit2 alone over what it had read,
+once, without holding scores back; the published `index.permit2Backfill` is `null` once it is done.
+
 - **Whose income.** A payment counts for the agents that declared the paid wallet as their payment wallet in the
   ERC-8004 registry. The registry sets it to the owner at registration, clears it when the agent changes hands, and
   changes it only with the wallet's signature, so agents sent to someone's address can't take a share of its income.
@@ -92,8 +100,9 @@ for the transfers from those payers to agent wallets; the transfer must be the l
 - **Kept for a year.** Payments are kept 365 days (less only if the index must shrink to fit its store); a loan's
   bonus comes from income inside that window. Income is read from pool v2's launch block on, which is when x402
   started on Robinhood Chain. Each published result names how its index was read (`index`: blocks, retention).
-- **Not seen yet.** Gas funding in native ETH (no log), x402 through Permit2 instead of EIP-3009, payments to a wallet
-  the agent hasn't declared, and a payer funded through an intermediary wallet (v2.1, funding-source clusters).
+- **Not seen yet.** Gas funding in native ETH (no log), x402 batch settlement (payment channels,
+  `x402BatchSettlement`), payments to a wallet the agent hasn't declared, and a payer funded through an intermediary
+  wallet (v2.1, funding-source clusters).
 
 ## How people will try to game it, and what stops them
 
@@ -157,11 +166,17 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
 | 1 | engine, weights, clusters, tests | **done** |
 | 2 | show it: API (`/v1/score` adds `v2` with the breakdown), MCP `score_of` (hosted and npm), agent page (breakdown and rung; every agent shown the same way) | **live** 2026-09-27 (API, MCP); the agent page (breakdown and rung) is live too |
 | 4 | income from any facilitator (USDG `AuthorizationUsed` events), declared payment wallets, netting, loans repaid from income | **built** (with phase 2) |
-| 4b | v2.1: funding-source clusters (gas and first USDG), payer graph weights, Permit2 x402 | after launch |
+| 4a | x402 settled through Permit2 (the x402 proxies' `Settled()`) | **built** 2026-10-02 |
+| 4b | v2.1: funding-source clusters (gas and first USDG), payer graph weights | after launch |
 | 5 | on chain: attest v2 scores to the ERC-8004 reputation registry with version and input hash; treasury rules read the rung from a signed attestation; stable components move into the next `ScoreLib` | after a month of data |
 
 ## Changelog
 
+- **inputs, 2026-10-02** (all versions): x402 payments settled through Permit2 count as income, read from the x402
+  proxies' `Settled()`/`SettledWithPermit()` and the USDG transfer right before; until now only EIP-3009 payments
+  were read. No published score changes: a full index read with it from pool v2's deploy block to block 78,018,367
+  found no Permit2 payment to an agent's declared wallet (992 USDG settles went through Permit2 on Robinhood Chain
+  since v1's deploy, none to an agent's wallet).
 - **inputs, 2026-10-01** (all versions): a change of hands after an agent's v1 loans restarts its record too, read
   from the identity registry's transfers (`ownerSince` in `buildInputs`), since v1 loans carry no owner; a transfer
   before every v1 loan (the mint) changes nothing, and an agent with no v1 loan is read from its v2 loans as before.

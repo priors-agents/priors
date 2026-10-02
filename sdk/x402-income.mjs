@@ -6,6 +6,11 @@
 // Signed USDG payments are common on this chain (apps move large amounts this way), so the scan starts from the
 // authorizations (cheap to list) and then asks only for the transfers from those payers to agent wallets.
 //
+// An x402 payment can also be settled through Permit2 (the "upto" scheme, and "exact" on tokens without EIP-3009):
+// Permit2 moves the USDG (one Transfer, no event of its own), then the x402 proxy that called it emits Settled() or
+// SettledWithPermit() (x402-foundation/x402, contracts/evm/src/x402UptoPermit2Proxy.sol). Those events are rare, so
+// the scan lists them first and asks for the transfers to agent wallets only around them.
+//
 // Everything here reads public data through a provider (ethers v6) and returns plain objects; the scoring itself is
 // sdk/score-v2-inputs.mjs + sdk/score-v2.mjs. Amounts are atomic USDG (6 decimals) as decimal strings.
 import { ethers } from "ethers";
@@ -14,7 +19,13 @@ export const TOPICS = Object.freeze({
   TRANSFER: ethers.id("Transfer(address,address,uint256)"),
   AUTH_USED: ethers.id("AuthorizationUsed(address,bytes32)"),
   REPAID: ethers.id("Repaid(uint256,uint256,uint256,uint256,address)"),
+  SETTLED: ethers.id("Settled()"),
+  SETTLED_WITH_PERMIT: ethers.id("SettledWithPermit()"),
 });
+/** x402ExactPermit2Proxy and x402UptoPermit2Proxy: the same address on every EVM chain (CREATE2), Robinhood Chain included. */
+export const PERMIT2_PROXIES = Object.freeze(["0x402085c248eea27d92e8b30b2c58ed07f9e20001", "0x4020a4f3b7b90cca423b9fabcc0ce57c6c240002"]);
+/** The two ways an x402 payment reaches a wallet: an EIP-3009 authorization, or a Permit2 transfer by an x402 proxy. */
+export const ROUTES = Object.freeze(["eip3009", "permit2"]);
 export const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
 
 const lc = (a) => String(a || "").toLowerCase();
@@ -139,6 +150,38 @@ export function pairPayments(authLogs, transferLogs) {
   return out;
 }
 
+/**
+ * Pure: pair each x402 proxy's Settled()/SettledWithPermit() with the USDG Transfer right before it (the previous log of
+ * the same transaction): the proxy emits it as soon as Permit2 has moved the tokens, and Permit2 emits nothing of its
+ * own. A Settled() from any other contract makes no payment. `transferLogs` are USDG Transfers (the caller's query
+ * names the token). Returns the same shape as pairPayments.
+ */
+export function pairPermit2(settleLogs, transferLogs) {
+  const byKey = new Map(transferLogs.map((t) => [`${lc(t.transactionHash)}:${Number(t.index)}`, t]));
+  const out = [];
+  for (const s of settleLogs) {
+    if (s.address && !PERMIT2_PROXIES.includes(lc(s.address))) continue;
+    if (s.topics[0] !== TOPICS.SETTLED && s.topics[0] !== TOPICS.SETTLED_WITH_PERMIT) continue;
+    const t = byKey.get(`${lc(s.transactionHash)}:${Number(s.index) - 1}`);
+    if (!t) continue; // the transfer before it went elsewhere (not to an agent wallet)
+    out.push({
+      txHash: lc(t.transactionHash), logIndex: Number(t.index), block: Number(t.blockNumber),
+      payer: lc(addrOf(t.topics[1])), payTo: lc(addrOf(t.topics[2])), amount: BigInt(t.data).toString(),
+    });
+  }
+  return out;
+}
+
+/** Windows of at most `span` blocks, inside [a, b], covering every block in `blocks`. */
+const windowsAround = (blocks, span, a, b) => {
+  const out = [];
+  for (const n of uniq(blocks.map(Number)).sort((x, y) => x - y)) {
+    if (out.length && n <= out[out.length - 1][1]) continue;
+    out.push([Math.max(a, n), Math.min(b, n + span - 1)]);
+  }
+  return out;
+};
+
 async function stamp(provider, items, cache, deadline) {
   for (const b of uniq(items.map((x) => x.block))) {
     if (cache.has(b)) continue;
@@ -150,12 +193,15 @@ async function stamp(provider, items, cache, deadline) {
 }
 
 /**
- * Signed USDG payments to any of `wallets` in [fromBlock, toBlock], chunk by chunk. At `deadline` (ms epoch) it
- * stops between chunks (a chunk cut short is dropped whole) and reports how far it got: resume from `scannedTo + 1`.
- * A node rate-limiting us stops the scan the same way. Returns { payments: [{id, block, at, payer, payTo, amount}],
- * scannedTo, stopped: null | "deadline" | "rate-limited", split: what the node said when a window was split, if it was }.
+ * x402 payments in USDG to any of `wallets` in [fromBlock, toBlock], chunk by chunk, through each of `routes`: signed
+ * (EIP-3009) and Permit2 (`via: "permit2"` on those). Permit2 costs four queries per chunk with one address and one
+ * topic each (the Robinhood Chain node refuses lists over wide ranges), and a transfer query only around a settle, in
+ * windows of `permit2Span` blocks. At `deadline` (ms epoch) it stops between chunks (a chunk cut short is dropped
+ * whole) and reports how far it got: resume from `scannedTo + 1`. A node rate-limiting us stops the scan the same way.
+ * Returns { payments: [{id, block, at, payer, payTo, amount, via?}], scannedTo, stopped: null | "deadline" |
+ * "rate-limited", split: what the node said when a window was split, if it was }.
  */
-export async function scanPayments(provider, { usdg, wallets, fromBlock, toBlock, chunk = 2_000_000, payerBatch = 400, walletBatch = 400, deadline = Infinity }) {
+export async function scanPayments(provider, { usdg, wallets, fromBlock, toBlock, chunk = 2_000_000, payerBatch = 400, walletBatch = 400, deadline = Infinity, routes = ROUTES, permit2Span = 50_000 }) {
   const walletTopics = uniq(wallets.map(lc)).filter(isAddr).map(topicOf);
   const payments = [];
   let scannedTo = fromBlock - 1, stopped = null;
@@ -166,19 +212,39 @@ export async function scanPayments(provider, { usdg, wallets, fromBlock, toBlock
     if (past(deadline)) { stopped = "deadline"; break; }
     const b = Math.min(toBlock, a + chunk - 1);
     try {
-      const auth = await getLogsAdaptive(provider, { address: usdg, topics: [TOPICS.AUTH_USED] }, a, b, { deadline, seen });
-      let got = [];
-      if (auth.length) {
-        const payers = uniq(auth.map((l) => lc(l.topics[1])));
+      const got = [];
+      if (routes.includes("eip3009")) {
+        const auth = await getLogsAdaptive(provider, { address: usdg, topics: [TOPICS.AUTH_USED] }, a, b, { deadline, seen });
+        if (auth.length) {
+          const payers = uniq(auth.map((l) => lc(l.topics[1])));
+          const transfers = [];
+          for (const pb of batches(payers, payerBatch)) {
+            for (const wb of batches(walletTopics, walletBatch)) {
+              transfers.push(...await getLogsAdaptive(provider, { address: usdg, topics: [TOPICS.TRANSFER, pb, wb] }, a, b, { deadline, seen }));
+            }
+          }
+          if (transfers.length) got.push(...pairPayments(auth, transfers).map(({ txHash, logIndex, ...p }) => ({ id: txHash + ":" + logIndex, ...p })));
+        }
+      }
+      if (routes.includes("permit2")) {
+        const settles = [];
+        for (const proxy of PERMIT2_PROXIES) {
+          for (const ev of [TOPICS.SETTLED, TOPICS.SETTLED_WITH_PERMIT]) settles.push(...await getLogsAdaptive(provider, { address: proxy, topics: [ev] }, a, b, { deadline, seen }));
+        }
+        // the transfers to agent wallets, only in windows around the settles (none when there is no settle)
         const transfers = [];
-        for (const pb of batches(payers, payerBatch)) {
+        for (const [wa, wz] of windowsAround(settles.map((s) => s.blockNumber), permit2Span, a, b)) {
           for (const wb of batches(walletTopics, walletBatch)) {
-            transfers.push(...await getLogsAdaptive(provider, { address: usdg, topics: [TOPICS.TRANSFER, pb, wb] }, a, b, { deadline, seen }));
+            transfers.push(...await getLogsAdaptive(provider, { address: usdg, topics: [TOPICS.TRANSFER, null, wb] }, wa, wz, { deadline, seen }));
           }
         }
-        if (transfers.length) got = pairPayments(auth, transfers).map(({ txHash, logIndex, ...p }) => ({ id: txHash + ":" + logIndex, ...p }));
-        await stamp(provider, got, cache, deadline);
+        const taken = new Set(got.map((p) => p.id)); // a transfer both signed and settled by a proxy is one payment
+        for (const { txHash, logIndex, ...p } of pairPermit2(settles, transfers)) {
+          const id = txHash + ":" + logIndex;
+          if (!taken.has(id)) { taken.add(id); got.push({ id, ...p, via: "permit2" }); }
+        }
       }
+      if (got.length) await stamp(provider, got, cache, deadline);
       payments.push(...got);
       scannedTo = b;
     } catch (e) {
@@ -303,9 +369,15 @@ const addUnique = (list, items) => { const seen = new Set(list.map((x) => x.id))
 export async function updateIncome(provider, prev, { usdg, registry, pool, snapshot, extraWallets = [], fromBlock, head, now, deadline = Infinity, ...opts }) {
   const P = { ...INDEX_DEFAULTS, ...Object.fromEntries(Object.entries(opts).filter(([, v]) => v !== undefined)) };
   const fresh = () => ({ v: 2, fromBlock, transfersFrom: P.transfersFrom, agentWallets: {}, walletFailures: {}, walletsAt: 0,
-    wallets: [], payments: [], paymentsTo: fromBlock - 1, paymentBackfills: [],
+    wallets: [], payments: [], paymentsTo: fromBlock - 1, paymentBackfills: [], permit2: true, permit2Backfill: null,
     from: [], payers: [], transfers: [], transfersTo: P.transfersFrom - 1, transferBackfills: [], repayers: {} });
   const state = prev && prev.v === 2 && prev.fromBlock === fromBlock && prev.transfersFrom === P.transfersFrom ? JSON.parse(JSON.stringify(prev)) : fresh();
+  // An index read before Permit2 payments counted re-reads Permit2 alone over what it had already read, once; its
+  // cursors read both routes from now on. Like a new wallet's backfill, it never holds scores back.
+  if (state.permit2 !== true) {
+    state.permit2 = true;
+    state.permit2Backfill = state.paymentsTo >= fromBlock ? { next: fromBlock, until: state.paymentsTo } : null;
+  }
   const ids = snapshot.agents.map((a) => Number(a.id));
 
   // 1. declared payment wallets
@@ -359,6 +431,14 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, snaps
     addUnique(state.payments, r.payments);
     bf.next = r.scannedTo + 1;
     tune(r, from);
+  }
+  if (state.permit2Backfill && !past(deadline) && scanStatus.stopped !== "rate-limited") {
+    const bf = state.permit2Backfill, from = bf.next;
+    const r = await scanPayments(provider, { usdg, wallets: declared, fromBlock: from, toBlock: bf.until, chunk, deadline, routes: ["permit2"] });
+    addUnique(state.payments, r.payments);
+    bf.next = r.scannedTo + 1;
+    tune(r, from);
+    if (bf.next > bf.until) state.permit2Backfill = null;
   }
   state.paymentsChunk = chunk;
   state.paymentBackfills = state.paymentBackfills.filter((bf) => bf.next <= bf.until);
@@ -432,5 +512,6 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, snaps
   };
   const complete = !walletsPending && state.paymentsTo >= head && state.transfersTo >= head && pendingRepayers <= 0;
   const walletsUnread = ids.filter((id) => !(id in state.agentWallets)).length; // > 0 holds publication back
-  return { state, complete, pending, scan: { paymentsChunk: chunk, ...scanStatus, ...(walletsUnread ? { walletsUnread } : {}) } };
+  const permit2Left = state.permit2Backfill ? state.permit2Backfill.until - state.permit2Backfill.next + 1 : 0; // blocks
+  return { state, complete, pending, scan: { paymentsChunk: chunk, ...scanStatus, ...(walletsUnread ? { walletsUnread } : {}), ...(permit2Left ? { permit2Backfill: permit2Left } : {}) } };
 }
