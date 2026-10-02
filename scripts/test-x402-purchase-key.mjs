@@ -38,6 +38,16 @@ await check('79g3: a boundary holding "json", whitespace around its "=", filenam
   await same(star("a.pdf", MB), star("a.pdf", "ZZ"), "filename*, another boundary");
   await apart(star("a.pdf", MB), star("b.pdf", MB), "another filename*");
 });
+await check("filename* decoded as parsers decode it: the charset's case, the percent-encoding, a plain filename alike", async () => {
+  const file = (cd) => form([part("f", "x", cd)]);
+  const a = file(`; filename*=UTF-8''a%2Etxt`);
+  await same(a, file(`; filename*=UTF-8''a%2etxt`), "hex digits' case");
+  await same(a, file(`; filename*=utf-8''a.txt`), "the charset's case, a literal dot");
+  await same(a, file(`; filename="a.txt"`), "the same name as a plain filename");
+  await apart(a, file(`; filename*=UTF-8''b.txt`), "another name");
+  await same(file(`; filename*=bogus`), file(`; filename*=bogus`), "one that does not decode, kept as written");
+  await apart(file(`; filename*=bogus`), file(`; filename*=bogus2`), "...and two such stay apart");
+});
 await check("what a parser reads differently stays two purchases", async () => {
   await apart(base, form([part("item", "pen")]), "another value");
   await apart(form([part("t", "1"), part("t", "2")]), form([part("t", "2"), part("t", "1")]), "repeated fields keep their order");

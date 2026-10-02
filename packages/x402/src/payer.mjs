@@ -360,6 +360,20 @@ function partMediaType(raw, isFile) {
 }
 /** Transfer encodings that leave the bytes as they are; any other (quoted-printable, base64) Go and Python decode. */
 const IDENTITY_CTE = new Set(["7bit", "8bit", "binary"]);
+/** An RFC 8187 ext-value (`charset'language'value`, the value percent-encoded) decoded as parsers decode it: UTF-8 or
+ *  ISO-8859-1, the charset's case, the language and the hex digits' case not counting. null if it is not one. */
+function extValue(v) {
+  const m = /^([!#$&+.^_`|~0-9A-Za-z-]+)'[^']*'((?:%[0-9A-Fa-f]{2}|[!#$&+.^_`|~0-9A-Za-z-])*)$/.exec(v);
+  if (!m) return null;
+  const charset = m[1].toLowerCase();
+  if (charset !== "utf-8" && charset !== "iso-8859-1") return null;
+  const bytes = [];
+  for (let i = 0; i < m[2].length; i++) {
+    if (m[2][i] === "%") { bytes.push(parseInt(m[2].slice(i + 1, i + 3), 16)); i += 2; } else bytes.push(m[2].charCodeAt(i));
+  }
+  if (charset === "iso-8859-1") return Buffer.from(bytes).toString("latin1");
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes)); } catch (_) { return null; }
+}
 /**
  * A multipart/form-data body by its fields, as a form parser reads it (RFC 7578, GHSA-85hm): each part by its name,
  * its file name if it has one, its media type (partMediaType), what else a parser can read differently (a transfer
@@ -392,10 +406,17 @@ function multipartFields(bytes, boundary) {
     const cd = /^form-data(?=[ \t;]|$)/i.exec(headers.get("content-disposition") || "");
     const params = cd ? headerParams(headers.get("content-disposition").slice(cd[0].length)) : null;
     if (!params || !params.has("name")) return null;
-    const filename = params.has("filename") ? params.get("filename") : null;
-    // filename* (busboy and Go read it in place of filename) or any RFC 8187 parameter: kept as written, not a reason
-    // to key the form by its bytes, boundary included (GHSA-79g3). Other disposition parameters no parser reads.
-    const extra = [...params].filter(([k]) => k.endsWith("*")).map(([k, v]) => `${k}=${v}`);
+    // filename* is the file name parsers read in place of filename (busboy, Go, undici's FormData), decoded: its
+    // charset's case and its percent-encoding do not count. One that does not decode, and any other RFC 8187 parameter,
+    // is kept as written, never a reason to key the form by its bytes (GHSA-79g3). Other disposition parameters no
+    // parser reads.
+    let filename = params.has("filename") ? params.get("filename") : null;
+    const extra = [];
+    for (const [k, v] of params) {
+      if (!k.endsWith("*")) continue;
+      const decoded = k === "filename*" ? extValue(v) : null;
+      if (decoded !== null) filename = decoded; else extra.push(`${k}=${v}`);
+    }
     const cte = (headers.get("content-transfer-encoding") ?? "7bit").toLowerCase();
     if (!IDENTITY_CTE.has(cte)) extra.push(`content-transfer-encoding:${cte}`);
     parts.push([params.get("name"), filename, partMediaType(headers.get("content-type"), filename !== null), extra.sort(), Buffer.from(m[2], "latin1").toString("hex")]);
