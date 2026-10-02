@@ -307,10 +307,52 @@ export async function purchaseKey(req) {
     try { const p = new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); p.sort(); canon = "urlencoded:" + p.toString(); } catch (_) { /* not UTF-8: by its bytes */ }
   } else {
     const boundary = /^multipart\/form-data;.*boundary="?([^";]+)"?/i.exec(type)?.[1];
-    if (boundary) canon = "form:" + Buffer.from(bytes).toString("latin1").split(boundary).join("");
+    const fields = boundary ? multipartFields(bytes, boundary) : null;
+    if (fields !== null) canon = "form:" + fields;
   }
   const digest = ethers.sha256(canon !== null ? ethers.toUtf8Bytes(canon) : ethers.concat([ethers.toUtf8Bytes("raw:"), bytes]));
   return `${head} body:${digest.slice(2)}`;
+}
+
+/**
+ * A multipart/form-data body by its fields, as a form parser reads it (RFC 7578, GHSA-85hm): each part by its name,
+ * its file name if it has one, its media type (text/plain when the part names none) and its value's bytes, the parts
+ * sorted by name (stably: repeated fields keep their order, as URLSearchParams.sort does). The boundary, the preamble
+ * and the epilogue, header names' case and whether a name is quoted do not count. Anything that is not a well-formed
+ * form returns null, and the body is then keyed by its bytes.
+ */
+function multipartFields(bytes, boundary) {
+  const s = Buffer.from(bytes).toString("latin1");
+  const d = "--" + boundary;
+  const at = s.startsWith(d) ? 0 : s.indexOf("\r\n" + d);
+  if (at < 0) return null;
+  const segments = s.slice(at === 0 ? d.length : at + 2 + d.length).split("\r\n" + d);
+  if (segments.length < 2 || !segments.pop().startsWith("--")) return null; // no part, or no closing delimiter
+  const parts = [];
+  for (const seg of segments) {
+    const m = /^[ \t]*\r\n([\s\S]*?)\r\n\r\n([\s\S]*)$/.exec(seg);
+    if (!m) return null;
+    const headers = new Map();
+    for (const line of m[1].split("\r\n")) {
+      const h = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*(.*?)[ \t]*$/.exec(line); // a folded or broken line is not a form
+      if (!h || headers.has(h[1].toLowerCase())) return null;
+      headers.set(h[1].toLowerCase(), h[2]);
+    }
+    const cd = /^form-data((?:[ \t]*;[ \t]*[^\s=;]+[ \t]*=[ \t]*(?:"(?:[^"\\]|\\.)*"|[^\s";]*))*)[ \t]*$/i.exec(headers.get("content-disposition") || "");
+    if (!cd) return null;
+    const params = {};
+    for (const p of cd[1].matchAll(/;[ \t]*([^\s=;]+)[ \t]*=[ \t]*("(?:[^"\\]|\\.)*"|[^\s";]*)/g)) {
+      const k = p[1].toLowerCase();
+      if (!["name", "filename"].includes(k) || k in params) return null; // filename*, or anything else: by its bytes
+      params[k] = p[2].startsWith('"') ? p[2].slice(1, -1).replace(/\\(.)/g, "$1") : p[2];
+    }
+    if (params.name === undefined) return null;
+    const mediaType = (headers.get("content-type") ?? "text/plain").toLowerCase().replace(/[ \t]*([;=])[ \t]*/g, "$1");
+    const other = [...headers].filter(([k]) => k !== "content-disposition" && k !== "content-type").map(([k, v]) => `${k}:${v}`).sort();
+    parts.push([params.name, params.filename ?? null, mediaType, other, Buffer.from(m[2], "latin1").toString("hex")]);
+  }
+  parts.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return JSON.stringify(parts);
 }
 /** Seconds an unsettled authorization is kept past its validBefore, for clock skew between the payer and the chain. */
 export const SKEW_SECONDS = 60;

@@ -218,7 +218,7 @@ Reviewed before deployment by an internal audit (2026-09-27) and a readiness rev
 `npm run test:v2` covers the `sdk/float.mjs` guards without a network. The `@priors/x402` and `@priors/mcp` guards
 (the P rows) are tested in the maintainers' package suite, not in this repository.
 
-## Private reports, 2026-09-23 to 2026-10-01
+## Private reports, 2026-09-23 to 2026-10-02
 
 Thirty-eight private reports (GitHub advisories) and one by email, triaged against the code and the chain on
 2026-09-29. Each was reproduced (a local merchant, a unit test, or a fork of mainnet) before a ruling. One row per root
@@ -226,7 +226,9 @@ cause; duplicates are credited with the first report (credits below the table). 
 2026-09-30, were triaged on 2026-09-30: P-14 and P-15 here, SV-13 and SV-14 in the stock vault's table, and one not a
 finding. Our own audit of the fixes that day found P-16. Eight more, filed on 2026-09-30 and 2026-10-01, were triaged on
 2026-10-01: P-17 to P-21 here (P-17 reported twice), SV-15 in the stock vault's table, and one not a finding. One
-more, filed on 2026-10-01, was triaged the same day: P-22.
+more, filed on 2026-10-01, was triaged the same day: P-22. One more, filed on 2026-10-02 (GHSA-85hm-32wv-jw4g), is
+the multipart arm of P-24's root cause, which our own audit had published the day before and whose fix had missed that
+arm: it is credited in P-24's row (one row per root cause), not a new row.
 
 | id | sev | finding | status |
 |---|---|---|---|
@@ -295,7 +297,7 @@ corrected in T10 above.
 | id | sev | finding | status |
 |---|---|---|---|
 | P-23 | Medium | P-22's canonical JSON was recursive and read strings with a backtracking regex: a valid body nested about 10,000 deep, or holding a string of about 16M characters, made it throw, and the body was keyed by its bytes again, so the same body re-spelled was signed twice. | **Fixed (@priors/x402 and @priors/mcp 0.2.6):** an explicit stack and a character scan; valid JSON is never keyed by its bytes (should canonicalising fail, nothing is signed). |
-| P-24 | Medium | A purchase's URL was its WHATWG spelling, and a urlencoded form body its bytes: a query in another order, `+` for `%20`, an escape in the other case, an escaped unreserved character, an empty `?`, a host with a trailing dot, or the same form fields re-spelled made a second purchase and a second signature (the P-11 class). | **Fixed (0.2.6):** the URL as the merchant reads it (query fields sorted by name, one spelling per escape, RFC 3986 6.2.2) and a urlencoded form by its fields. Two requests merged this way at worst share one authorization, settled once (the P-19 class, not a loss). A payment 0.2.5 kept under another spelling is not matched until it expires. |
+| P-24 | Medium | A purchase's URL was its WHATWG spelling, and a form body its bytes (a multipart form's with the boundary removed): a query in another order, `+` for `%20`, an escape in the other case, an escaped unreserved character, an empty `?`, a host with a trailing dot, or the same form fields re-spelled (parts in another order, a part's `Content-Type: text/plain` stated or left to its default, a name quoted or not) made a second purchase and a second signature (the P-11 class). The multipart arm, which 0.2.6's fix and its docs claimed, was not fixed until 0.2.7: reported by @mfrxivu, GHSA-85hm-32wv-jw4g; only `@priors/x402`'s `pay()` with a multipart body reaches it (`pay_url` sends JSON or text). | **Fixed (0.2.6, the multipart arm in @priors/x402 0.2.7):** the URL as the merchant reads it (query fields sorted by name, one spelling per escape, RFC 3986 6.2.2) and a form by its fields: a urlencoded form's, and a multipart form's parts as a form parser reads them (name, file name, media type with `text/plain` when absent, value), sorted by name with repeated fields in their order; a body that is not a well-formed form by its bytes. Two requests merged this way at worst share one authorization, settled once (the P-19 class, not a loss). A payment an earlier version kept under another spelling is not matched until it expires. |
 | P-25 | Medium | When two sessions of one wallet both signed for a purchase (P-15's residual), the one whose payment settled erased the purchase's entry from the state file, the other session's authorization included, so a third call signed again: more than P-15's one extra payment. | **Fixed (0.2.6):** a settled payment is forgotten only where the entry is that same authorization. |
 | P-26 | Medium | A payment whose record could not be written to `PRIORS_STATE_DIR` (full disk, read-only home, a bad path) was sent anyway, so a restart or another session signed again; `createPayer`'s `onSigned` failures were ignored the same way. | **Fixed (0.2.6):** a payment that cannot be recorded is not sent (`NOT_RECORDED`); pay_url says so and nothing can be settled. |
 | P-27 | Medium | `PRIORS_STATE_DIR` was used as written: `~/...` (the README's own spelling; an MCP client's JSON config is not shell-expanded) or a relative path put the state file under each client's working directory, so two sessions, or a restart from another directory, kept two files (a path around P-15). | **Fixed (0.2.6):** a leading `~` is the home directory and a relative path is refused at start. |
