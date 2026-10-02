@@ -3,3 +3,4 @@ export { robinhood, ROBINHOOD_NETWORKS, DEFAULT_MAX_PRICE, MAX_VALIDITY_SECONDS,
 export { registerUsdg, priorsFacilitator, priorsFacilitatorClient, createResourceServer } from "./src/merchant.mjs";
 export { createPayer, createUsdgClient, resend, readCapped, MAX_BODY_BYTES, DEFAULT_TIMEOUT_MS, CappedExactEvmScheme, toX402Signer, pickV1Requirement, pickV2Requirement, signPaymentV1, SKEW_SECONDS, purchaseKey } from "./src/payer.mjs";
 export { PayError, settleLoans } from "./src/credit.mjs";
+export { recordGate, payerOf, recordFromCheck, judge, priceFor, CHECK_API } from "./src/gate.mjs";

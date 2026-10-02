@@ -177,3 +177,51 @@ export declare class PayError extends Error {
   constructor(code: string, message: string, details?: Record<string, unknown>);
 }
 export declare function settleLoans(o: { signer: any; pool: string | any; agentId: bigint | number | string }): Promise<{ repaid: bigint[]; open: bigint[] }>;
+
+/** A payer's Priors record as the record gate reads it. */
+export interface PriorsRecord {
+  /** Whether Priors knows this payer at all (an agent it owns, declared, or names). */
+  known: boolean;
+  agents: number[];
+  /** True if any of the payer's agents defaulted on a Priors loan. */
+  defaulted: boolean;
+  /** The most loans repaid by any of the payer's agents. */
+  loansRepaid: number;
+  /** Priors Score v2 (api source) or the on-chain score (chain source); null when not published. */
+  score: number | null;
+}
+export interface RecordGateOptions {
+  /** "api" (default): https://priors.trade/api/check by the payer's address. "chain": pool v2 over `rpc`, for the agent the payer names in X-Priors-Agent. */
+  source?: "api" | "chain";
+  checkUrl?: string;
+  rpc?: string;
+  /** A pool other than the published one (a fork's). */
+  pool?: string;
+  /** Refuse payers whose agent defaulted. Default true. */
+  refuseDefaulted?: boolean;
+  /** Repaid loans the payer must have. Default 0. */
+  minRepaid?: number;
+  minScore?: number | null;
+  /** Lower prices for longer records, e.g. [{ minRepaid: 3, price: "$0.01" }]; needs basePrice. */
+  tiers?: Array<{ minRepaid: number; price: string }>;
+  basePrice?: string | null;
+  cacheSeconds?: number;
+  fetchImpl?: typeof fetch;
+  onDecision?: (d: { payer: string; record: PriorsRecord | null; ok: boolean; reason?: string; message?: string }) => void;
+}
+export interface RecordGate {
+  /** Install on an x402ResourceServer: a payment the policy refuses is never verified or settled. Returns the server. */
+  attach<S extends { onBeforeVerify(hook: any): any }>(server: S): S;
+  recordOf(address: string, agentId?: number | string | null): Promise<PriorsRecord>;
+  /** A dynamic route price from the stated payer's record (X-Payer, plus X-Priors-Agent for the chain source). */
+  tierPrice(): (ctx: any) => Promise<string>;
+  beforeVerify(ctx: any): Promise<void | { abort: true; reason: string; message?: string }>;
+}
+/** Check the payer's Priors record before serving: refuse defaulters, ask for a track record, price by record. */
+export declare function recordGate(opts?: RecordGateOptions): RecordGate;
+/** The address that signed an x402 v2 EVM payment (EIP-3009 or Permit2), or null. */
+export declare function payerOf(paymentPayload: any): string | null;
+export declare function recordFromCheck(body: any): PriorsRecord;
+export declare function judge(record: PriorsRecord, policy?: { refuseDefaulted?: boolean; minRepaid?: number; minScore?: number | null }): { ok: boolean; reason?: string; message?: string };
+export declare function priceFor(record: PriorsRecord, base: string, tiers?: Array<{ minRepaid: number; price: string }>): string;
+export declare const CHECK_API: string;

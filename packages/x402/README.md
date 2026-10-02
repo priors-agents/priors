@@ -85,6 +85,43 @@ await mcp.connect(new StdioServerTransport());
 An agent pays it with `@x402/mcp`'s client and this package's USDG client:
 `wrapMCPClientWithPayment(mcpClient, createUsdgClient({ signer, maxPrice: "$0.05" }), { autoPayment: true })`.
 
+## Merchant: check who is paying (record gate)
+
+The payer's Priors record is what it has borrowed and repaid on Robinhood Chain, and whether it ever defaulted.
+`recordGate` reads it before the facilitator sees the payment. A payment the merchant's policy refuses is never
+verified or settled: no money moves, and the client gets the usual 402 with the reason (`priors_payer_defaulted`,
+`priors_record_too_short`, `priors_score_too_low`, `priors_price_not_entitled`, `priors_record_unavailable`).
+
+```js
+import { createResourceServer, recordGate } from "@priors/x402";
+
+const server = createResourceServer({ apiKey: process.env.PRIORS_FACILITATOR_KEY });
+recordGate({ refuseDefaulted: true, minRepaid: 1 }).attach(server); // then paymentMiddleware(routes, server) as above
+```
+
+| option | default | |
+|---|---|---|
+| `refuseDefaulted` | `true` | refuse a payer whose agent defaulted on a Priors loan |
+| `minRepaid` | `0` | repaid Priors loans the payer must have |
+| `minScore` | none | Priors Score v2 the payer must have (on-chain score with `source: "chain"`) |
+| `source` | `"api"` | `"api"`: `https://priors.trade/api/check` by the payer's address (every agent it owns or declared as its payment wallet; no key). `"chain"`: Priors pool v2 read over `rpc`, for the agent the payer names in the `X-Priors-Agent` header, after checking the paying address controls it. Use it on a fork, or to depend on no Priors service |
+| `rpc`, `pool` | public RPC, the published pool | for `source: "chain"` |
+| `tiers`, `basePrice` | none | prices by record: `tiers: [{ minRepaid: 3, price: "$0.01" }]`, `basePrice: "$0.02"` |
+| `cacheSeconds` | `60` | how long a payer's record is reused |
+| `onDecision` | none | called with `{ payer, record, ok, reason }` for each payment |
+
+A record that cannot be read refuses rather than serves on a guess.
+
+**Prices by record.** Give the route `price: gate.tierPrice()`. A client states its address in `X-Payer` (and its
+agent in `X-Priors-Agent` with `source: "chain"`) to be quoted its tier. That statement is only a request: when the
+payment arrives, the gate reads the record of the address that actually signed it. It refuses a payment below that
+payer's own price, so claiming someone else's record gets nothing.
+
+```js
+const gate = recordGate({ basePrice: "$0.02", tiers: [{ minRepaid: 3, price: "$0.01" }] }).attach(server);
+// routes: { "GET /report": { accepts: { scheme: "exact", price: gate.tierPrice(), network: "eip155:4663", payTo } } }
+```
+
 ## Agent: pay, and borrow the gap
 
 ```js
