@@ -165,8 +165,9 @@ ChatGPT takes it in developer mode (Settings, Security and login), on its plugin
 
 It answers an agent's record and score, the pool's figures, recent loans and the facilitator's services, and it
 cannot sign or send anything. It is also an MCP App: in hosts that render MCP Apps (Claude, ChatGPT, VS Code, Cursor,
-Goose) its answers come with a Priors view, and `request_borrow` / `request_repay` prepare a borrow or a repayment as a
-Go-mode link (go.priors.trade) where the agent's owner confirms it with their own account. To pay x402 URLs, borrow and repay with the agent's own wallet, run the local server in
+Goose) its answers come with a Priors view, and `request_borrow` / `request_repay` prepare a borrow or a repayment as
+two links where the agent's owner confirms it: Go mode (go.priors.trade), with their own account, or the agent console
+on priors.trade, with the wallet that owns the agent. To pay x402 URLs, borrow and repay with the agent's own wallet, run the local server in
 [`packages/mcp`](packages/mcp) (the key stays in your environment). Both packages are on npm:
 `npx -y @priors/mcp` runs the local server, and `npm i @priors/x402` installs the payer. From a clone,
 `npm install` at the root links them instead. The local server is also on the official MCP Registry as

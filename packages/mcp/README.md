@@ -9,7 +9,8 @@ borrow from and repay the agent's own Priors line.
 No install and no key: `https://mcp.priors.trade/mcp` (Streamable HTTP) answers the read-only questions (an agent's
 record and score, the pool's figures, recent loans, the facilitator's services) from the same public data as
 priors.trade. It holds no key and cannot send a transaction. In hosts that render MCP Apps it shows a Priors view, and
-`request_borrow` / `request_repay` return a Go-mode link where the agent's owner confirms the borrow or repayment.
+`request_borrow` / `request_repay` return two links where the agent's owner confirms the borrow or repayment: one in
+Go mode, one in the agent console on priors.trade for the wallet that owns the agent.
 
 ```bash
 claude mcp add --transport http priors https://mcp.priors.trade/mcp
