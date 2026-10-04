@@ -94,7 +94,22 @@ export interface CreatePayerOptions {
   /** Called with each signed payment before it is sent, so a caller can keep its own record across processes;
    *  awaited. If it throws, the payment is not sent and pay() rejects with NOT_RECORDED. */
   onSigned?: (s: { purchase: string; paymentHeaders: Record<string, string>; validBefore: number; price: bigint; requirement: any; x402Version: number; borrowed?: bigint; loanId?: bigint | null }) => void | Promise<void>;
+  /** Called once the price is known when the wallet holds less, before any loan: fund the wallet from the caller's own
+   *  money (e.g. `(need) => topUpFromSavings(c, signer, need)` from "@priors/x402/savings"). Its result, or the error
+   *  it threw as `{ withdrawn: 0n, error }`, is returned as `savings`; a failure never stops the payment. Also used by
+   *  `settleLoans` with what all open loans need. */
+  topUp?: (need: bigint) => Promise<SavingsTopUp>;
+  /** What the wallet keeps back (e.g. what Autopay loans pull in the next 24 h): a payment that would cut into it is
+   *  refused (PayError RESERVE) before anything is signed or borrowed. */
+  reserve?: () => bigint | Promise<bigint>;
+  /** SeatVaultV5 (address or contract) and its root's agent id: a borrow on a V5 line refreshes it first
+   *  (credit v5BeforeBorrow). */
+  v5?: string | any | null;
+  v5Root?: bigint | number | string | null;
 }
+
+/** What a `topUp` did (the shape of topUpFromSavings' result; `error` when it threw). */
+export interface SavingsTopUp { withdrawn: bigint; hash?: string | null; short?: bigint; saved?: bigint; inKind?: boolean; error?: unknown }
 
 export interface PayResult {
   response: Response;
@@ -123,6 +138,8 @@ export interface PayResult {
   /** true: this payer already had an unsettled payment for the purchase (the method, the URL without its fragment, and
    *  the body: see purchaseKey) and sent that one again instead of signing a second. */
   resent?: boolean;
+  /** When `topUp` ran: what it did. */
+  savings?: SavingsTopUp;
 }
 
 export interface Payer {
@@ -131,7 +148,8 @@ export interface Payer {
   /** Resend an already-signed payment (from a pending result); never signs. */
   resend(input: RequestInfo | URL, paymentHeaders: Record<string, string>, init?: RequestInit): Promise<{ response: Response; pending: boolean; timedOut?: boolean; transportError?: boolean; error?: unknown; paymentHeaders?: Record<string, string> }>;
   /** Repay open loans, earliest due first, while the wallet covers them. */
-  settleLoans(): Promise<{ repaid: bigint[]; open: bigint[] }>;
+  /** `onlyInWindow`: only loans whose repay window (repayWindow) is open, or past due. */
+  settleLoans(o?: { onlyInWindow?: boolean }): Promise<{ repaid: bigint[]; open: bigint[]; waiting?: Array<{ loanId: bigint; opens: number }>; savings?: SavingsTopUp }>;
 }
 
 export declare function createPayer(opts: CreatePayerOptions): Payer;
@@ -176,7 +194,8 @@ export declare class PayError extends Error {
   hash?: string | null;
   constructor(code: string, message: string, details?: Record<string, unknown>);
 }
-export declare function settleLoans(o: { signer: any; pool: string | any; agentId: bigint | number | string }): Promise<{ repaid: bigint[]; open: bigint[] }>;
+export declare function settleLoans(o: { signer: any; pool: string | any; agentId: bigint | number | string; topUp?: (need: bigint) => Promise<SavingsTopUp>; onlyInWindow?: boolean; now?: () => number }): Promise<{ repaid: bigint[]; open: bigint[]; waiting?: Array<{ loanId: bigint; opens: number }>; savings?: SavingsTopUp }>;
+export { repayWindow, autopayReserve, defaultCap as autopayDefaultCap } from "./autopay.js";
 
 /** A payer's Priors record as the record gate reads it. */
 export interface PriorsRecord {

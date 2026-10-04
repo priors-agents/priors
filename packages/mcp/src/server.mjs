@@ -1,6 +1,6 @@
 // @priors/mcp: an MCP server that lets an AI assistant pay x402 URLs in USDG on Robinhood Chain and run a Priors
-// credit line. Tools: pay_url, wallet_balance, credit_status, stock_assets, stock_position, borrow, repay, score_of,
-// find_services.
+// credit line, with the agent's spare USDG saved in a Morpho vault. Tools: pay_url, wallet_balance, credit_status,
+// stock_assets, stock_position, borrow, repay, score_of, find_services, savings, save, unsave, autopay_on, autopay_off.
 //
 // The private key comes from the environment (PRIORS_KEY) only. It is never read from argv, never logged, and never
 // part of any tool result or error: every text this server returns passes through `redact()`, which removes the key
@@ -18,6 +18,18 @@
 //   PRIORS_ALLOW_LOCAL     "1": pay_url may reach http://localhost and private addresses (testing only)
 //   PRIORS_SCORE_V2        where score_of reads Priors Score v2 (default https://priors.trade/api/score-v2; "off": v1 only)
 //   PRIORS_STOCK_VAULT     the stock vault's address (default: deployments/4663.v2.json `stockVault`)
+//   PRIORS_SAVINGS_VAULT   the USDG vault savings go to (default Steakhouse USDG on Morpho). "off" stops save and the
+//                          automatic top-ups; savings and unsave keep working on the default vault, so saved money can
+//                          always come out
+//   PRIORS_MAX_SAVE_USD    most one save call may move into the vault (default 50)
+//   PRIORS_MAX_SAVE_TOTAL_USD  most save may move in total while the server runs (default 200)
+//   PRIORS_AUTOREPAY       AutoRepay v2's address (default: deployments/4663.v2.json `autoRepay`; none until it is
+//                          deployed: autopay_on and autopay_off then say so). AutoRepay v1 (retired) is refused
+//   PRIORS_V5, PRIORS_V5_ROOT  SeatVaultV5's address and its root's agent id (default: deployments/4663.v2.json
+//                          `seatVaultV5`, `seatVaultV5AgentId`; none until V5 is deployed): a borrow on a V5 line
+//                          refreshes it first (owner, or this key 24 h after V5 recorded it with noteDelegate)
+//   PRIORS_MAX_AUTOPAY_USD the most autopay_on enrolls per loan (default 25, the stage 0 cap)
+//   PRIORS_AUTOPAY_RESERVE "off": pay_url no longer keeps back what Autopay loans pull in the next 24 h (default on)
 //   PRIORS_STATE_DIR       where signed, unsettled payments are kept across restarts and shared by every session of the
 //                          wallet (default ~/.local/state/priors-mcp; "off": memory only)
 import { readFileSync, writeFileSync, mkdirSync, renameSync, openSync, closeSync, statSync, rmSync } from "node:fs";
@@ -35,13 +47,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 // @priors/x402 when installed from npm; the sibling package in the monorepo otherwise.
 async function loadX402() {
   try {
-    return { X: await import("@priors/x402"), C: await import("@priors/x402/credit") };
+    return { X: await import("@priors/x402"), C: await import("@priors/x402/credit"), S: await import("@priors/x402/savings"), A: await import("@priors/x402/autopay") };
   } catch (e) {
     if (e?.code !== "ERR_MODULE_NOT_FOUND" || !String(e.message).includes("@priors/x402")) throw e;
-    return { X: await import("../../x402/index.mjs"), C: await import("../../x402/src/credit.mjs") };
+    return { X: await import("../../x402/index.mjs"), C: await import("../../x402/src/credit.mjs"), S: await import("../../x402/src/savings.mjs"), A: await import("../../x402/src/autopay.mjs") };
   }
 }
-const { X, C } = await loadX402();
+const { X, C, S, A } = await loadX402();
 
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const ADDRESSES = JSON.parse(readFileSync(new URL("../deployments/4663.v2.json", import.meta.url), "utf8"));
@@ -179,7 +191,22 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   // Per-call caps alone let a model (or a page steering it) spend the wallet a dollar at a time: these bound the process.
   const spendCap = envDollars(env, "PRIORS_MAX_SPEND_USD", 5);
   const borrowTotalCap = envDollars(env, "PRIORS_MAX_BORROW_TOTAL_USD", 25);
-  const session = { spent: 0n, borrowed: 0n };
+  const maxSaveCeiling = envDollars(env, "PRIORS_MAX_SAVE_USD", 50);
+  const saveTotalCap = envDollars(env, "PRIORS_MAX_SAVE_TOTAL_USD", 200);
+  // Savings (Morpho). "off" stops new saving and the automatic top-ups, never the way out: savings and unsave then read
+  // the default vault. The setting's value is never echoed (a key pasted into it must not reach the model).
+  const savingsRaw = String(env.PRIORS_SAVINGS_VAULT ?? "").trim();
+  const savingsOff = /^(off|false|0|no|none)$/i.test(savingsRaw);
+  const savingsVault = savingsOff || savingsRaw === "" ? S.DEFAULT_SAVINGS_VAULT : savingsRaw;
+  const savingsProblem = ethers.isAddress(savingsVault) ? null
+    : looksLikeKey(savingsRaw) ? "PRIORS_SAVINGS_VAULT holds what looks like a private key, not a vault address: take it out of that variable and restart the server"
+    : "PRIORS_SAVINGS_VAULT is not a 0x address: fix it and restart the server";
+  const autoSavings = !savingsOff && !savingsProblem;
+  // Autopay: the agent's wallet approves AutoRepay and enrolls; the keeper repays in the
+  // window. The cap per loan is bounded by this server (stage 0: $25); pay_url keeps back what Autopay loans pull soon.
+  const maxAutopayCap = envDollars(env, "PRIORS_MAX_AUTOPAY_USD", 25);
+  const reserveOn = !/^(off|false|0|no)$/i.test(String(env.PRIORS_AUTOPAY_RESERVE ?? "").trim());
+  const session = { spent: 0n, borrowed: 0n, saved: 0n };
   const allowLocal = env.PRIORS_ALLOW_LOCAL === "1";
   const lookup = deps.lookup || ((host) => dnsLookup(host, { all: true }));
   const sleep = deps.sleep; // undefined: the library's own
@@ -194,10 +221,21 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   let moneyQueue = Promise.resolve();
   // The time budget counts from the call's arrival, not from its turn: a call queued behind a slow one must still answer
   // before the client gives up (a client timeout hides the "do not retry" answer and invites a retry).
+  // A savings withdrawal sent by a top-up that ran out of time, still in flight: every money call waits for it (at
+  // most until its own deadline), so none sends a second withdrawal or borrows for money that is on its way. The hold
+  // ends when the withdrawal settles, or after HOLD_MAX_MS whatever happens (a dropped transaction can't lock the queue).
+  let hold = null;
+  const HOLD_MAX_MS = deps.holdMaxMs ?? 120_000;
   const serial = (fn) => (args) => {
     const deadline = Date.now() + callBudgetMs;
-    const run = moneyQueue.then(() => {
-      if (Date.now() >= deadline - Math.min(1000, callBudgetMs / 10)) throw new ToolError("another payment call was still running and this one ran out of time before it could start. Nothing was signed or paid: try again.");
+    const margin = Math.min(1000, callBudgetMs / 10);
+    const run = moneyQueue.then(async () => {
+      if (hold) {
+        const h = hold;
+        await Promise.race([h, new Promise((ok) => setTimeout(ok, Math.max(0, deadline - margin - Date.now())).unref?.())]);
+        if (hold === h) throw new ToolError("a savings withdrawal from an earlier call is still in flight. Nothing was done: check the savings tool and try again in a minute.");
+      }
+      if (Date.now() >= deadline - margin) throw new ToolError("another payment call was still running and this one ran out of time before it could start. Nothing was signed or paid: try again.");
       return fn(args, deadline);
     });
     moneyQueue = run.catch(() => {});
@@ -228,7 +266,11 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     for (const n of ["PAYMENT-RESPONSE", "X-PAYMENT-RESPONSE"]) { const h = res.headers.get(n); if (h) { try { return JSON.parse(Buffer.from(h, "base64").toString("utf8")); } catch (_) { /* not ours to read */ } } }
     return undefined;
   };
-  const addresses = { ...ADDRESSES, ...(env.PRIORS_STOCK_VAULT ? { stockVault: env.PRIORS_STOCK_VAULT } : {}), ...(deps.addresses || {}) };
+  const addresses = { ...ADDRESSES, ...(env.PRIORS_STOCK_VAULT ? { stockVault: env.PRIORS_STOCK_VAULT } : {}),
+    ...(env.PRIORS_V5 ? { seatVaultV5: env.PRIORS_V5 } : {}), ...(env.PRIORS_V5_ROOT ? { seatVaultV5AgentId: env.PRIORS_V5_ROOT } : {}), ...(deps.addresses || {}) };
+  // SeatVaultV5, when known: both its address and its root's agent id, or neither (L-05: a borrow on its line refreshes it)
+  const v5 = addresses.seatVaultV5 && ethers.isAddress(String(addresses.seatVaultV5)) && /^[1-9][0-9]*$/.test(String(addresses.seatVaultV5AgentId ?? ""))
+    ? { v5: ethers.getAddress(String(addresses.seatVaultV5)), v5Root: BigInt(addresses.seatVaultV5AgentId) } : { v5: null, v5Root: null };
 
   // Everything returned passes through here. The key is cut with or without 0x, in any case, and with separators between
   // its digits (spaced, split over lines, dashed, JSON-quoted chunks). A private RPC URL is cut whole and by its parts
@@ -268,17 +310,20 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   if (stateHome && !/^(off|none|false|0)$/i.test(stateHome) && !isAbsolute(stateHome)) throw new Error(`PRIORS_STATE_DIR must be an absolute path (or start with ~/), not "${stateRaw}"`);
   const stateDir = /^(off|none|false|0)$/i.test(stateRaw) ? null : stateHome || join(homedir(), ".local", "state", "priors-mcp");
   const stateFile = wallet && stateDir ? join(stateDir, `outstanding-${wallet.address.toLowerCase()}.json`) : null;
-  // An entry is { paymentHeaders, validBefore, price (bigint), payTo }: only what this server wrote, never the merchant's
-  // own requirement object (its fields are the merchant's to choose). On disk the price is a decimal string; each entry
-  // is checked on its own, so one bad entry never costs the others. No reviver.
+  // An entry is { paymentHeaders, validBefore, price, payTo, borrowed, loanId }: only what this server wrote, never the
+  // merchant's requirement object (its fields are the merchant's to choose). On disk the amounts are decimal strings;
+  // each entry is checked on its own, so one bad entry never costs the others. No reviver.
   const live = (e, nowS) => e.validBefore + X.SKEW_SECONDS > nowS;
+  const DEC = /^\d{1,30}$/;
   function entryFrom(v) {
     if (!v || typeof v !== "object" || !v.paymentHeaders || typeof v.paymentHeaders !== "object") return null;
     const headers = {};
     for (const [k, x] of Object.entries(v.paymentHeaders)) { if (!/^(payment-signature|x-payment)$/i.test(k) || typeof x !== "string") return null; headers[k] = x; }
     const validBefore = Number(v.validBefore);
-    if (Object.keys(headers).length === 0 || !Number.isSafeInteger(validBefore) || !/^\d{1,30}$/.test(String(v.price)) || !ethers.isAddress(String(v.payTo))) return null;
-    return { paymentHeaders: headers, validBefore, price: BigInt(v.price), payTo: String(v.payTo) };
+    if (Object.keys(headers).length === 0 || !Number.isSafeInteger(validBefore) || !DEC.test(String(v.price)) || !ethers.isAddress(String(v.payTo))) return null;
+    const borrowed = DEC.test(String(v.borrowed ?? "0")) ? BigInt(v.borrowed ?? "0") : 0n;
+    const loanId = v.loanId !== null && v.loanId !== undefined && DEC.test(String(v.loanId)) ? BigInt(v.loanId) : null;
+    return { paymentHeaders: headers, validBefore, price: BigInt(v.price), payTo: String(v.payTo), borrowed, loanId };
   }
   function readState() {
     const m = new Map();
@@ -292,14 +337,15 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   function writeState(m) {
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     const tmp = `${stateFile}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-    writeFileSync(tmp, JSON.stringify(Object.fromEntries([...m].map(([k, e]) => [k, { paymentHeaders: e.paymentHeaders, validBefore: e.validBefore, price: String(e.price), payTo: e.payTo }]))), { mode: 0o600 });
+    const out = Object.fromEntries([...m].map(([k, e]) => [k, { paymentHeaders: e.paymentHeaders, validBefore: e.validBefore, price: String(e.price), payTo: e.payTo, borrowed: String(e.borrowed || 0n), loanId: e.loanId === null || e.loanId === undefined ? null : String(e.loanId) }]));
+    writeFileSync(tmp, JSON.stringify(out), { mode: 0o600 });
     renameSync(tmp, stateFile);
   }
-  // Several servers can share one wallet (two sessions, Claude Desktop and Claude Code): every change is a read-modify-write
-  // of the file under an exclusive lock file, so no server rewrites the file from its own map and erases another's entries.
-  // Best effort: a lock older than 10 s is stale, and after 2 s the write goes ahead without it. Waiting for it delays
-  // this call only (an async wait, never a blocking one): the server keeps answering meanwhile. Inside one process the
-  // lock is held only across synchronous code, so two calls of this server never contend.
+  // Several servers can share one wallet (two sessions, Claude Desktop and Claude Code): every change is a
+  // read-modify-write of the file under an exclusive lock file, so no server rewrites it from its own map and erases
+  // another's entries. Best effort: a lock older than 10 s is stale, and after 2 s the write goes ahead without it.
+  // Waiting for it delays this call only (an async wait, never a blocking one): the server keeps answering meanwhile.
+  // Inside one process the lock is held only across synchronous code, so two calls of this server never contend.
   async function locked(fn) {
     const lock = `${stateFile}.lock`;
     const giveUp = Date.now() + 2000;
@@ -309,13 +355,13 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
         if (e?.code === "ENOENT") { try { mkdirSync(stateDir, { recursive: true, mode: 0o700 }); continue; } catch (_) { break; } }
         if (e?.code !== "EEXIST") break;
         try { if (Date.now() - statSync(lock).mtimeMs > 10_000) { rmSync(lock, { force: true }); continue; } } catch (_) { continue; }
-        if (Date.now() > giveUp) break; // never block a payment on the lock
+        if (Date.now() > giveUp) break;
         await new Promise((res) => setTimeout(res, 10));
       }
     }
     try { return fn(); } finally { if (held) rmSync(lock, { force: true }); }
   }
-  /** Entries another server wrote since: merged in before any decision to sign. */
+  /** Entries another server of this wallet wrote since: merged in before any decision to sign. */
   function refresh() { if (stateFile) for (const [k, e] of readState()) if (!outstanding.has(k)) outstanding.set(k, e); }
   /** Kept on file before the payment leaves; a failure throws, and the payer then does not send it (own audit: a
    *  record silently lost made a restart or another session sign again). */
@@ -342,7 +388,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     if (stateFile) { try { await locked(() => { const m = readState(); if (same(m.get(key)) && m.delete(key)) writeState(m); }); } catch (_) { /* best effort */ } }
   }
   refresh();
-  const contracts = C.creditContracts({ runner: provider, addresses: { pool: addresses.pool, lens: addresses.lens, usdg: addresses.usdg, registry: addresses.registry, stockVault: addresses.stockVault || null } });
+  const contracts = C.creditContracts({ runner: provider, addresses: { pool: addresses.pool, lens: addresses.lens, usdg: addresses.usdg, registry: addresses.registry, stockVault: addresses.stockVault || null, seatVaultV5: v5.v5, seatVaultV5AgentId: v5.v5Root } });
 
   // The chain, behind one facade (tests replace it).
   const credit = deps.credit || {
@@ -356,7 +402,69 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     loanAgent: async (loanId) => (await contracts.pool.getLoan(loanId)).agentId,
     isController: (id, addr) => contracts.pool.isController(id, addr),
     agentsOf: (addr) => discoverAgents(addr),
+    loanDue: async (loanId) => { const l = await contracts.pool.getLoan(loanId); return Number(l.status) === 1 ? l.principal + l.fee : null; },
+    // savings: the vault is checked (a contract, asset = USDG) once, on first use
+    savingsOf: async (addr) => S.savingsOf(await savingsC(), addr),
+    savedOf: async (addr) => { const c = await savingsC(); const sh = await c.vault.balanceOf(addr); return sh === 0n ? 0n : c.vault.previewRedeem(sh); },
+    save: async (amount) => S.save(await savingsC(), wallet, amount),
+    unsave: async (o) => S.unsave(await savingsC(), wallet, o),
+    topUp: async (need, o) => S.topUpFromSavings(await savingsC(), wallet, need, o),
   };
+  let savingsCache = null;
+  function needSavings() { if (savingsProblem) throw new ToolError(savingsProblem); }
+  function savingsC() {
+    needSavings();
+    if (!savingsCache) savingsCache = S.savingsContracts({ runner: provider, vault: savingsVault, usdg: addresses.usdg }).catch((e) => { savingsCache = null; throw e; });
+    return savingsCache;
+  }
+  /** A read that may be slow (savedNote): at most `ms`. */
+  const withinTime = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new ToolError("timed out")), ms).unref?.())]);
+  const SAVINGS_WAIT_MS = 30_000;
+  /**
+   * A top-up bounded by the call's own deadline (at most 30 s). When time runs out it is stopped before it sends
+   * anything; if a withdrawal was already sent, the answer says so (`pending`: the payer then neither borrows nor
+   * signs) and the next money call waits for that withdrawal to settle.
+   */
+  function topUpWithin(need, deadline) {
+    const ac = new AbortController();
+    const o = { signal: ac.signal };
+    const ms = Math.max(1_000, Math.min(SAVINGS_WAIT_MS, (deadline ?? Infinity) - Date.now() - 2_000));
+    const p = credit.topUp(need, o);
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => {
+        ac.abort();
+        if (o.sent || o.sending) {
+          const h = Promise.race([p.then(() => {}, () => {}), new Promise((ok) => setTimeout(ok, HOLD_MAX_MS).unref?.())]).then(() => { if (hold === h) hold = null; });
+          hold = h;
+          reject(Object.assign(new ToolError(`a savings withdrawal${o.sent ? ` (tx ${o.sent})` : ""} was sent and has not confirmed within ${Math.round(ms / 1000)} s; it may still land (the savings tool shows it)`), { pending: true }));
+        } else reject(new ToolError(`the savings step took longer than ${Math.round(ms / 1000)} s and was stopped before it sent anything`));
+      }, ms);
+      t.unref?.();
+      p.then((r) => { clearTimeout(t); resolve(r); }, (e) => { clearTimeout(t); reject(e); });
+    });
+  }
+  function savingsFailure(e) {
+    const m = explain(e);
+    if (e?.pending || e?.code === "UNCONFIRMED") return `${m}.`;
+    return `Could not check or use savings (${/insufficient funds|gas required exceeds|intrinsic gas|NO_GAS/i.test(m) ? "the wallet has no ETH to pay the withdrawal's gas" : m}); went on with the wallet's balance.`;
+  }
+  /** What a top-up did, as lines for the answer: taken out, still saved but stuck, or why it failed. */
+  function savingsLines(r, lines) {
+    if (!r) return;
+    if (r.error) { lines.push(savingsFailure(r.error)); return; }
+    if (r.withdrawn > 0n) lines.push(`Took ${usd(r.withdrawn)} out of savings first${r.inKind ? " (from the vault's other markets, in one transaction)" : ""}${r.hash ? ` (tx ${r.hash})` : ""}.`);
+    if (r.short > 0n && r.saved > r.withdrawn) lines.push(`${usd(r.saved - r.withdrawn)} is still saved but the vault could not pay it out right now (its liquidity is lent out); went on with the wallet's balance.`);
+  }
+  /** Before a repayment: take what the wallet is short of `need` (a value or a function) out of savings. Never fails the call. */
+  async function fromSavings(needOf, lines, deadline) {
+    if (!autoSavings || typeof credit.topUp !== "function") return;
+    try {
+      const need = typeof needOf === "function" ? await needOf() : needOf;
+      if (need === null || need === undefined) return;
+      if (wallet && typeof credit.balances === "function" && (await credit.balances(wallet.address)).usdg >= need) return; // covered: the vault is not touched
+      savingsLines(await topUpWithin(need, deadline), lines);
+    } catch (e) { lines.push(savingsFailure(e)); }
+  }
 
   // The registry is not enumerable: find identities minted to `addr` since the v2 deploy, keep what it owns. Only a mint
   // counts: anyone can transfer an identity with an open loan to this wallet, and `repay` would then pay it (own audit).
@@ -391,7 +499,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
 
   function needWallet(action) {
     if (keyProblem) throw new ToolError(`${action} needs a wallet, but ${keyProblem}. Fix PRIORS_KEY in the MCP server's environment.`);
-    if (!wallet) throw new ToolError(`${action} moves money and needs a wallet: set PRIORS_KEY in the MCP server's environment (never pass a key as a tool argument or on the command line). Read-only tools (wallet_balance with an address, credit_status, stock_assets, stock_position, score_of, find_services) work without it.`);
+    if (!wallet) throw new ToolError(`${action} moves money and needs a wallet: set PRIORS_KEY in the MCP server's environment (never pass a key as a tool argument or on the command line). Read-only tools (wallet_balance and savings with an address, credit_status, stock_assets, stock_position, score_of, find_services) work without it.`);
     return wallet;
   }
   async function needController(id) {
@@ -402,6 +510,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   const failure = (t) => ({ content: [{ type: "text", text: redact(t) }], isError: true });
   const explain = (e) => {
     if (e instanceof ToolError) return e.message;
+    if (e?.name === "SavingsError") return `${e.message} [${e.code}]`;
     if (e?.name === "PayError") return `${e.message} [${e.code}]`;
     if (e?.name === "ZodError") return `invalid arguments: ${e.message}`;
     const m = e?.shortMessage || e?.message || String(e);
@@ -409,8 +518,47 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     return m;
   };
 
+  // ---- Autopay: the chain, behind one facade (tests replace it) ----
+  const autoRepayRaw = String(env.PRIORS_AUTOREPAY ?? addresses.autoRepay ?? "").trim();
+  const autoRepayProblem = autoRepayRaw && !ethers.isAddress(autoRepayRaw) ? (looksLikeKey(autoRepayRaw) ? "PRIORS_AUTOREPAY holds what looks like a private key, not an address: take it out of that variable and restart the server" : "PRIORS_AUTOREPAY is not a 0x address: fix it and restart the server") : null;
+  let autopayCache = null;
+  const autopayC = () => (autopayCache ||= A.autopayContracts({ runner: provider, address: autoRepayRaw, registry: addresses.registry, usdg: addresses.usdg, savingsVault: savingsProblem ? null : savingsVault, pool: addresses.pool }));
+  const autopay = deps.autopay !== undefined ? deps.autopay : autoRepayRaw && !autoRepayProblem ? {
+    status: (walletAddr, id) => A.autopayStatus(autopayC(), walletAddr, id),
+    on: (id, o) => A.autopayOn(autopayC(), wallet, id, o),
+    off: (id, o) => A.autopayOff(autopayC(), wallet, id, o),
+  } : null;
+  function needAutopay() {
+    if (autoRepayProblem) throw new ToolError(autoRepayProblem);
+    if (!autopay) throw new ToolError("Autopay isn't deployed yet: no AutoRepay address is known to this server (PRIORS_AUTOREPAY, or deployments/4663.v2.json `autoRepay` in a later version). Repay loans with the repay tool before their due date.");
+    return autopay;
+  }
+  /** What pay_url keeps back: what the wallet's Autopay plan pulls for loans whose window opens in the next 24 h. A
+   *  failed read keeps nothing back (the payment goes on as before) and is never an error. */
+  async function autopayReserve() {
+    if (!reserveOn || !autopay || !wallet) return 0n;
+    try {
+      const id = await resolveAgent();
+      return A.autopayReserve(await withinTime(autopay.status(wallet.address, id), 10_000));
+    } catch (_) { return 0n; }
+  }
+  /** Autopay lines for credit_status: the wallet's plan, its budget, the next loan it pays, a shortfall. */
+  async function autopayLines(id) {
+    if (!autopay || !wallet) return [];
+    let st;
+    try { st = await withinTime(autopay.status(wallet.address, id), 10_000); } catch (e) { return [`Autopay: couldn't read it (${explain(e)}).`]; }
+    if (!st.declared) return ["Autopay: off. This wallet is not the agent's declared wallet, so it can't repay the agent's loans through AutoRepay."];
+    if (!st.plan.on) return ["Autopay: off. autopay_on turns it on: this wallet then repays each loan a few hours before it is due, if it holds enough."];
+    if (!st.plan.current) return [st.plan.stale ? "Autopay: the plan was set before the agent's key or owner changed, so it pays nothing now. Call autopay_on again." : "Autopay: the plan was set under an earlier owner of the agent, so it pays nothing now. Call autopay_on again."];
+    const out = [`Autopay: on, from this wallet${st.plan.useSavings ? " (then its savings)" : ""}; limit ${usd(st.plan.cap)} per loan, budget left ${usd(st.budget)}${st.plan.late ? "; also in the grace period" : ""}.${st.held ? " On hold: it pays nothing until resumed." : ""}${st.paused ? ` Paused by the Safe until ${when(st.paused.until)}: repay by hand before the due date.` : ""}`];
+    if (st.next) out.push(`Next autopay: loan #${st.next.loanId}, ${usd(st.next.due)}, from ${when(st.next.opens)} (due ${when(st.next.dueAt)}).`);
+    if (st.short) out.push(st.short.overCap ? `Loan #${st.short.loanId} is above the Autopay limit. Raise the limit with autopay_on, or repay it by hand.` : `This wallet won't cover its autopay of loan #${st.short.loanId}: ${usd(st.short.need)} is needed by then and ${usd(st.short.have)} can be pulled. Add USDG to this wallet, approve more with autopay_on, or repay by hand.`);
+    if (st.budget < st.plan.cap) out.push("The budget left is under one loan's limit: call autopay_on again to approve more.");
+    return out;
+  }
+
   const server = new McpServer({ name: "priors", version: VERSION }, {
-    instructions: "Priors on Robinhood Chain (chain 4663): pay x402-priced URLs in USDG, and run the agent's Priors credit line. Tools that move money (pay_url, borrow, repay) act immediately on mainnet: state the amounts to the user and get their go-ahead first. Amounts are in US dollars of USDG.",
+    instructions: "Priors on Robinhood Chain (chain 4663): pay x402-priced URLs in USDG, and run the agent's Priors credit line. Tools that move money (pay_url, borrow, repay, save, unsave, autopay_on, autopay_off) act immediately on mainnet: state the amounts to the user and get their go-ahead first. Spare USDG can be saved in a Morpho vault (save); pay_url and repay take it back out when the wallet is short, before any borrowing. Amounts are in US dollars of USDG.",
   });
   const tool = (name, config, handler) => server.registerTool(name, config, async (args) => {
     try { return text(await handler(args || {})); } catch (e) { return failure(explain(e)); }
@@ -426,9 +574,10 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       body: z.string().max(100_000).optional().describe("Request body (not for GET). Sent as application/json when it parses as JSON, else text/plain."),
       max_price_usd: z.number().positive().optional().describe("Most to pay for this one call, in US dollars. Default 0.10."),
       max_borrow_usd: z.number().nonnegative().optional().describe("Most to borrow from the Priors line if the wallet is short, in US dollars. Default 0: never borrow."),
+      use_savings: z.boolean().optional().describe("Default true: once the price is known, if the wallet holds less, first take the difference out of the agent's savings, before any borrowing."),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  }, serial(async ({ url, method = "GET", body, max_price_usd, max_borrow_usd }, deadline) => {
+  }, serial(async ({ url, method = "GET", body, max_price_usd, max_borrow_usd, use_savings = true }, deadline) => {
     const signer = needWallet("pay_url");
     const u = await checkTarget(url);
     if (method === "GET" && body !== undefined) throw new ToolError("A GET request cannot carry a body: use POST (or another method) with body.");
@@ -466,43 +615,51 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       throw new ToolError(`A payment of ${usd(unmatched.price)} to ${unmatched.payTo} for ${urlOnly} was signed earlier and kept without its request body (by an earlier version of this server, or for a call without a body), and the merchant may still settle it until ${until}. It cannot be told apart from this purchase, so nothing was signed: do NOT call pay_url again for this URL before ${until}; check wallet_balance.`);
     }
     let r;
-    let signedPrice = null; // what the payer checked and signed, never a merchant field read again here
+    let signedPrice = null; // what the payer checked and signed; never a merchant field read again here
     if (prior) {
       // A payment for this purchase is already out and still cashable: send that same one, never a second.
       r = await X.createPayer({ signer, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}) }).resend(url, prior.paymentHeaders, init);
       r = { ...r, requirement: { payTo: prior.payTo }, paid: r.response.ok ? prior.price : 0n, borrowed: 0n, signed: prior, resent: true, ...(r.response.ok ? { settlement: settlementOf(r.response) } : {}) };
       signedPrice = prior.price;
       lines.push("No new payment was signed: the same signed payment was sent again.");
+      if (prior.borrowed > 0n) lines.push(`The first attempt at this purchase borrowed ${usd(prior.borrowed)}${prior.loanId !== null && prior.loanId !== undefined ? ` as loan #${prior.loanId}` : ""}: repay it with the repay tool.`);
     } else {
       if (session.spent + maxPrice > spendCap) throw new ToolError(`this would bring what pay_url may sign in this session to ${usd(session.spent + maxPrice)}, above ${usd(spendCap)} (PRIORS_MAX_SPEND_USD). ${usd(session.spent)} was signed so far; the user can raise the limit and restart the server.`);
       if (maxBorrow > 0n && session.borrowed + maxBorrow > borrowTotalCap) throw new ToolError(`this could bring what is borrowed in this session to ${usd(session.borrowed + maxBorrow)}, above ${usd(borrowTotalCap)} (PRIORS_MAX_BORROW_TOTAL_USD).`);
       let agentId;
       if (maxBorrow > 0n) { agentId = await resolveAgent(); await needController(agentId); }
-      const payer = X.createPayer({ signer, maxPrice, maxBorrow, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}), ...(maxBorrow > 0n ? { pool: addresses.pool, agentId } : {}),
+      // The agent's own savings before a loan: once the 402 names the price, only what the wallet is short of.
+      const topUp = use_savings && autoSavings && typeof credit.topUp === "function" ? (need) => topUpWithin(need, deadline) : undefined;
+      const payer = X.createPayer({ signer, maxPrice, maxBorrow, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}), ...(maxBorrow > 0n ? { pool: addresses.pool, agentId, ...v5 } : {}), ...(topUp ? { topUp } : {}), ...(reserveOn && autopay ? { reserve: autopayReserve } : {}),
         // Recorded, then counted, when signed, at the price the payer checked and signed (a v1 requirement's `amount` is the
         // merchant's text). A record that cannot be kept throws, and the payer does not send the payment.
-        onSigned: async (s) => { await record(purchase, { paymentHeaders: s.paymentHeaders, validBefore: s.validBefore, price: s.price, payTo: s.requirement.payTo }); signedPrice = s.price; session.spent += s.price; } });
+        onSigned: async (s) => { await record(purchase, { paymentHeaders: s.paymentHeaders, validBefore: s.validBefore, price: s.price, payTo: s.requirement.payTo, borrowed: s.borrowed || 0n, loanId: s.loanId ?? null }); signedPrice = s.price; session.spent += s.price; } });
       try { r = await payer.pay(url, init); } catch (e) {
+        // What savings did before the failure is part of the answer, whatever failed after.
+        const sv = []; savingsLines(e?.savings, sv);
+        const note = sv.length ? ` ${sv.join(" ")}` : "";
         // What the error carries was done: a loan taken and a payment signed are counted, whatever failed after.
         if (e?.borrowed > 0n) session.borrowed += e.borrowed;
         // A borrow sent whose answer was lost may have mined (GHSA-v9xj): counted above, and said, never "nothing done".
-        if (e?.unconfirmed) throw new ToolError(`A borrow of ${usd(e.borrowed)} was sent${e.hash ? ` (tx ${e.hash})` : ""} and its answer was lost (${explain(e.cause ?? e)}), so it may have opened a loan: check credit_status, and repay it with the repay tool before its due date. Nothing was signed or paid.`);
+        if (e?.unconfirmed) throw new ToolError(`A borrow of ${usd(e.borrowed)} was sent${e.hash ? ` (tx ${e.hash})` : ""} and its answer was lost (${explain(e.cause ?? e)}), so it may have opened a loan: check credit_status, and repay it with the repay tool before its due date. Nothing was signed or paid.${note}`);
         if (e?.signed) {
-          if (signedPrice === null) { signedPrice = maxPrice; session.spent += maxPrice; await recordSent(purchase, { ...e.signed, price: maxPrice, payTo: e.requirement.payTo }); } // not reached: onSigned ran
+          // onSigned ran before the payment left; should it not have, count the most this call could sign
+          if (signedPrice === null) { signedPrice = maxPrice; session.spent += maxPrice; await recordSent(purchase, { ...e.signed, price: maxPrice, payTo: e.requirement.payTo, borrowed: e.borrowed || 0n, loanId: e.loanId ?? null }); }
           const price = signedPrice;
           const until = when(e.signed.validBefore + X.SKEW_SECONDS);
-          throw new ToolError(`A payment of ${usd(price)} to ${e.requirement.payTo} was signed, then the request failed (${explain(e)}). The merchant may still settle it until ${until}, so do NOT call pay_url again for this purchase (the same method, URL and body) before ${until}; check wallet_balance.${e.borrowed > 0n ? ` Borrowed ${usd(e.borrowed)}${e.loanId !== null ? ` as loan #${e.loanId}` : ""}: repay it with the repay tool.` : ""}`);
+          throw new ToolError(`A payment of ${usd(price)} to ${e.requirement.payTo} was signed, then the request failed (${explain(e)}). The merchant may still settle it until ${until}, so do NOT call pay_url again for this purchase (the same method, URL and body) before ${until}; check wallet_balance.${e.borrowed > 0n ? ` Borrowed ${usd(e.borrowed)}${e.loanId !== null ? ` as loan #${e.loanId}` : ""}: repay it with the repay tool.` : ""}${note}`);
         }
         const loan = e?.borrowed > 0n ? ` ${usd(e.borrowed)} was borrowed${e.loanId !== null ? ` as loan #${e.loanId}` : ""} before it failed: repay it with the repay tool.` : "";
         if (e?.code === "NOT_RECORDED" && e.cause?.code === "OTHER_SESSION") { outstanding.set(purchase, e.cause.prior); throw new ToolError(`Another session of this wallet signed a payment of ${usd(e.cause.prior.price)} for this purchase a moment ago, and it may still settle until ${when(e.cause.prior.validBefore + X.SKEW_SECONDS)}. Nothing was sent from this call and no payment of its own is out: calling pay_url again resends that same payment, never a new one.${loan}`); }
-        if (e?.code === "NOT_RECORDED") throw new ToolError(`A payment was signed but could not be written to PRIORS_STATE_DIR (${explain(e.cause ?? e)}), so it was not sent and nothing can be settled. Fix that directory, or set PRIORS_STATE_DIR=off to keep payments in this process's memory only, then call again.${loan}`);
-        if (e?.name === "TimeoutError" || e?.name === "AbortError") throw new ToolError(`${method} ${u.href} did not answer in time. Nothing was signed or paid.${loan}`);
-        if (loan) throw new ToolError(`${explain(e)}.${loan}`);
+        if (e?.code === "NOT_RECORDED") throw new ToolError(`A payment was signed but could not be written to PRIORS_STATE_DIR (${explain(e.cause ?? e)}), so it was not sent and nothing can be settled. Fix that directory, or set PRIORS_STATE_DIR=off to keep payments in this process's memory only, then call again.${loan}${note}`);
+        if (e?.name === "TimeoutError" || e?.name === "AbortError") throw new ToolError(`${method} ${u.href} did not answer in time. Nothing was signed or paid.${loan}${note}`);
+        if (loan || note) throw new ToolError(`${explain(e)}.${loan}${note}`);
         throw e;
       }
-      if (r.signed && signedPrice === null) { // not reached: onSigned counted and recorded it
+      savingsLines(r.savings, lines);
+      if (r.signed && signedPrice === null) { // onSigned counted and recorded it; should it not have, the most this call could sign
         signedPrice = maxPrice; session.spent += maxPrice;
-        if (r.paid === 0n) await recordSent(purchase, { ...r.signed, price: maxPrice, payTo: r.requirement.payTo });
+        if (r.paid === 0n) await recordSent(purchase, { ...r.signed, price: maxPrice, payTo: r.requirement.payTo, borrowed: r.borrowed || 0n, loanId: r.loanId ?? null });
       }
       if (r.borrowed > 0n) { session.borrowed += r.borrowed; lines.push(`Borrowed ${usd(r.borrowed)} from the Priors line for agent #${agentId}${r.loanId !== null ? ` as loan #${r.loanId}` : ""}${r.dueAt ? `, due ${when(r.dueAt)}` : ""}. Repay it with the repay tool before then.`); }
       else if (r.requirement) lines.push("Nothing was borrowed.");
@@ -536,13 +693,13 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     if (!addr) throw new ToolError("No wallet is configured (PRIORS_KEY is not set): pass an address to check.");
     if (!ethers.isAddress(addr)) throw new ToolError(`not an address: ${clean(addr, 80)}`);
     const b = await credit.balances(ethers.getAddress(addr));
-    return `${b.address}${wallet && ethers.getAddress(addr) === wallet.address ? " (this server's wallet)" : ""} holds ${usd(b.usdg)} and ${ethers.formatEther(b.native)} ETH for gas on Robinhood Chain.`;
+    return `${b.address}${wallet && ethers.getAddress(addr) === wallet.address ? " (this server's wallet)" : ""} holds ${usd(b.usdg)} and ${ethers.formatEther(b.native)} ETH for gas on Robinhood Chain.${await savedNote(b.address)}`;
   });
 
   // ---- credit_status -------------------------------------------------------------------------------------------
   tool("credit_status", {
     title: "Priors credit line of an agent",
-    description: "Show a Priors agent's credit line on Robinhood Chain: who backs it, the line, what is drawn and available, its repayment record, score and open loans with due dates. agent_id defaults to the configured wallet's agent. Read-only.",
+    description: "Show a Priors agent's credit line on Robinhood Chain: who backs it, the line, what is drawn and available, its repayment record, score and open loans with due dates, and (for the configured wallet) its Autopay: on or off, the limit per loan, the budget left, the next loan it repays and any shortfall. agent_id defaults to the configured wallet's agent. Read-only.",
     inputSchema: { agent_id: z.number().int().nonnegative().optional().describe("Priors (ERC-8004) agent id; default: the configured wallet's agent.") },
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, async ({ agent_id }) => {
@@ -558,6 +715,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     ];
     if (s.openLoans.length === 0) lines.push("Open loans: none.");
     for (const l of s.openLoans) lines.push(`Open loan #${l.loanId}: ${usd(l.principal)} + fee ${usd(l.fee)} = ${usd(l.due)}, due ${when(l.dueAt)}${Date.now() / 1000 > l.dueAt ? " (PAST DUE: repay now)" : ""}.`);
+    lines.push(...(await autopayLines(id)));
     return lines.join("\n");
   });
 
@@ -652,7 +810,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     const id = await resolveAgent();
     await needController(id);
     const q = await credit.quote(id, amount, term);
-    if (dry_run) return `Quote for agent #${id}: borrow ${usd(amount)} for ${days} days, fee ${usd(q.fee)}, ${usd(q.due)} due at the end. Nothing was borrowed.`;
+    if (dry_run) return `Quote for agent #${id}: borrow ${usd(amount)} for ${days} days, fee ${usd(q.fee)}, ${usd(q.due)} due at the end. Nothing was borrowed.${await savedNote(wallet.address)}`;
     let r;
     try { r = await credit.borrow(id, amount, term); } catch (e) {
       // sent, and its answer lost: it may have mined, so it is counted and said (GHSA-v9xj)
@@ -663,20 +821,23 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       throw e;
     }
     session.borrowed += r.principal;
-    return `Borrowed ${usd(r.principal)} for agent #${id}${r.loanId !== null ? ` as loan #${r.loanId}` : ""}: fee ${usd(r.fee)}, so ${usd(r.principal + r.fee)} is due${r.dueAt ? ` by ${when(r.dueAt)}` : ""}. The USDG is in ${wallet.address}. Tx ${r.hash}.`;
+    const v5Note = r.v5Refreshed ? " Its SeatVaultV5 line was refreshed first." : r.v5Noted ? ` SeatVaultV5 recorded this key now (tx ${r.v5Noted}): it can raise the line itself 24 hours from now.` : "";
+    return `Borrowed ${usd(r.principal)} for agent #${id}${r.loanId !== null ? ` as loan #${r.loanId}` : ""}: fee ${usd(r.fee)}, so ${usd(r.principal + r.fee)} is due${r.dueAt ? ` by ${when(r.dueAt)}` : ""}. The USDG is in ${wallet.address}. Tx ${r.hash}.${v5Note}`;
   }));
 
   // ---- repay ---------------------------------------------------------------------------------------------------
   tool("repay", {
     title: "Repay Priors loans",
-    description: "Repay the agent's own Priors loans in full (principal + fee) from the configured wallet's USDG; a loan of another agent is refused. Give either loan_id for one loan, or all: true to repay every open loan, earliest due first, as far as the balance covers. Moves real money: state the amounts (credit_status lists them) to the user first.",
+    description: "Repay the agent's own Priors loans in full (principal + fee) from the configured wallet's USDG; a loan of another agent is refused. Give either loan_id for one loan, or all: true to repay every open loan, earliest due first, as far as the balance covers. Moves real money: state the amounts (credit_status lists them) to the user and get their go-ahead first.",
     inputSchema: {
       loan_id: z.number().int().nonnegative().optional().describe("The loan to repay."),
       all: z.boolean().optional().describe("true: repay every open loan of the agent, earliest due first."),
+      use_savings: z.boolean().optional().describe("Default true: if the wallet holds less than what is due, first take the difference out of the agent's savings."),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  }, serial(async ({ loan_id, all }) => {
+  }, serial(async ({ loan_id, all, use_savings = true }, deadline) => {
     needWallet("repay");
+    const pre = [];
     if ((loan_id === undefined) === (all !== true)) throw new ToolError("Give exactly one of loan_id or all: true.");
     // Only the loans of an agent this wallet controls: the pool lets anyone repay any loan, and this wallet's USDG is
     // not for others. PRIORS_AGENT_ID alone is not proof: a stale or mistyped id would point at someone else's agent.
@@ -685,20 +846,158 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     if (loan_id !== undefined) {
       const owner = BigInt(await credit.loanAgent(BigInt(loan_id)));
       if (owner !== id) throw new ToolError(`loan #${loan_id} belongs to agent #${owner}, not to agent #${id}. This tool only repays the configured agent's own loans.`);
-      const r = await credit.repay(BigInt(loan_id));
-      return `Repaid loan #${r.loanId} of agent #${r.agentId}: ${usd(r.paid)} (principal + fee). Tx ${r.hash}.`;
+      // the due is read inside the savings step: a failed read there never stops the repayment
+      if (use_savings) await fromSavings(() => credit.loanDue(BigInt(loan_id)), pre, deadline);
+      let r;
+      try { r = await credit.repay(BigInt(loan_id)); } catch (e) {
+        if (pre.length) throw new ToolError(`${pre.join(" ")} Then the repayment failed: ${explain(e)}`);
+        throw e;
+      }
+      return [...pre, `Repaid loan #${r.loanId} of agent #${r.agentId}: ${usd(r.paid)} (principal + fee). Tx ${r.hash}.`].join("\n");
     }
     const s = await credit.status(id);
     if (s.openLoans.length === 0) return `Agent #${id} has no open loan. Nothing was repaid.`;
+    if (use_savings) await fromSavings(s.openLoans.reduce((a, l) => a + l.due, 0n), pre, deadline);
     const done = [], left = [];
     let stop = null;
     for (const l of s.openLoans) {
       if (stop) { left.push(l); continue; }
       try { const r = await credit.repay(l.loanId); done.push(`loan #${r.loanId}: ${usd(r.paid)}, tx ${r.hash}`); } catch (e) { stop = explain(e); left.push(l); }
     }
-    const out = [done.length ? `Repaid for agent #${id}:\n- ${done.join("\n- ")}` : `Nothing was repaid for agent #${id}.`];
+    const out = [...pre, done.length ? `Repaid for agent #${id}:\n- ${done.join("\n- ")}` : `Nothing was repaid for agent #${id}.`];
     if (left.length) out.push(`Still open: ${left.map((l) => `#${l.loanId} (${usd(l.due)} due ${when(l.dueAt)})`).join(", ")}.${stop ? ` Stopped because: ${stop}` : ""}`);
     return out.join("\n");
+  }));
+
+  // ---- autopay_on / autopay_off ---------------------------------------------------------------------------------
+  // Autopay: the agent's own wallet approves AutoRepay for a budget (4 x the limit, never unlimited)
+  // and enrolls; Priors' keeper (or anyone) then repays each loan in the 6 hours before it is due, from this wallet,
+  // while it holds enough. Two plain transactions from the wallet (its own ETH pays the gas).
+  tool("autopay_on", {
+    title: "Turn on Autopay (repay loans on time from this wallet)",
+    description: "Turn on Autopay for the configured agent: this wallet approves AutoRepay for a USDG budget (4 x the limit per loan) and enrolls, so each Priors loan is repaid from this wallet (then its savings, if chosen) in the 6 hours before it is due, by Priors' keeper or anyone, with no call per loan, while the wallet holds enough. It makes an on-time repayment more likely; it is not a promise. Call it again to change the limit or approve more budget when it runs low. Moves real allowances: state the limit and the budget to the user and get their go-ahead once. Needs ETH for gas.",
+    inputSchema: {
+      cap_usd: z.number().positive().optional().describe("Most it repays per loan, in US dollars. Default: the line plus a 30-day fee, at most this server's ceiling (PRIORS_MAX_AUTOPAY_USD, default 25)."),
+      use_savings: z.boolean().optional().describe("Also take from the wallet's savings when its USDG is short. Default: on when the wallet has savings."),
+      late: z.boolean().optional().describe("Default true: also repay in the 3-day grace period after the due date (late, but no default)."),
+      budget_usd: z.number().positive().optional().describe("The allowance to approve, in US dollars. Default 4 x the limit."),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  }, serial(async ({ cap_usd, use_savings, late = true, budget_usd }) => {
+    needWallet("autopay_on");
+    const ap = needAutopay();
+    const id = await resolveAgent();
+    await needController(id);
+    let cap = cap_usd !== undefined ? dollars(cap_usd, "cap_usd") : null;
+    if (cap === null) { const st = await credit.status(id); cap = A.defaultCap(st.line, maxAutopayCap); }
+    if (cap === 0n) throw new ToolError("cap_usd must be above zero");
+    if (cap > maxAutopayCap) throw new ToolError(`cap_usd ${X.formatUsdg(cap)} is above this server's Autopay ceiling of ${usd(maxAutopayCap)} (PRIORS_MAX_AUTOPAY_USD).`);
+    const budget = budget_usd !== undefined ? dollars(budget_usd, "budget_usd") : cap * A.BUDGET_LOANS;
+    if (budget < cap) throw new ToolError("budget_usd must cover at least one loan's limit.");
+    let useSavings = use_savings;
+    if (useSavings === undefined) { try { useSavings = autoSavings && (await credit.savedOf(wallet.address)) > 0n; } catch (_) { useSavings = false; } }
+    if (useSavings && savingsProblem) throw new ToolError(savingsProblem);
+    const r = await ap.on(id, { cap, useSavings, late, budget, ceiling: maxAutopayCap });
+    return `Autopay is on for agent #${id}: each loan up to ${usd(r.cap)} is repaid from ${wallet.address}${useSavings ? ", then its savings," : ""} in the 6 hours before it is due${late ? ", and in the grace period if it is late" : ""}, while the wallet holds enough. Budget approved: ${usd(r.budget)}; call autopay_on again to approve more when it runs low. credit_status shows the next loan it pays.${r.hashes.length ? ` Tx ${r.hashes.join(", ")}.` : ""}`;
+  }));
+
+  tool("autopay_off", {
+    title: "Turn off Autopay",
+    description: "Turn off Autopay for the configured agent: AutoRepay stops repaying its loans from this wallet at once. With clear_budget: true, also set this wallet's allowances to AutoRepay to 0. Loans must then be repaid with the repay tool before their due date.",
+    inputSchema: { clear_budget: z.boolean().optional().describe("true: also set the allowances to AutoRepay to 0.") },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, serial(async ({ clear_budget = false }) => {
+    needWallet("autopay_off");
+    const ap = needAutopay();
+    const id = await resolveAgent();
+    const r = await ap.off(id, { clearBudget: clear_budget });
+    return `Autopay is off for agent #${id}: AutoRepay no longer repays its loans from ${wallet.address}${clear_budget ? ", and its allowances to AutoRepay are 0" : ""}. Repay open loans with the repay tool before their due date.${r.hashes.length ? ` Tx ${r.hashes.join(", ")}.` : ""}`;
+  }));
+
+  // ---- savings / save / unsave ----------------------------------------------------------------------------------
+  // Spare USDG kept in a Morpho vault (Steakhouse USDG by default) and taken back out when the agent pays or repays
+  // (pay_url and repay take from savings before borrowing). The agent's own money: Priors never holds it, and the
+  // vault's risk is the agent's. savings and unsave work even with PRIORS_SAVINGS_VAULT=off, so saved money can come out.
+  /** " It also has X saved ..." for an address, or "" (never fails the calling tool). */
+  async function savedNote(addr) {
+    if (savingsProblem || typeof credit.savedOf !== "function") return "";
+    try {
+      const v = await withinTime(credit.savedOf(addr), 5_000);
+      if (!(v > 0n)) return "";
+      if (!wallet || ethers.getAddress(addr) !== wallet.address) return ` It also has ${usd(v)} saved in the savings vault.`;
+      return ` It also has ${usd(v)} saved in the savings vault (the savings tool shows it; ${autoSavings ? "pay_url and repay use it before borrowing" : "savings are off on this server, so pay_url and repay don't use it; unsave takes it out"}).`;
+    } catch (_) { return ""; }
+  }
+  const RISK = "Savings earn the vault's rate, which moves with Morpho's markets; the vault's risk (its curator's markets and settings, a loss in a market) is the saver's, and Priors never holds the money.";
+  tool("savings", {
+    title: "Savings in the Morpho vault",
+    description: "Show how much USDG an address has saved in the savings vault (Steakhouse USDG on Morpho by default), what the vault can pay out to it right now, and the USDG in its wallet. Defaults to the configured wallet. Read-only.",
+    inputSchema: { address: z.string().optional().describe("0x address to check; default: the configured wallet.") },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  }, async ({ address }) => {
+    const addr = address ?? wallet?.address;
+    if (!addr) throw new ToolError("No wallet is configured (PRIORS_KEY is not set): pass an address to check.");
+    if (!ethers.isAddress(addr)) throw new ToolError(`not an address: ${clean(addr, 80)}`);
+    needSavings();
+    const s = await credit.savingsOf(ethers.getAddress(addr));
+    const reach = s.reachable ?? s.withdrawable;
+    const out = [`${s.owner} has ${usd(s.saved)} saved in vault ${s.vault} and ${usd(s.wallet)} in its wallet.`];
+    if (s.saved > 0n) {
+      out.push(reach >= s.saved ? "All of it can come out right now (unsave)." : `${usd(reach)} can come out right now${reach > s.withdrawable ? ` (${usd(s.withdrawable)} by a normal withdrawal, the rest from the vault's other markets; unsave does both)` : ""}; ${usd(s.saved - reach)} can't until the vault's markets have liquidity again.`);
+    }
+    if (savingsOff) out.push("Savings are off on this server: no new saving and no automatic top-ups; unsave still works.");
+    out.push(RISK);
+    return out.join(" ");
+  });
+
+  tool("save", {
+    title: "Save spare USDG in the Morpho vault",
+    description: "Move USDG from the configured wallet into the savings vault (Steakhouse USDG on Morpho by default), where it earns the vault's rate (which moves with its markets) until the agent needs it; pay_url and repay take it back out automatically when the wallet is short. Moves real money into a third-party vault, whose risk the agent carries: state the amount to the user and get their go-ahead first. Keep enough in the wallet for loans coming due and payments expected soon. Needs ETH for gas.",
+    inputSchema: { amount_usd: z.number().positive().describe("How much to save, in US dollars of USDG.") },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, serial(async ({ amount_usd }) => {
+    needSavings();
+    if (savingsOff) throw new ToolError("Savings are off on this server (PRIORS_SAVINGS_VAULT=off): save is disabled. The savings and unsave tools still work.");
+    needWallet("save");
+    const amount = dollars(amount_usd, "amount_usd");
+    if (amount === 0n) throw new ToolError("amount_usd must be above zero");
+    if (amount > maxSaveCeiling) throw new ToolError(`amount_usd ${X.formatUsdg(amount)} is above this server's ceiling of ${usd(maxSaveCeiling)} per save (PRIORS_MAX_SAVE_USD).`);
+    if (session.saved + amount > saveTotalCap) throw new ToolError(`this would bring what save moved in this session to ${usd(session.saved + amount)}, above ${usd(saveTotalCap)} (PRIORS_MAX_SAVE_TOTAL_USD).`);
+    // Payments signed and not yet settled still need their USDG in the wallet: never save it away from under them.
+    const nowS = Math.floor(Date.now() / 1000);
+    refresh(); // another session's pending payments need their USDG too
+    const reserved = [...outstanding.values()].filter((v) => live(v, nowS)).reduce((a, v) => a + v.price, 0n);
+    if (reserved > 0n) {
+      const b = await credit.balances(wallet.address);
+      if (b.usdg < amount + reserved) throw new ToolError(`${usd(reserved)} of the wallet's USDG is held for signed payments that have not settled yet; at most ${usd(b.usdg > reserved ? b.usdg - reserved : 0n)} can be saved now.`);
+    }
+    let r;
+    try { r = await credit.save(amount); } catch (e) {
+      if (e?.code === "UNCONFIRMED") session.saved += amount; // it may have landed: counted, so a retry can't pass the cap
+      throw e;
+    }
+    session.saved += r.amount;
+    let after = "";
+    try { const s = await credit.savingsOf(wallet.address); after = ` Now ${usd(s.saved)} saved, ${usd(s.wallet)} left in the wallet.`; } catch (_) { after = " (The balances could not be read just now: check the savings tool.)"; }
+    return `Saved ${usd(r.amount)} in vault ${r.vault || savingsVault}. Tx ${r.hash}.${after}`;
+  }));
+
+  tool("unsave", {
+    title: "Take USDG out of savings",
+    description: "Move USDG from the savings vault back into the configured wallet: amount_usd, or all: true for everything. When the vault's normal withdrawal cannot pay it all, it takes the rest from the vault's other markets in the same transaction (only where that costs no penalty). Refused before any transaction when even that cannot pay the amount. Moves the agent's own money back to its own wallet; state the amount to the user and get their go-ahead first. Needs ETH for gas.",
+    inputSchema: {
+      amount_usd: z.number().positive().optional().describe("How much to take out, in US dollars of USDG."),
+      all: z.boolean().optional().describe("true: take everything out."),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, serial(async ({ amount_usd, all }) => {
+    needSavings();
+    needWallet("unsave");
+    if ((amount_usd === undefined) === (all !== true)) throw new ToolError("Give exactly one of amount_usd or all: true.");
+    const r = await credit.unsave(all ? { all: true } : { amount: dollars(amount_usd, "amount_usd") });
+    let after = "";
+    try { const s = await credit.savingsOf(wallet.address); after = ` Now ${usd(s.saved)} saved, ${usd(s.wallet)} in the wallet.`; } catch (_) { after = " (The balances could not be read just now: check the savings tool.)"; }
+    return `Took ${usd(r.amount)} out of savings${r.inKind ? " (part of it from the vault's other markets, in one transaction)" : ""}. Tx ${r.hash}.${after}`;
   }));
 
   // ---- find_services -------------------------------------------------------------------------------------------

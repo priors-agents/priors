@@ -89,25 +89,14 @@ An agent pays it with `@x402/mcp`'s client and this package's USDG client:
 
 The payer's Priors record is what it has borrowed and repaid on Robinhood Chain, and whether it ever defaulted.
 `recordGate` reads it before the facilitator sees the payment. A payment the merchant's policy refuses is never
-verified or settled: no money moves, and the client gets the usual 402. The reason (`priors_payer_defaulted`,
-`priors_record_too_short`, `priors_score_too_low`, `priors_price_not_entitled`, `priors_record_unavailable`) is the
-`error` field of its `PAYMENT-REQUIRED` header (base64 JSON), not the body.
+verified or settled: no money moves, and the client gets the usual 402 with the reason (`priors_payer_defaulted`,
+`priors_record_too_short`, `priors_score_too_low`, `priors_price_not_entitled`, `priors_record_unavailable`).
 
 ```js
 import { createResourceServer, recordGate } from "@priors/x402";
 
-const server = createResourceServer({ apiKey: process.env.PRIORS_MERCHANT_KEY });
+const server = createResourceServer({ apiKey: process.env.PRIORS_FACILITATOR_KEY });
 recordGate({ refuseDefaulted: true, minRepaid: 1 }).attach(server); // then paymentMiddleware(routes, server) as above
-```
-
-**On a local fork.** Read the record from the fork, not mainnet, and settle on the fork: `facilitator.priors.trade`
-only settles on Robinhood Chain itself. `createResourceServer` takes any x402 v2 facilitator client as
-`facilitatorClient`; agent001's sandbox runs one that pays the gas from a fork-only wallet
-([`src/facilitator-local.mjs`](https://github.com/priors-agents/agent001/blob/main/src/facilitator-local.mjs)).
-
-```js
-const server = createResourceServer({ facilitatorClient: myForkFacilitator });
-recordGate({ source: "chain", rpc: "http://127.0.0.1:8545", minRepaid: 1 }).attach(server);
 ```
 
 | option | default | |
@@ -152,12 +141,8 @@ const payer = createPayer({
 const { response, paid, borrowed, loanId, dueAt } = await payer.pay("https://api.example.com/report");
 console.log(response.status, await response.json(), { paid, borrowed, loanId, dueAt });
 // once the agent has been paid by its client:
-await payer.settleLoans(); // repays open loans, earliest due first; do it before dueAt
+const { open } = await payer.settleLoans(); // repays open loans, earliest due first, as far as the wallet covers; before dueAt. `open` lists what it could not pay
 ```
-
-To a merchant whose record gate reads the chain, name the agent the wallet controls:
-`payer.pay(url, { headers: { "x-priors-agent": "1234" } })`. A refusal comes back as a 402 whose reason is the
-`error` field of the `PAYMENT-REQUIRED` header.
 
 Amounts: a `bigint` or integer is atomic USDG (6 decimals: `100000n` = $0.10); a string with `$` is dollars.
 
@@ -243,7 +228,74 @@ and its `available` is the smaller of the pool's figure and `borrowRoom` (`stock
 object on its own). `stockPosition(c, id, assets?)` and
 `stockAssets(c, assets)` read one position and the accepted tokens (price, whether the vault lends now, LTV).
 
-## Source
+## Savings (`@priors/x402/savings`)
 
-[github.com/priors-agents/priors](https://github.com/priors-agents/priors/tree/main/packages/x402), MIT. The facilitator,
-its merchant sign-up and the live settlements are at [x402.priors.trade](https://x402.priors.trade).
+An agent's spare USDG in a Morpho vault (Morpho Vault V2, ERC-4626; Steakhouse USDG by default), taken back out when
+it has to pay or repay:
+
+```js
+import { savingsContracts, savingsOf, save, unsave, topUpFromSavings } from "@priors/x402/savings";
+const c = await savingsContracts({ runner: provider });            // refused unless there is a contract whose asset is USDG
+await save(c, signer, 20_000_000n);                                 // 20 USDG in (checks the deposit gate first)
+const s = await savingsOf(c, signer.address);                       // { saved, withdrawable, reachable, wallet, shares, ... }
+await unsave(c, signer, { all: true });
+
+// pay and repay from savings before borrowing
+const payer = createPayer({ signer, pool: robinhood.pool, agentId, maxBorrow: "$1", topUp: (need) => topUpFromSavings(c, signer, need) });
+const r = await payer.pay(url);          // r.savings: what the top-up did
+const { open } = await payer.settleLoans();  // tops up to what all open loans need first; check `open`
+```
+
+- `withdrawable` is what a plain withdrawal pays now (idle, then the vault's liquidity market), found by simulating it
+  (Morpho Vault V2 answers 0 to `maxWithdraw` by design). `reachable` adds the in-kind exit: `unsave` and
+  `topUpFromSavings` move money out of the vault's other penalty-free markets and withdraw it in one transaction
+  (`forceDeallocate` + `withdraw` in `multicall`) when the plain path falls short.
+- Every vault transaction is sent with a gas margin. Refused before any transaction: `SHORT`, `ZERO`,
+  `NOTHING_SAVED`, `MORE_THAN_SAVED` (each deposit is worth one base unit less than paid in), `VAULT_ILLIQUID` (with
+  `withdrawable` and `reachable`), `EXIT_FAILED`, `EXIT_BLOCKED`, `DEPOSITS_CLOSED`, `NO_GAS`, `BAD_VAULT`,
+  `NOT_USDG`. `VAULT_FULL` comes after the approval, which is then put back (`allowanceReset`). After sending:
+  `REVERTED` (on chain) and `UNCONFIRMED` (sent, confirmation not read; check before retrying), both with the `hash`.
+  A node failure is thrown as is.
+- The in-kind exit uses only markets other than the liquidity market, with a penalty of 0, charged to an address that
+  holds nothing: a penalty switched on before the transaction lands makes it revert rather than cost the saver.
+- Every function takes an optional `{ signal, sent }`: the signal stops it before it sends a transaction, and `sent`
+  is the hash once one is sent. A `topUp` whose error has `pending: true` (or code `UNCONFIRMED`) makes `pay` stop
+  with `SAVINGS_PENDING` before any loan or signature.
+- The money is the agent's own and the vault's risks are the agent's; Priors never holds it.
+
+## Autopay (`@priors/x402/autopay`)
+
+The agent's own wallet repays its loans on time through AutoRepay v2:
+it approves a budget and enrolls once, and Priors' keeper (or anyone) repays each loan in the 6 hours before it is due,
+from that wallet, while it holds enough. AutoRepay has no owner and no upgrade; it sends the wallet's USDG only to the
+pool, for the agent's own loans. A plan lasts while the agent keeps the owner and the wallet it was set under: after a
+new key or a sale, `autopayStatus` says `stale` and `autopayOn` is needed again. From 0.5.0 `autopayOn` refuses
+AutoRepay v1 (retired before use) with `AUTOREPAY_V1`.
+
+```js
+import { autopayContracts, autopayOn, autopayStatus, autopayOff, defaultCap } from "@priors/x402/autopay";
+const c = autopayContracts({ runner: provider, address: AUTOREPAY, registry, usdg, savingsVault, pool });
+await autopayOn(c, wallet, agentId, { cap: defaultCap(line) }); // approves 4 x cap, then enroll(agentId, cap, false, true)
+const st = await autopayStatus(c, wallet.address, agentId);     // plan, budget, next loan and its window, shortfall
+```
+
+- `createPayer({ reserve })`: a payment that would cut into what `reserve()` returns (e.g. `autopayReserve(status)`,
+  what loans whose window opens in the next 24 h pull) is refused with `RESERVE` before anything is signed or borrowed.
+- `settleLoans({ onlyInWindow: true })` (and `payer.settleLoans({ onlyInWindow: true })`): repay only the loans whose
+  window (`repayWindow`, AutoRepay's own rule, never in a loan's first hour) is open, or that are past due; the others
+  come back in `waiting`.
+
+## SeatVaultV5 lines (`@priors/x402/credit`)
+
+A line backed by SeatVaultV5 has no room until it is refreshed: V5 vouches nothing at the open and raises the pool's
+vouch only on `refresh`, by the agent's owner or by the agent's pool delegate that V5 recorded (`noteDelegate`) at least
+24 hours before. With `createPayer({ v5, v5Root })` (and `creditContracts({ addresses: { seatVaultV5,
+seatVaultV5AgentId } })` for `borrowLine`), a borrow on such a line first calls `v5BeforeBorrow`: the owner, or a key
+V5 recorded a day ago, refreshes the line; a key V5 has not recorded is recorded now, and while its 24 hours run the
+borrow goes ahead only within the line's room, else it stops with `V5_DELEGATE_WAIT`, saying when it can borrow (the
+owner can borrow from Go mode meanwhile, which refreshes first).
+
+## Tests
+
+`npm run test:packages` in the Priors repository: unit tests with mocks, and, with `RPC_URL` set, an anvil fork of
+chain 4663 where a standard `@x402/express` server priced with `registerUsdg` is paid by `createPayer`.

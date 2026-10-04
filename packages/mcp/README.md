@@ -2,15 +2,13 @@
 
 An MCP server that gives an AI assistant (Claude Desktop, Claude Code, or any MCP client) a USDG wallet on Robinhood
 Chain: pay x402-priced APIs, check balances, read any agent's [Priors](https://priors.trade) credit record, and
-borrow from and repay the agent's own Priors line.
+borrow from and repay the agent's own Priors line, and keep its spare USDG saved in a Morpho vault until it needs it.
 
 ## Just reading? Use the hosted server
 
 No install and no key: `https://mcp.priors.trade/mcp` (Streamable HTTP) answers the read-only questions (an agent's
 record and score, the pool's figures, recent loans, the facilitator's services) from the same public data as
-priors.trade. It holds no key and cannot send a transaction. In hosts that render MCP Apps it shows a Priors view, and
-`request_borrow` / `request_repay` return two links where the agent's owner confirms the borrow or repayment: one in
-Go mode, one in the agent console on priors.trade for the wallet that owns the agent.
+priors.trade. It holds no key and cannot send a transaction.
 
 ```bash
 claude mcp add --transport http priors https://mcp.priors.trade/mcp
@@ -23,19 +21,52 @@ repaying.
 
 | tool | what it does | needs the key |
 |---|---|---|
-| `pay_url(url, method?, body?, max_price_usd?, max_borrow_usd?)` | fetch an https URL, pay its x402 402 in USDG if the price is ≤ `max_price_usd` (default **$0.10**); borrows the gap only if `max_borrow_usd` is given. Refuses private and local addresses, never follows a redirect, answers within 45 s, and never signs a second payment for a purchase (the same method, URL and body) that is still pending, until its validBefore plus 60 s (a new call resends the same one, also after a restart, in a new session or from another session of the same wallet: see `PRIORS_STATE_DIR`) | yes |
+| `pay_url(url, method?, body?, max_price_usd?, max_borrow_usd?, use_savings?)` | fetch an https URL, pay its x402 402 in USDG if the price is ≤ `max_price_usd` (default **$0.10**); once the 402 names the price, if the wallet is short it first takes the difference out of savings (unless `use_savings: false`), and borrows the gap only if `max_borrow_usd` is given. Refuses private and local addresses, never follows a redirect, answers within 45 s, and never signs a second payment for a purchase (the same method, URL and body) that is still pending, until its validBefore plus 60 s (a new call resends the same one, also after a restart, in a new session or from another session of the same wallet: see `PRIORS_STATE_DIR`) | yes |
 | `wallet_balance(address?)` | USDG and gas ETH of the wallet (or any address) | no (with `address`) |
 | `credit_status(agent_id?)` | line, drawn, available, backer, record, score, open loans and due dates; on a stock line, the stock tokens behind it, and `available` capped by what the stock vault lets it draw | no (with `agent_id`) |
 | `stock_assets(symbol?)` | the stock tokens the Priors stock vault accepts: live Chainlink price, whether it lends against each now (or why not: a sharp price move, a multiplier change, a paused or blocked token), loan-to-value | no |
 | `stock_position(agent_id?)` | the stock tokens behind an agent's stock line: amount, what the vault values them at, loan-to-value, what the line can draw now, any lending hold | no (with `agent_id`) |
 | `borrow(amount_usd, days, dry_run?)` | borrow USDG from the line into the wallet; both amounts required; `dry_run` quotes the fee. A borrow sent whose answer is lost is counted and said to be possibly open (check `credit_status`) | yes |
-| `repay(loan_id? \| all)` | repay one of the agent's own loans, or all of them earliest due first; another agent's loan is refused | yes |
+| `repay(loan_id? \| all, use_savings?)` | repay one of the agent's own loans, or all of them earliest due first; another agent's loan is refused. If the wallet is short of what is due, it first takes the difference out of savings (unless `use_savings: false`) | yes |
+| `savings(address?)` | what the wallet (or any address) has saved in the savings vault, how much can come out right now, and the USDG in the wallet | no (with `address`) |
+| `save(amount_usd)` | move spare USDG from the wallet into the savings vault, where it earns the vault's rate (at most `PRIORS_MAX_SAVE_USD` per call, `PRIORS_MAX_SAVE_TOTAL_USD` per run); needs ETH for gas | yes |
+| `unsave(amount_usd? \| all)` | take USDG back out of savings into the wallet: a normal withdrawal, and when that is not enough, the rest from the vault's other markets in the same transaction (only where that costs no penalty); refused before any transaction when even that cannot pay it; needs ETH for gas | yes |
+| `autopay_on(cap_usd?, use_savings?, late?, budget_usd?)` | turn on Autopay: the wallet approves AutoRepay for a budget (4 x the limit per loan, never unlimited) and enrolls, so each loan is repaid from the wallet (then its savings, if chosen) in the 6 hours before it is due, with no call per loan, while the wallet holds enough. It makes an on-time repayment more likely; it is not a promise. Default limit: the line plus a 30-day fee, at most `PRIORS_MAX_AUTOPAY_USD`; call again to approve more. Works once AutoRepay is deployed; needs ETH for gas | yes |
+| `autopay_off(clear_budget?)` | turn Autopay off (and with `clear_budget`, set the approvals to 0) | yes |
 | `score_of(agent_id)` | any agent's on-chain score (0 to 1000) and repayment record, plus its Priors Score v2 and trust rung when published | no |
 | `find_services(query?)` | services registered with the Priors facilitator that accept USDG (`GET /merchants`), each marked as approved by Priors or self-registered and not reviewed | no |
 
 Tools that move money state the amounts in their answer, are marked destructive for MCP clients, and their
 descriptions tell the assistant to confirm with you first. Merchant text (response bodies, listings, redirect targets)
 comes back between random `<<merchant-data …>>` markers, as data. They act on Robinhood Chain mainnet.
+
+## Savings
+
+Spare USDG doesn't have to sit idle. `save` puts it in a Morpho vault (Steakhouse USDG by default, a Morpho Vault V2
+curated by Steakhouse Financial), where it earns the vault's rate. When the agent has to pay (`pay_url`) or repay
+(`repay`) and its wallet is short, the server takes the difference back out first, and only then borrows. That makes
+an on-time repayment more likely; it does not guarantee one: savings come out only while the vault's markets have
+liquidity.
+
+It is the agent's own money in someone else's vault: Priors never holds it, and the saver carries the vault's risks: a
+loss in one of its markets lowers the share value at once; its curator and allocators choose the markets and some
+settings change with no timelock; liquidity can be lent out; USDG's issuer can freeze addresses. The rate moves with
+Morpho's markets. How money goes in and comes out: the Savings section of
+[@priors/x402's README](https://www.npmjs.com/package/@priors/x402).
+
+How the server handles it: the vault must be a contract whose asset is USDG; `save` checks the vault's deposit gate
+before approving, and approves the amount only when the current allowance is lower; every vault transaction is sent
+with a gas margin; what can come out is found by simulating the withdrawal (Morpho Vault V2 answers 0 to `maxWithdraw`
+by design). A failed top-up never stops a payment or repayment, and the answer says what happened.
+
+A top-up is bounded by the call's own time. When time runs out it stops before sending anything; if a withdrawal
+was already sent and has not confirmed, `pay_url` neither borrows nor signs, says so, and the next money call waits
+for that withdrawal. `save` keeps the USDG that signed, unsettled payments still need.
+
+`PRIORS_SAVINGS_VAULT=off` stops `save` and the automatic top-ups, not the way out: `savings` and `unsave` keep working
+on the default vault. Pointing `PRIORS_SAVINGS_VAULT` at another vault means trusting that vault (the only check is a
+contract whose asset is USDG); money saved in the default one stays there, and money saved in a custom one is reached
+by setting that vault again.
 
 ## Configure
 
@@ -56,6 +87,13 @@ dedicated agent wallet holding only what the agent may spend.
 | `PRIORS_ALLOW_LOCAL` | off | `1` lets `pay_url` reach `http://localhost` and private addresses (local testing only) |
 | `PRIORS_SCORE_V2` | `https://priors.trade/api/score-v2` | where `score_of` reads Priors Score v2; `off` shows the on-chain score only |
 | `PRIORS_STOCK_VAULT` | the bundled deployments file's `stockVault` | the stock vault the stock tools and `credit_status` read |
+| `PRIORS_SAVINGS_VAULT` | Steakhouse USDG on Morpho (`0xBeEff033F34C046626B8D0A041844C5d1A5409dd`) | the USDG vault savings go to; `off` (or `false`, `0`, `no`) stops `save` and the automatic top-ups, while `savings` and `unsave` keep working on the default vault. Its value is never echoed |
+| `PRIORS_MAX_SAVE_USD` | `50` | most one `save` call may move into the vault |
+| `PRIORS_MAX_SAVE_TOTAL_USD` | `200` | most `save` may move in total while the server runs |
+| `PRIORS_AUTOREPAY` | the bundled deployments file's `autoRepay` (none until AutoRepay v2 is deployed) | AutoRepay v2's address, for `autopay_on`, `autopay_off` and the Autopay lines of `credit_status`; AutoRepay v1 (retired before use) is refused |
+| `PRIORS_V5`, `PRIORS_V5_ROOT` | the bundled deployments file's `seatVaultV5` and `seatVaultV5AgentId` (none until V5 is deployed) | SeatVaultV5 and its root's agent id: a borrow on a V5 line (the `borrow` tool, `pay_url`) refreshes it first. The agent's key may do so 24 hours after V5 recorded it (`noteDelegate`, sent for it when needed); until then a borrow goes ahead only within the line's room, and the tool says when the key can borrow more |
+| `PRIORS_MAX_AUTOPAY_USD` | `25` | the most `autopay_on` enrolls per loan (stage 0) |
+| `PRIORS_AUTOPAY_RESERVE` | on | with Autopay on, `pay_url` keeps back what loans whose window opens in the next 24 h will pull, and says so when a payment would cut into it; `off` turns that off |
 | `PRIORS_STATE_DIR` | `~/.local/state/priors-mcp` | where the payments signed and not yet settled are kept (one owner-only file per wallet, never the key, with a short-lived `.lock` beside it while it is written), so a restart, a new session or another session of the same wallet resends them instead of signing again. An absolute path, or one starting with `~/` (a relative one is refused at start). A payment that cannot be written there is not sent. `off` keeps them in memory only |
 
 Contract addresses (pool, lens, registry, USDG) come from `deployments/4663.v2.json`, bundled in the package, and the
@@ -71,7 +109,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.2.11"],
+      "args": ["-y", "@priors/mcp@0.5.0"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -93,7 +131,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.2.11"],
+      "args": ["-y", "@priors/mcp@0.5.0"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -103,7 +141,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 }
 ```
 
-or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.2.11`
+or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.5.0`
 (the key is expanded by your shell from the environment; do not paste it on the command line).
 
 ## Try it
@@ -111,6 +149,7 @@ or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIO
 "What's the Priors score of agent 6228?" · "How much USDG does my wallet hold?" · "Find services that sell token
 prices" · "Pay https://api.example.com/report, up to 5 cents" · "Borrow $5 for 7 days, show me the fee first".
 
-## Source
+## Tests
 
-[github.com/priors-agents/priors](https://github.com/priors-agents/priors/tree/main/packages/mcp), MIT.
+`npm run test:packages` in the Priors repository lists and calls every tool through the MCP SDK's in-memory client and
+over stdio, and checks that the key never appears in any output or error.

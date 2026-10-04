@@ -9,6 +9,7 @@
 // against sdk/float.mjs on the same inputs.
 import { ethers } from "ethers";
 import { robinhood, DEFAULT_TERM_SECONDS } from "./robinhood.mjs";
+import { repayWindow } from "./autopay.mjs";
 
 const LOAN_T = "tuple(uint256 agentId, uint256 sponsorId, uint256 principal, uint256 fee, uint256 sponsorCut, uint256 reserveCut, uint256 premium, address owner, uint64 issuedAt, uint64 dueAt, uint64 defaultableAt, uint64 minScoreTerm, uint64 closedAt, uint8 status)";
 const AGENT_T = "tuple(bool enrolled,bool isRoot,bool defaulted,bool frozen,bool importedFromV1,uint64 enrolledAt,uint64 lastBorrowAt,uint64 lastRepayAt,uint256 sponsor,uint256 delegatedIn,uint256 delegatedOut,uint256 principalOut,uint256 activeLoans,uint256 premiumBps,uint256 premiumCap,uint256 loansRepaid,uint256 volumeRepaid,uint256 feesPaid,uint256 recourseHonored,uint256 childrenDefaulted,uint256 qualifiedRepaid,uint256 dollarSecondsRepaid)";
@@ -51,6 +52,17 @@ export const ERC20_ABI = [
   "error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)",
 ];
 const REGISTRY_ABI = ["function ownerOf(uint256) view returns (address)"];
+/** SeatVaultV5 (a root that backs lines with the owner's $PRIORS), the calls a borrow on its line needs: V5 vouches
+ *  nothing at the open and raises the pool's vouch only on `refresh`, by the owner or by the pool delegate V5 recorded
+ *  (`noteDelegate`, anyone may send it) at least 24 h before. */
+export const V5_ABI = [
+  "function refresh(uint256 id)",
+  "function noteDelegate(uint256 id)",
+  "function delegateOf(uint256 id) view returns (address who, uint64 at)",
+  "error BookNotOpen()", "error NoPrice()",
+];
+/** V5's C.DELEGATE_WAIT: a key V5 recorded raises the line this long after. */
+export const V5_DELEGATE_WAIT_S = 86_400;
 /** The Priors stock vault (a root that backs lines with the agent's own stock tokens), the reads creditStatus needs. */
 export const STOCK_VAULT_ABI = [
   "function agentId() view returns (uint256)",
@@ -120,14 +132,60 @@ async function sendBorrow(poolC, args, amount, prefix) {
   }
 }
 
+const utc = (s) => new Date(Number(s) * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+
+/**
+ * Before a borrow on a SeatVaultV5 line (the agent's pool sponsor is V5's root `v5Root`): raise the pool's vouch to
+ * the line V5 allows now with `refresh(id)`, which only the agent's owner, or the pool delegate V5 recorded at least
+ * 24 h ago, may do (L-05). A delegate key V5 has not recorded yet is recorded now (`noteDelegate`); while its 24 h run,
+ * the borrow goes ahead only if the line already has room for it, and otherwise stops with when it can borrow. Any
+ * other line, or no V5 known (`v5` null): nothing. Returns { v5: bool, refreshed: bool, noted: tx hash | null }.
+ */
+export async function v5BeforeBorrow({ signer, pool, v5, v5Root, agentId, amount, now = () => Math.floor(Date.now() / 1000), ownerOf }) {
+  const out = { v5: false, refreshed: false, noted: null };
+  if (!v5 || !v5Root || BigInt(v5Root) === 0n) return out;
+  const poolC = poolContract(pool, signer);
+  const id = BigInt(agentId);
+  const ag = await poolC.getAgent(id);
+  if (BigInt(ag.sponsor) !== BigInt(v5Root)) return out;
+  out.v5 = true;
+  const v5C = typeof v5 === "string" ? new ethers.Contract(v5, V5_ABI, signer) : v5.connect ? v5.connect(signer) : v5;
+  const me = ethers.getAddress(await signer.getAddress());
+  const owner = ethers.getAddress(ownerOf ? await ownerOf(id) : await new ethers.Contract(await poolC.registry(), REGISTRY_ABI, signer).ownerOf(id));
+  const room = BigInt(ag.delegatedIn) > BigInt(ag.principalOut) ? BigInt(ag.delegatedIn) - BigInt(ag.principalOut) : 0n;
+  const refresh = async () => {
+    try { await v5C.refresh.staticCall(id); } catch (e) { throw new PayError("V5_REFRESH_WOULD_REVERT", `agent #${id}'s line is on SeatVaultV5 and its refresh would revert (${explainRevert(e, v5C.interface)}): the line can't be raised now`); }
+    await (await v5C.refresh(id)).wait();
+    out.refreshed = true;
+  };
+  if (owner === me) { await refresh(); return out; }
+  const [who, at] = await v5C.delegateOf(id);
+  const ready = Number(at) + V5_DELEGATE_WAIT_S;
+  if (ethers.getAddress(who) === me && now() >= ready) { await refresh(); return out; }
+  // not (yet) a key V5 lets raise the line: never refresh (a refresh it may not raise can lower the vouch)
+  if (ethers.getAddress(who) !== me) {
+    if (!(await poolC.isController(id, me))) throw new PayError("NOT_CONTROLLER", `agent #${id} is not controlled by ${me} (neither its owner nor its pool delegate)`);
+    const tx = await v5C.noteDelegate(id);
+    await tx.wait();
+    out.noted = tx.hash;
+  }
+  if (room >= BigInt(amount)) return out;
+  const when = ethers.getAddress(who) === me ? ready : now() + V5_DELEGATE_WAIT_S;
+  throw new PayError("V5_DELEGATE_WAIT",
+    `agent #${id}'s line is on SeatVaultV5, which raises it only for the agent's owner, or for the agent's key 24 hours after V5 recorded it${out.noted ? ` (recorded now, tx ${out.noted})` : ""}. `
+    + `The line has room for ${room} atomic USDG now. This key can borrow more from ${utc(when)}; before then, the owner can borrow from Go mode, which raises the line first.`,
+    { room, readyAt: when, noted: out.noted });
+}
+
 /**
  * Borrow what a purchase is short of, from the agent's line, into the payer's wallet. Port of sdk/float.mjs's
- * borrow step; every refusal happens before any transaction.
+ * borrow step; every refusal happens before any transaction (a SeatVaultV5 line's refresh, v5BeforeBorrow, comes
+ * first: it is what gives the line its room).
  * @param {{ signer: any, pool: any, agentId?: bigint|number|string, price: bigint, balance: bigint, maxBorrow: bigint,
  *   termSeconds?: bigint|number, maxFee?: bigint, me?: string }} o
  * @returns {Promise<{ borrowed: bigint, loanId: bigint|null, dueAt: bigint|null, fee: bigint, term: bigint }>}
  */
-export async function borrowGap({ signer, pool, agentId, price, balance, maxBorrow, termSeconds, maxFee, me }) {
+export async function borrowGap({ signer, pool, agentId, price, balance, maxBorrow, termSeconds, maxFee, me, v5, v5Root, ownerOf }) {
   const cap = BigInt(maxBorrow ?? 0n);
   if (price > cap) throw new PayError("PRICE_ABOVE_MAX_BORROW", `pay: price ${price} is above maxBorrow ${cap}; not borrowing`, { price, maxBorrow: cap });
   const poolC = pool ? poolContract(pool, signer) : null;
@@ -144,6 +202,7 @@ export async function borrowGap({ signer, pool, agentId, price, balance, maxBorr
   const [fee] = await poolC.quoteFee(agentId, amount, term);
   if (maxFee !== undefined && fee > BigInt(maxFee)) throw new PayError("FEE_TOO_HIGH", `pay: loan fee ${fee} is above maxFee ${maxFee}`);
   const to = me || (await signer.getAddress());
+  await v5BeforeBorrow({ signer, pool: poolC, v5, v5Root, agentId, amount, ownerOf });
   // Simulate first: a doomed borrow says why (its custom error) before any gas is spent.
   if (poolC.borrow && typeof poolC.borrow.staticCall === "function") {
     try { await poolC.borrow.staticCall(agentId, amount, term, to, fee); } catch (e) { throw new PayError("BORROW_WOULD_REVERT", `pay: borrow would revert: ${explainRevert(e, poolC.interface)}`); }
@@ -155,29 +214,51 @@ export async function borrowGap({ signer, pool, agentId, price, balance, maxBorr
 
 /**
  * Repay the agent's open loans, earliest due first, while the signer's USDG covers principal + fee (sdk/float.mjs).
- * @returns {Promise<{ repaid: bigint[], open: bigint[] }>}
+ * With `topUp(need)` (e.g. savings), the wallet is first topped up to what all open loans need; a failed top-up is
+ * reported in `savings` and the repayments go on with the wallet's balance.
+ * With `onlyInWindow` (the runtime's own in-window repay): only the loans whose repay window
+ * is open now, AutoRepay's rule (autopay.mjs repayWindow: the last 6 h before due, never before day 7 on a term over a
+ * week + 2 h), or that are past due; the others are left in `open` and `waiting` (with when their window opens).
+ * @returns {Promise<{ repaid: bigint[], open: bigint[], waiting?: Array<{ loanId: bigint, opens: number }>, savings?: object }>}
  */
-export async function settleLoans({ signer, pool, agentId }) {
+export async function settleLoans({ signer, pool, agentId, topUp, onlyInWindow = false, now = () => Math.floor(Date.now() / 1000) }) {
   const poolC = poolContract(pool, signer);
   const me = await signer.getAddress();
   // Only the signer's own agent: a wrong or stale agentId would otherwise pay a stranger's loans (P-7).
   if (!(await poolC.isController(agentId, me))) throw new PayError("NOT_CONTROLLER", `agent #${agentId} is not controlled by ${me} (neither its owner nor its pool delegate)`);
   const usdg = new ethers.Contract(await poolC.usdg(), ERC20_ABI, signer);
   const ids = await poolC.loansOf(agentId);
-  const loans = (await Promise.all(ids.map(async (id) => ({ id, l: await poolC.getLoan(id) })))).filter((x) => x.l.status === LOAN_ACTIVE);
+  let loans = (await Promise.all(ids.map(async (id) => ({ id, l: await poolC.getLoan(id) })))).filter((x) => x.l.status === LOAN_ACTIVE);
   loans.sort((a, b) => (a.l.dueAt < b.l.dueAt ? -1 : a.l.dueAt > b.l.dueAt ? 1 : 0));
-  const repaid = [], open = [];
-  let balance = await usdg.balanceOf(me);
-  const target = await poolC.getAddress();
-  for (const { id, l } of loans) {
-    const due = l.principal + l.fee;
-    if (balance < due) { open.push(id); continue; }
-    if ((await usdg.allowance(me, target)) < due) await (await usdg.approve(target, due)).wait();
-    await (await poolC.repay(id, agentId, due)).wait();
-    balance -= due;
-    repaid.push(id);
+  const repaid = [], open = [], waiting = [];
+  if (onlyInWindow) {
+    const t = now();
+    loans = loans.filter(({ id, l }) => { const { opens } = repayWindow(l.issuedAt, l.dueAt); if (t >= opens) return true; open.push(id); waiting.push({ loanId: id, opens }); return false; });
   }
-  return { repaid, open };
+  let balance = await usdg.balanceOf(me);
+  let savings;
+  const total = loans.reduce((a, { l }) => a + l.principal + l.fee, 0n);
+  if (typeof topUp === "function" && balance < total) {
+    try { savings = await topUp(total); } catch (e) { savings = { withdrawn: 0n, error: e }; }
+    try { balance = await usdg.balanceOf(me); } catch (e) { if (e && typeof e === "object") Object.assign(e, { repaid, open, savings }); throw e; }
+  }
+  const target = await poolC.getAddress();
+  try {
+    for (const { id, l } of loans) {
+      const due = l.principal + l.fee;
+      if (balance < due) { open.push(id); continue; }
+      if ((await usdg.allowance(me, target)) < due) await (await usdg.approve(target, due)).wait();
+      await (await poolC.repay(id, agentId, due)).wait();
+      balance -= due;
+      repaid.push(id);
+    }
+  } catch (e) {
+    // what was done is not lost with the error: the loans already repaid, and what the top-up did
+    if (e && typeof e === "object") Object.assign(e, { repaid, ...(savings ? { savings } : {}) });
+    throw e;
+  }
+  const out = savings ? { repaid, open, savings } : { repaid, open };
+  return onlyInWindow ? { ...out, waiting } : out;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -188,9 +269,10 @@ export async function settleLoans({ signer, pool, agentId }) {
  * @param {{ runner: any, addresses?: { pool?: string, lens?: string, usdg?: string, registry?: string, stockVault?: string | null } }} o
  */
 export function creditContracts({ runner, addresses = {} }) {
-  const a = { pool: robinhood.pool, lens: robinhood.lens, usdg: robinhood.usdg, registry: robinhood.registry, stockVault: robinhood.stockVault, ...addresses };
+  const a = { pool: robinhood.pool, lens: robinhood.lens, usdg: robinhood.usdg, registry: robinhood.registry, stockVault: robinhood.stockVault, seatVaultV5: null, seatVaultV5AgentId: null, ...addresses };
   return {
     addresses: a,
+    v5: a.seatVaultV5 ? new ethers.Contract(a.seatVaultV5, V5_ABI, runner) : null,
     pool: new ethers.Contract(a.pool, POOL_ABI, runner),
     lens: new ethers.Contract(a.lens, LENS_ABI, runner),
     usdg: new ethers.Contract(a.usdg, ERC20_ABI, runner),
@@ -302,16 +384,18 @@ export async function quoteBorrow(c, agentId, amount, termSeconds) {
   return { amount, term, fee: q.fee, due: amount + q.fee };
 }
 
-/** Borrow `amount` for `termSeconds` into the signer's wallet; fee capped at the quote. Simulates first. */
+/** Borrow `amount` for `termSeconds` into the signer's wallet; fee capped at the quote. On a SeatVaultV5 line, its
+ *  refresh first (v5BeforeBorrow). Simulates first. */
 export async function borrowLine(c, signer, agentId, amount, termSeconds) {
   const q = await quoteBorrow(c, agentId, amount, termSeconds);
   const pool = c.pool.connect(signer);
   const me = await signer.getAddress();
+  const v5 = await v5BeforeBorrow({ signer, pool, v5: c.v5 || null, v5Root: c.addresses?.seatVaultV5AgentId ?? null, agentId, amount });
   const args = [BigInt(agentId), amount, q.term, me, q.fee];
   try { await pool.borrow.staticCall(...args); } catch (e) { throw new PayError("BORROW_WOULD_REVERT", `borrow would revert: ${explainRevert(e, pool.interface)}`); }
   const { tx, rc } = await sendBorrow(pool, args, amount, "");
   const ev = rc.logs.map((l) => { try { return pool.interface.parseLog(l); } catch (_) { return null; } }).find((e) => e && e.name === "Borrowed");
-  return { hash: tx.hash, loanId: ev ? ev.args.loanId : null, principal: amount, fee: ev ? ev.args.fee : q.fee, dueAt: ev ? Number(ev.args.dueAt) : null };
+  return { hash: tx.hash, loanId: ev ? ev.args.loanId : null, principal: amount, fee: ev ? ev.args.fee : q.fee, dueAt: ev ? Number(ev.args.dueAt) : null, ...(v5.v5 ? { v5Refreshed: v5.refreshed, v5Noted: v5.noted } : {}) };
 }
 
 /** Repay one loan in full from the signer's USDG; approves exactly what is due. */

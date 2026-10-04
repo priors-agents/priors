@@ -29,5 +29,8 @@
   "seatVaultV4AgentId": 6466,
   "seatVaultV4Block": 75614831,
   "seatSizerV4": "0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777",
-  "seatSizerV4Block": 75614955
+  "seatSizerV4Block": 75614955,
+  "autoRepayV1": "0x765f51Bd38404154762f2822d3ac5d16CE9AF822",
+  "autoRepayV1Block": 79616581,
+  "autoRepayV1Note": "AutoRepay v1: retired before use, never enrolled, no allowance. Replaced by AutoRepay v2, recorded here as autoRepay and autoRepayBlock once deployed. Kept so the score mapping recognises both; nothing else uses it."
 }

@@ -19,7 +19,7 @@
 import { ethers } from "ethers";
 import { x402Client, x402HTTPClient, decodePaymentResponseHeader } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
-import { robinhood, ROBINHOOD_NETWORKS, DEFAULT_MAX_PRICE, MAX_VALIDITY_SECONDS, TRANSFER_WITH_AUTHORIZATION_TYPES, toAtomicUsdg } from "./robinhood.mjs";
+import { robinhood, ROBINHOOD_NETWORKS, DEFAULT_MAX_PRICE, MAX_VALIDITY_SECONDS, TRANSFER_WITH_AUTHORIZATION_TYPES, toAtomicUsdg, formatUsdg } from "./robinhood.mjs";
 import { PayError, borrowGap, settleLoans, poolContract, ERC20_ABI } from "./credit.mjs";
 
 const sameAddr = (a, b) => typeof a === "string" && typeof b === "string" && ethers.isAddress(a) && ethers.isAddress(b) && ethers.getAddress(a) === ethers.getAddress(b);
@@ -433,7 +433,7 @@ export const SKEW_SECONDS = 60;
  * @returns {import("../index.d.ts").Payer}
  */
 export function createPayer(opts = {}) {
-  const { signer, agentId, pool, termSeconds, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = DEFAULT_TIMEOUT_MS, signal, maxValiditySeconds = MAX_VALIDITY_SECONDS, onSigned } = opts;
+  const { signer, agentId, pool, termSeconds, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = DEFAULT_TIMEOUT_MS, signal, maxValiditySeconds = MAX_VALIDITY_SECONDS, topUp, onSigned, reserve, v5, v5Root } = opts;
   if (!signer || typeof signer.getAddress !== "function" || typeof signer.signTypedData !== "function") {
     throw new PayError("NO_SIGNER", "createPayer: `signer` must be an ethers v6 Signer (a Wallet connected to a Robinhood Chain provider)");
   }
@@ -492,10 +492,32 @@ export function createPayer(opts = {}) {
 
     const me = await signer.getAddress();
     if (!signer.provider) throw new PayError("NO_PROVIDER", "pay: the signer must be connected to a Robinhood Chain provider (to read its USDG balance)");
-    const balance = await new ethers.Contract(usdgAddr, ERC20_ABI, signer).balanceOf(me);
+    const usdgC = new ethers.Contract(usdgAddr, ERC20_ABI, signer);
+    let balance = await usdgC.balanceOf(me);
+    // What the wallet keeps back (`reserve()`: e.g. what Autopay loans will pull in the next 24 h): a payment that would
+    // cut into it is refused before anything is signed or borrowed, after the caller's own top-up had its chance.
+    let kept = 0n;
+    if (typeof reserve === "function") kept = BigInt((await reserve()) || 0n);
+    const keptShort = () => kept > 0n && balance >= price && balance - price < kept;
 
+    // Short: the caller's own money first (`topUp(need)`, e.g. savings), once the price is known and before any loan.
+    // A failed top-up never stops the payment: it is reported in `savings` and the payment goes on as before.
+    let savings;
+    if ((balance < price || keptShort()) && typeof topUp === "function") {
+      try { savings = await topUp(price + kept); } catch (e) { savings = { withdrawn: 0n, error: e }; }
+      // A withdrawal that was sent and may still land: never borrow for money that is on its way.
+      if (savings?.error?.pending || savings?.error?.code === "UNCONFIRMED") throw Object.assign(new PayError("SAVINGS_PENDING", "pay: a savings withdrawal was sent and has not confirmed yet; nothing was borrowed or signed. Try again once it has landed."), { savings });
+      try { balance = await usdgC.balanceOf(me); } catch (e) { if (e && typeof e === "object") e.savings = savings; throw e; }
+    }
+
+    if (keptShort() || (kept > 0n && balance < price)) throw Object.assign(new PayError("RESERVE", `pay: this payment would cut into the ${formatUsdg(kept)} USDG kept for Autopay loans due in the next 24 h; nothing was signed or borrowed`, { price, reserve: kept }), savings ? { savings } : {});
     let loan = { borrowed: 0n, loanId: null, dueAt: null };
-    if (balance < price) loan = await borrowGap({ signer, pool: poolC, agentId, price, balance, maxBorrow, termSeconds, maxFee, me });
+    if (balance < price) {
+      try { signal?.throwIfAborted?.(); loan = await borrowGap({ signer, pool: poolC, agentId, price, balance, maxBorrow, termSeconds, maxFee, me, v5, v5Root }); } catch (e) {
+        if (savings && e && typeof e === "object") e.savings = savings; // what the top-up did is not lost with the error
+        throw e;
+      }
+    }
 
     // Exactly one signature for this purchase, from here on only resent. An error from here carries the loan (and,
     // once signed, the headers), so neither is lost with it.
@@ -527,9 +549,9 @@ export function createPayer(opts = {}) {
       const settlement = r.response.ok ? settlementOf(r.response) : undefined;
       // `signed` is always returned once a payment is out: until validBefore the merchant can still cash it, so a
       // caller that retries must resend these headers, never sign a new payment for the same purchase.
-      return { ...r, paid: r.response.ok ? price : 0n, borrowed: loan.borrowed, loanId: loan.loanId, dueAt: loan.dueAt, requirement: req, x402Version: version, signed: { paymentHeaders, validBefore }, ...(settlement ? { settlement } : {}) };
+      return { ...r, paid: r.response.ok ? price : 0n, borrowed: loan.borrowed, loanId: loan.loanId, dueAt: loan.dueAt, requirement: req, x402Version: version, signed: { paymentHeaders, validBefore }, ...(settlement ? { settlement } : {}), ...(savings ? { savings } : {}) };
     } catch (e) {
-      if (e && typeof e === "object") Object.assign(e, { borrowed: loan.borrowed, loanId: loan.loanId, dueAt: loan.dueAt, ...(paymentHeaders ? { signed: { paymentHeaders, validBefore }, requirement: req } : {}) });
+      if (e && typeof e === "object") Object.assign(e, { borrowed: loan.borrowed, loanId: loan.loanId, dueAt: loan.dueAt, ...(savings ? { savings } : {}), ...(paymentHeaders ? { signed: { paymentHeaders, validBefore }, requirement: req } : {}) });
       throw e;
     }
   }
@@ -537,9 +559,9 @@ export function createPayer(opts = {}) {
   return {
     pay,
     resend: (input, paymentHeaders, init) => resend(input, paymentHeaders, { ...resendOpts, init }),
-    settleLoans: () => {
+    settleLoans: (o = {}) => {
       if (!pool || agentId === undefined || agentId === null) throw new PayError("NO_POOL", "settleLoans: createPayer was given no pool/agentId");
-      return settleLoans({ signer, pool, agentId });
+      return settleLoans({ signer, pool, agentId, topUp, onlyInWindow: Boolean(o.onlyInWindow) });
     },
   };
 }

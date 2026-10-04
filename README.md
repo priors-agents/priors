@@ -190,7 +190,11 @@ on priors.trade, with the wallet that owns the agent. To pay x402 URLs, borrow a
 [`packages/mcp`](packages/mcp) (the key stays in your environment). Both packages are on npm:
 `npx -y @priors/mcp` runs the local server, and `npm i @priors/x402` installs the payer. From a clone,
 `npm install` at the root links them instead. The local server is also on the official MCP Registry as
-`io.github.priors-agents/priors`, and the hosted one as `io.github.priors-agents/priors-read`.
+`io.github.priors-agents/priors`, and the hosted one as `io.github.priors-agents/priors-read`. Since 0.5.0 the wallet
+can also keep idle USDG in savings (a USDG vault on Morpho: the agent's own money, with the vault's risks; see
+[`packages/x402`](packages/x402)), and a borrow on a SeatVaultV5 line refreshes it first. Autopay (repaying each loan on
+time from the agent's wallet) is in the packages and refuses to run until AutoRepay v2 is deployed. 0.2.11 carries
+0.5.0's security fixes for those staying on the 0.2 line.
 
 ### Or pay per call
 
@@ -434,8 +438,9 @@ sdk/float.mjs                x402 pay() that borrows only the shortfall; sdk/x40
 sdk/priors.mjs               the v1 client
 sdk/env.mjs                  resolves chain, deployment record (v1 and v2) and signer
 packages/x402/               @priors/x402: x402 v2 USDG preset for Robinhood Chain, facilitator config, a payer that
-                             borrows the gap
-packages/mcp/                @priors/mcp: local MCP server with the agent's wallet (pay_url, borrow, repay, reads)
+                             borrows the gap, the merchant's record gate, savings and Autopay helpers
+packages/mcp/                @priors/mcp: local MCP server with the agent's wallet (pay_url, borrow, repay, savings,
+                             Autopay, reads)
 bin/priors-v2.mjs            the v2 CLI (`npx priors-v2`)
 bin/priors.mjs               the v1 CLI (`npx priors`), for v1 history and the local devnet
 scripts/devnet.mjs           local v1 chain, deployed and bootstrapped so firstLine() actually works
