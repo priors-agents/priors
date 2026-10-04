@@ -257,6 +257,16 @@ await check("no key configured: a usage error, before any network call", () => {
   assert.equal(r.status, 2);
   assert.match(r.stderr, /PRIORS_KEY is not set/);
 });
+await check("an argument a command does not take is a usage error, before any key or network (a loan id typed after repay is not dropped)", () => {
+  const env = { RPC_URL: "http://127.0.0.1:1", PRIORS_KEY: "", PRIVATE_KEY: "" };
+  for (const [args, re] of [[["repay", "42"], /repay takes no loan id/], [["status", "999"], /status takes no argument/], [["join", "junk"], /join takes no argument/], [["repay", "--days", "3"], /--days is not an option of repay/], [["status", "--invite", "x"], /--invite is not an option of status/], [["borrow", "5", "--seat", "0x1"], /--seat is not an option of borrow/]]) {
+    const r = cli(args, env);
+    assert.equal(r.status, 2, `${args.join(" ")}: ${r.stderr}`);
+    assert.match(r.stderr, re, args.join(" "));
+  }
+  // the forms each command takes still reach the key check
+  for (const args of [["repay"], ["repay", "--all"], ["status"], ["join", "--invite", "x"], ["borrow", "5", "--days", "3"]]) assert.match(cli(args, env).stderr, /PRIORS_KEY is not set/, args.join(" "));
+});
 await check("an unknown command is a usage error", () => {
   const r = cli(["frobnicate"]);
   assert.equal(r.status, 2);

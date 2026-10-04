@@ -206,6 +206,16 @@ async function main() {
   if (argv.some(looksLikeKey)) throw new UsageError("a private key was passed on the command line: refused. Put it in PRIORS_KEY instead (and rotate it; it is now in your shell history)");
   const { cmd, pos, flags } = parseArgs(argv);
   if (flags.help || !cmd) { console.log(USAGE); return; }
+  // each command's own arguments and options, checked before anything runs: a word or an option a command does not
+  // take is refused, never dropped (`priors-v2 repay 42` would otherwise repay the loan due first, not #42)
+  const TAKES = { join: { pos: 0, opts: ["invite", "seat", "uri"] }, borrow: { pos: 1, opts: ["days"] }, repay: { pos: 0, opts: ["all"] }, status: { pos: 0, opts: [] } };
+  const takes = TAKES[cmd];
+  if (takes) {
+    const extra = Object.keys(flags).find((k) => !takes.opts.includes(k));
+    if (extra) throw new UsageError(`--${extra} is not an option of ${cmd}`);
+    if (cmd === "repay" && pos.length) throw new UsageError("repay takes no loan id: it repays the agent's open loan due first, or every open loan with --all; `priors-v2 status` lists them");
+    if (takes.pos === 0 && pos.length) throw new UsageError(`${cmd} takes no argument (got "${pos[0]}")`);
+  }
   if (cmd === "join") return join(flags);
   if (cmd === "borrow") return borrow(pos, flags);
   if (cmd === "repay") return repay(flags);
