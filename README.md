@@ -190,7 +190,7 @@ on priors.trade, with the wallet that owns the agent. To pay x402 URLs, borrow a
 [`packages/mcp`](packages/mcp) (the key stays in your environment). Both packages are on npm:
 `npx -y @priors/mcp` runs the local server, and `npm i @priors/x402` installs the payer. From a clone,
 `npm install` at the root links them instead. The local server is also on the official MCP Registry as
-`io.github.priors-agents/priors`.
+`io.github.priors-agents/priors`, and the hosted one as `io.github.priors-agents/priors-read`.
 
 ### Or pay per call
 
