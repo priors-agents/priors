@@ -164,7 +164,8 @@ Amounts: a `bigint` or integer is atomic USDG (6 decimals: `100000n` = $0.10); a
 A result also carries the `requirement` it paid, its `x402Version` and, on success, the decoded `settlement`
 (`PAYMENT-RESPONSE`) when the merchant sent one. Other `createPayer` options: `maxValiditySeconds` (at most 600, the
 default), `asset` (a USDG address for a fork or test token; default the pool's `usdg()`, else mainnet USDG),
-`fetchImpl`, `pendingRetries` (default 6), `maxSleepMs` (longest wait between resends, default 30 s) and `sleep`.
+`fetchImpl`, `pendingRetries` (default 6), `maxSleepMs` (longest wait between resends, default 30 s), `sleep`, and
+`seatVaultV5` / `seatVaultV5AgentId` (the V5 seat vault and its root, below).
 
 ### What `pay()` promises (the rules of `sdk/float.mjs`, unchanged)
 
@@ -175,6 +176,15 @@ default), `asset` (a USDG address for a fork or test token; default the pool's `
   sent and whose answer was lost (the broadcast's or the receipt's) may have mined: it throws `BORROW_UNCONFIRMED` with
   `borrowed` set, `loanId: null`, `unconfirmed: true` and the tx `hash` when known. Count it, check the agent's loans,
   and repay before the due date.
+- **A line sponsored by the V5 seat vault** vouches nothing until the borrower refreshes it: V5 raises the pool's
+  vouch only on `refresh(agentId)` from the agent's owner, or from a pool delegate V5 recorded at least 24 h earlier
+  (`noteDelegate(agentId)` on V5, which anyone may send), and only from a price under 45 minutes old. With
+  `seatVaultV5` set (default `robinhood.seatVaultV5`, which is absent until V5 is live; `null` turns it off), before
+  borrowing on a line whose sponsor is V5's root (`seatVaultV5AgentId`, else V5's `rootId()`) the payer sends that
+  refresh with gas = estimate × 1.5 + 150 000 (at a bare estimate V5 skips its raise without reverting) and waits for
+  it. A delegate key V5 has not recorded for 24 h is refused before anything is sent (`V5_DELEGATE_NOT_NOTED`,
+  `V5_DELEGATE_WAITING`); a refresh that reverts, or leaves the line short (a stale price: try again after V5's keeper
+  syncs), is `V5_REFRESH_FAILED` or `V5_LINE_SHORT`, never the pool's `InsufficientCapacity`, and nothing is borrowed.
 - **Term**: 7 days by default, clamped into the pool's range; an explicit `termSeconds` above the pool's maximum is
   refused. The result's `dueAt` is when the loan is due; three days later anyone can mark it defaulted, and the
   agent's record is burnt.
@@ -230,10 +240,12 @@ const fetchWithPay = wrapFetchWithPayment(fetch, createUsdgClient({ signer, maxP
 ## Credit helpers
 
 `@priors/x402/credit` has the Priors v2 pieces the MCP server uses: `creditContracts`, `creditStatus`, `quoteBorrow`,
-`borrowLine`, `repayLoan`, `settleLoans`, `balances`, `borrowGap`, plus `poolContract`, `explainRevert` (a revert as
-`Name(args)`), `LOAN_STATUS` and the ABIs (`POOL_ABI`, `LENS_ABI`, `ERC20_ABI`, `STOCK_VAULT_ABI`). `repayLoan` pays
-only a loan of an agent the signer controls (owner or pool delegate); any other loan is refused with `NOT_CONTROLLER`
-before anything is sent.
+`borrowLine`, `repayLoan`, `settleLoans`, `balances`, `borrowGap`, `refreshV5Line`, plus `poolContract`, `explainRevert`
+(a revert as `Name(args)`), `LOAN_STATUS` and the ABIs (`POOL_ABI`, `LENS_ABI`, `ERC20_ABI`, `STOCK_VAULT_ABI`,
+`SEAT_VAULT_V5_ABI`). `repayLoan` pays only a loan of an agent the signer controls (owner or pool delegate); any other
+loan is refused with `NOT_CONTROLLER` before anything is sent. `borrowGap` (given `seatVaultV5`) and `borrowLine` (when
+`creditContracts` has `addresses.seatVaultV5`, default `robinhood.seatVaultV5`) run `refreshV5Line` before borrowing,
+as the payer does on a V5 line (above).
 
 Stock lines (the Priors stock vault, `robinhood.stockVault`, backs a line with the agent's own stock tokens;
 `creditContracts` reads it unless `addresses.stockVault` says otherwise): `creditStatus` carries `collateral` {

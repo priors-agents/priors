@@ -129,6 +129,17 @@ Every write is simulated first, so a revert is explained with the contract's own
 spent. Approvals are for the exact amount. `borrow` passes the pool's own quote as `maxFee`, and `repay` binds the
 loan's agent and amount, so a changed premium or a wrong loan id reverts instead of costing more.
 
+**A line sponsored by the V5 seat vault.** V5 vouches nothing when it opens a line: it raises the pool's vouch only on
+the borrower's own `refresh(agentId)`, from a price under 45 minutes old. With `seatVaultV5` in the addresses (the
+deployment record names it once V5 is live; `seatVaultV5AgentId` is its root, else read from V5's `rootId()`),
+`borrow`, `pay` and `npx priors-v2 borrow` on a line whose sponsor is V5's root send that refresh first, with gas =
+estimate × 1.5 + 150 000 (at a bare estimate V5 skips its raise without reverting), and wait for it. Only the agent's
+owner, or a pool delegate V5 recorded at least 24 hours earlier (`noteDelegate(agentId)` on V5, which anyone may
+send), can raise the line: another key is refused before anything is sent (`V5_DELEGATE_NOT_NOTED`,
+`V5_DELEGATE_WAITING`). A refresh that reverts, or that leaves the line short of the amount (a stale price: try again
+after V5's keeper syncs), throws `V5_REFRESH_FAILED` or `V5_LINE_SHORT` instead of the pool's `InsufficientCapacity`,
+and nothing is borrowed. Without `seatVaultV5`, nothing changes.
+
 **Reading records.** `CreditLensV2` exposes v1-shaped views on the v2 pool: `score(id)`, `creditReport(id)` and
 `available(id)`. The v1 CLI (`npx priors score|report|loans`) still reads the v1 pool's history.
 

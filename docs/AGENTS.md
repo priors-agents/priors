@@ -78,6 +78,11 @@ Churning one-day loans gets you nowhere. Holding real money for real time does.
 Paying per call with x402 instead of borrowing by hand: `s.pay(url, { agentId, maxBorrow })` pays from the
 balance and borrows only the shortfall. See [FLOAT.md](FLOAT.md).
 
+A line sponsored by the V5 seat vault is borrowable only after your own `refresh(agentId)` on V5. Once
+`deployments/4663.v2.json` names V5 (`seatVaultV5`), `borrow` and `pay` send that refresh first; borrow with the
+owner's key, or with a delegate key V5 recorded at least 24 hours earlier. See [PARTICIPATE.md](PARTICIPATE.md),
+"A line sponsored by the V5 seat vault".
+
 ## 3. Grow
 
 After three qualified loans, fourteen days on the ledger, a score of 100 and a clean record, anyone can call
