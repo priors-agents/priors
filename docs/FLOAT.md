@@ -40,9 +40,10 @@ The functional form is `pay(url, { signer, pool, agentId, ... })`, `resend(url, 
 4. If the balance covers the price, pays from it. If not, borrows `max(shortfall, pool minLoan)` from the agent's
    line, never above `maxBorrow` (a price above `maxBorrow` is refused before any transaction). The default term is
    7 days, clamped into the pool's range; `r.dueAt` is the deadline to have `settleLoans()` run by. On a line
-   sponsored by the V5 seat vault (`seatVaultV5`, which `priors.pay` takes from the deployment record once V5 is live),
-   the borrower's `refresh(agentId)` on V5 is sent and waited for just before the borrow, because V5 vouches nothing
-   until then ([PARTICIPATE.md](PARTICIPATE.md), "A line sponsored by the V5 seat vault").
+   sponsored by SeatVaultV5 (the `v5` and `v5Root` options, which `priors.pay` takes from the deployment record's
+   `seatVaultV5` and `seatVaultV5AgentId` once V5 is live), V5's step comes just before the borrow: the owner's
+   `refresh(agentId)`, or a new key's `noteDelegate` and a borrow within the line's room ([PARTICIPATE.md](PARTICIPATE.md),
+   "A line sponsored by SeatVaultV5").
 5. Signs an EIP-3009 `TransferWithAuthorization` on USDG's `Global Dollar` v1 domain, valid for at most 600 s
    whatever the merchant asks, and retries with it in `X-PAYMENT`.
 6. If the merchant answers 402 `{pending: true}` (the settlement was broadcast but not yet confirmed), it resends
@@ -97,4 +98,4 @@ A float loan is an ordinary v2 loan. Miss its due date by more than three days a
 with the same permanent consequences as any other. Set `maxBorrow` to what the agent can repay within the term.
 
 Tests: `npm run test:v2` covers the client guards network-free (price caps, authorization lifetime, the pending
-resend, no loan when `maxBorrow` is 0) and the V5 refresh before a borrow.
+resend, no loan when `maxBorrow` is 0) and SeatVaultV5's step before a borrow.

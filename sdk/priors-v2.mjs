@@ -28,7 +28,7 @@
 // it needs is public on an instance: `borrow`, `repay`, `openLoans`, `quoteFee`, `toUnits`, `usdg`, `pool`, `signer`.
 import { ethers } from "ethers";
 import { parseInvite, explainRevert } from "./priors.mjs";
-import { pay as floatPay, resend as floatResend, settleLoans as floatSettleLoans, refreshV5Line, SEAT_VAULT_V5_ABI } from "./float.mjs";
+import { pay as floatPay, resend as floatResend, settleLoans as floatSettleLoans, v5BeforeBorrow, SEAT_VAULT_V5_ABI } from "./float.mjs";
 import { STOCK_VAULT_ABI, stockAssets as readStockAssets, stockPosition as readStockPosition, collateralOf, borrowable } from "./stock-vault.mjs";
 
 export { parseInvite, explainRevert, SEAT_VAULT_V5_ABI };
@@ -252,7 +252,8 @@ export class PriorsV2 {
    *           addresses: { pool: string, treasuryV4?: string, seatVault?: string, seatVaultV4?: string, usdg?: string, registry?: string, priors?: string, stockVault?: string,
    *                        seatVaultV5?: string, seatVaultV5AgentId?: number } }} opts
    * With `seatVaultV4` (the growth seat vault), new seats go to it; a seat already open stays on its own vault.
-   * With `seatVaultV5`, `borrow` and `pay` on a line the V5 seat vault sponsors send the borrower's refresh on V5 first.
+   * With `seatVaultV5` and `seatVaultV5AgentId` (SeatVaultV5 and its root), `borrow` and `pay` on a line V5 sponsors take
+   * its step first (float.mjs `v5BeforeBorrow`).
    */
   constructor(opts = {}) {
     const a = opts.addresses || {};
@@ -560,21 +561,19 @@ export class PriorsV2 {
   /**
    * Borrow `amount` for `termSeconds`. USDG lands in `to` (default: the signer). `maxFee` defaults to the pool's
    * own quote, so a premium raised between quote and mining reverts (FeeTooHigh) instead of costing more.
-   * With `seatVaultV5` in the addresses, on a line the V5 seat vault sponsors the borrower's `refresh(agentId)` on V5 is
-   * sent first and waited for (V5 vouches nothing until then: sdk/float.mjs `refreshV5Line`).
+   * On a SeatVaultV5 line (`seatVaultV5` and `seatVaultV5AgentId` in the addresses), V5's step first (float.mjs
+   * `v5BeforeBorrow`: the owner's refresh, or the key's noteDelegate); the result then says `v5Refreshed`, `v5Noted`.
    */
   async borrow(agentId, amount, termSeconds, { to, maxFee } = {}) {
     const units = toUnits(amount);
     const term = BigInt(termSeconds);
     const fee = maxFee ?? (await this.pool.quoteFee(agentId, units, term)).fee;
-    if (this.vaultV5) {
-      this._needSigner();
-      await refreshV5Line({ signer: this.signer, pool: this.pool, seatVaultV5: this.vaultV5, seatVaultV5AgentId: this.addresses.seatVaultV5AgentId, agentId, amount: units });
-    }
+    if (this.vaultV5) this._needSigner();
+    const v5 = await v5BeforeBorrow({ signer: this.signer, pool: this.pool, v5: this.vaultV5, v5Root: this.addresses.seatVaultV5AgentId ?? null, agentId, amount: units });
     const rc = await sendChecked(this.pool, "borrow", [agentId, units, term, to || (await this.me()), fee], this._ifaces);
     const ev = this._event(rc, "Borrowed");
     if (!ev) throw new Error("Borrowed event not found");
-    return { hash: rc.hash, loanId: Number(ev.args.loanId), principal: ev.args.principal, fee: ev.args.fee, dueAt: Number(ev.args.dueAt) };
+    return { hash: rc.hash, loanId: Number(ev.args.loanId), principal: ev.args.principal, fee: ev.args.fee, dueAt: Number(ev.args.dueAt), ...(v5.v5 ? { v5Refreshed: v5.refreshed, v5Noted: v5.noted } : {}) };
   }
 
   /**
@@ -716,7 +715,7 @@ extendPriorsV2({
   /** @param {string} url @param {{agentId, maxBorrow, maxPrice?, maxValiditySeconds?, termSeconds?, maxFee?, fetchImpl?, init?}} opts */
   pay(url, opts = {}) {
     this._needSigner();
-    const v5 = this.vaultV5 ? { seatVaultV5: this.vaultV5, seatVaultV5AgentId: this.addresses.seatVaultV5AgentId } : {};
+    const v5 = this.vaultV5 ? { v5: this.vaultV5, v5Root: this.addresses.seatVaultV5AgentId ?? null } : {};
     return floatPay(url, { ...opts, signer: this.signer, pool: this.pool, ...v5 });
   },
   /** Send again the payment a `pay()` handed back (`paymentHeader` without `paid`): the same authorization, never a new

@@ -23,6 +23,9 @@ export const POOL_V2_FLOAT_ABI = [
   "function loansOf(uint256 id) view returns (uint256[])",
   "function isController(uint256 id, address who) view returns (bool)",
   `function getLoan(uint256 loanId) view returns (${LOAN})`,
+  // a SeatVaultV5 line's step before a borrow (v5BeforeBorrow): the agent's sponsor and room, and its owner
+  "function getAgent(uint256) view returns (tuple(bool enrolled,bool isRoot,bool defaulted,bool frozen,bool importedFromV1,uint64 enrolledAt,uint64 lastBorrowAt,uint64 lastRepayAt,uint256 sponsor,uint256 delegatedIn,uint256 delegatedOut,uint256 principalOut,uint256 activeLoans,uint256 premiumBps,uint256 premiumCap,uint256 loansRepaid,uint256 volumeRepaid,uint256 feesPaid,uint256 recourseHonored,uint256 childrenDefaulted,uint256 qualifiedRepaid,uint256 dollarSecondsRepaid))",
+  "function registry() view returns (address)",
   "event Borrowed(uint256 indexed loanId, uint256 indexed agentId, uint256 indexed sponsorId, uint256 principal, uint256 fee, uint64 dueAt, address to)",
 ];
 const ERC20 = ["function balanceOf(address) view returns (uint256)", "function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)"];
@@ -41,99 +44,74 @@ export class FloatError extends Error {
 const poolContract = (pool, signer) => (typeof pool === "string" ? new ethers.Contract(pool, POOL_V2_FLOAT_ABI, signer) : pool.connect ? pool.connect(signer) : pool);
 const sameAddr = (a, b) => typeof a === "string" && typeof b === "string" && ethers.isAddress(a) && ethers.isAddress(b) && ethers.getAddress(a) === ethers.getAddress(b);
 
-// ---------------------------------------------------------------------------------------------------------------
-// A line sponsored by the V5 seat vault (addresses.seatVaultV5, once it is deployed): the borrower's refresh first
-// ---------------------------------------------------------------------------------------------------------------
-
-/**
- * The V5 seat vault, the calls a borrower makes on it. V5's `open` records a line but vouches nothing on the pool: the
- * line becomes borrowable through `refresh(agentId)`, sent by the agent's owner, or by its pool delegate once V5 has
- * recorded that delegate (`noteDelegate(agentId)`, which anyone may send) for 24 hours.
- */
+/** SeatVaultV5 (a root that backs lines with the owner's $PRIORS), the calls a borrow on its line needs: V5 vouches
+ *  nothing at the open and raises the pool's vouch only on `refresh`, by the owner or by the pool delegate V5 recorded
+ *  (`noteDelegate`, anyone may send it) at least 24 h before. The same calls as @priors/x402's V5_ABI. */
 export const SEAT_VAULT_V5_ABI = [
-  "function rootId() view returns (uint256)",
   "function refresh(uint256 id)",
   "function noteDelegate(uint256 id)",
   "function delegateOf(uint256 id) view returns (address who, uint64 at)",
-  "error Reentrancy()", "error NoPrice()", "error BookNotOpen()", "error ReadStarved()",
+  "error BookNotOpen()", "error NoPrice()",
 ];
-const V5_AGENT_T = "tuple(bool enrolled,bool isRoot,bool defaulted,bool frozen,bool importedFromV1,uint64 enrolledAt,uint64 lastBorrowAt,uint64 lastRepayAt,uint256 sponsor,uint256 delegatedIn,uint256 delegatedOut,uint256 principalOut,uint256 activeLoans,uint256 premiumBps,uint256 premiumCap,uint256 loansRepaid,uint256 volumeRepaid,uint256 feesPaid,uint256 recourseHonored,uint256 childrenDefaulted,uint256 qualifiedRepaid,uint256 dollarSecondsRepaid)";
-const V5_POOL_ABI = [`function getAgent(uint256) view returns (${V5_AGENT_T})`, "function registry() view returns (address)"];
-const V5_DELEGATE_WAIT = 86_400n;
-const V5_WORDS = {
-  NoPrice: "V5 has no price yet; try again after V5's keeper syncs",
-  BookNotOpen: "the agent has no open line on the V5 seat vault",
-  ReadStarved: "the refresh ran out of gas",
-  Reentrancy: "V5 was inside another call; try again",
-};
-/** Gas for a V5 call: estimate x 1.5 + 150 000. At a bare estimate V5's bounded reads inside `refresh` are starved and
- *  caught, so the call succeeds and skips its raise. */
-const v5GasLimit = (estimate) => (BigInt(estimate) * 3n) / 2n + 150_000n;
-const addressOf = async (c) => (typeof c === "string" ? c : c.getAddress());
-const usdgText = (units) => `${ethers.formatUnits(units, 6)} USDG`;
-const isoTime = (s) => new Date(Number(s) * 1000).toISOString();
-function v5Reason(err, iface) {
+/** V5's delegate wait: a key V5 recorded raises the line this long after. */
+export const V5_DELEGATE_WAIT_S = 86_400;
+const REGISTRY_OWNER_ABI = ["function ownerOf(uint256) view returns (address)"];
+const utc = (s) => new Date(Number(s) * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+/** "Name(args)" for a revert that decodes against `iface`, else the provider's short message. */
+function revertText(err, iface) {
   const data = err?.data ?? err?.info?.error?.data ?? err?.error?.data;
-  let name = err?.revert?.name;
-  if (!name && typeof data === "string" && data.length >= 10) { try { name = iface.parseError(data)?.name; } catch (_) { /* not V5's */ } }
-  if (name) return V5_WORDS[name] ? `${name} (${V5_WORDS[name]})` : name;
+  if (err?.revert?.name) return `${err.revert.name}(${(err.revert.args || []).map(String).join(", ")})`;
+  if (typeof data === "string" && data.length >= 10) { try { const e = iface.parseError(data); if (e) return `${e.name}(${e.args.map(String).join(", ")})`; } catch (_) { /* not V5's */ } }
   return err?.shortMessage || err?.reason || err?.message || String(err);
 }
 
 /**
- * The step before a borrow on a line the V5 seat vault sponsors. V5 vouches nothing when it opens a line and raises the
- * pool's vouch only on the borrower's own `refresh(agentId)`, from a price under 45 minutes old; without it the borrow
- * reverts InsufficientCapacity. When `agentId`'s sponsor is V5's root (`seatVaultV5AgentId`, else V5's `rootId()`), this
- * sends that refresh with gas = estimate x 1.5 + 150 000, waits for it, and checks the line now covers `amount`.
- * Without `seatVaultV5` it reads and sends nothing; on a line another root sponsors it sends nothing.
- * Refused before anything is sent: a signer that is not the agent's owner and that V5 has not recorded as its delegate,
- * or recorded less than 24 hours ago (V5 would take the refresh and skip the raise). Every error has a `code`
- * (V5_DELEGATE_NOT_NOTED, V5_DELEGATE_WAITING, V5_REFRESH_FAILED, V5_LINE_SHORT) and means nothing was borrowed.
- * @param {{ signer: ethers.Signer, pool: string|ethers.Contract, seatVaultV5?: string|ethers.Contract|null,
- *   seatVaultV5AgentId?: bigint|number|string, agentId: bigint|number|string, amount?: bigint }} o
- * @returns {Promise<null | { hash: string, sponsor: bigint, available: bigint }>} null when nothing was sent
+ * Before a borrow on a SeatVaultV5 line (the agent's pool sponsor is V5's root `v5Root`): raise the pool's vouch to
+ * the line V5 allows now with `refresh(id)`, which only the agent's owner, or the pool delegate V5 recorded at least
+ * 24 h ago, may do. A delegate key V5 has not recorded yet is recorded now (`noteDelegate`); while its 24 h run, the
+ * borrow goes ahead only if the line already has room for it, and otherwise stops with when it can borrow (it never
+ * refreshes then: a refresh V5 may not raise on can lower the vouch). Any other line, or no V5 known (`v5` or `v5Root`
+ * missing): nothing read, nothing sent. The same rules as @priors/x402's `v5BeforeBorrow`.
+ * Refusals (FloatError): V5_REFRESH_WOULD_REVERT (before anything is sent), NOT_CONTROLLER (a key that does not control
+ * the agent; nothing sent), V5_DELEGATE_WAIT (`room`, `readyAt`, `noted`: the noteDelegate tx when one was sent).
+ * @param {{ signer: ethers.Signer, pool: string|ethers.Contract, v5?: string|ethers.Contract|null, v5Root?: bigint|number|string|null,
+ *   agentId: bigint|number|string, amount: bigint, now?: () => number, ownerOf?: (id: bigint) => Promise<string> }} o
+ * @returns {Promise<{ v5: boolean, refreshed: boolean, noted: string|null }>}
  */
-export async function refreshV5Line({ signer, pool, seatVaultV5, seatVaultV5AgentId, agentId, amount }) {
-  if (!seatVaultV5) return null;
+export async function v5BeforeBorrow({ signer, pool, v5, v5Root, agentId, amount, now = () => Math.floor(Date.now() / 1000), ownerOf }) {
+  const out = { v5: false, refreshed: false, noted: null };
+  if (!v5 || !v5Root || BigInt(v5Root) === 0n) return out;
+  const poolC = poolContract(pool, signer);
   const id = BigInt(agentId);
-  const poolR = new ethers.Contract(await addressOf(pool), V5_POOL_ABI, signer);
-  const v5 = new ethers.Contract(await addressOf(seatVaultV5), SEAT_VAULT_V5_ABI, signer);
-  const { sponsor } = await poolR.getAgent(id);
-  if (sponsor === 0n) return null;
-  const root = seatVaultV5AgentId === undefined || seatVaultV5AgentId === null ? await v5.rootId() : BigInt(seatVaultV5AgentId);
-  if (sponsor !== root) return null;
-
-  // Up only for the owner, or for the pool delegate V5 recorded at least 24 h ago (V5 skips the raise for anyone else).
-  const me = await signer.getAddress();
-  const owner = await new ethers.Contract(await poolR.registry(), ["function ownerOf(uint256) view returns (address)"], signer).ownerOf(id);
-  if (!sameAddr(owner, me)) {
-    const [who, at] = await v5.delegateOf(id);
-    if (!sameAddr(who, me)) {
-      throw new FloatError("V5_DELEGATE_NOT_NOTED", `agent #${id}'s line is sponsored by the V5 seat vault, which raises it only on a refresh from the agent's owner (${owner}) or from a pool delegate it recorded at least 24 h ago, and it has not recorded ${me}. Make this key the agent's pool delegate, send noteDelegate(${id}) to the V5 seat vault (anyone may), and borrow with this key 24 h later; or borrow with the owner's key. Nothing was sent.`, { agentId: id, delegate: who });
-    }
-    const now = BigInt((await signer.provider.getBlock("latest")).timestamp);
-    if (now < at + V5_DELEGATE_WAIT) {
-      throw new FloatError("V5_DELEGATE_WAITING", `the V5 seat vault recorded ${me} as agent #${id}'s delegate at ${isoTime(at)}, and a delegate's refresh raises the line only 24 h after that: borrow with this key from ${isoTime(at + V5_DELEGATE_WAIT)}, or with the owner's key (${owner}) now. Nothing was sent.`, { agentId: id, readyAt: Number(at + V5_DELEGATE_WAIT) });
-    }
+  const ag = await poolC.getAgent(id);
+  if (BigInt(ag.sponsor) !== BigInt(v5Root)) return out;
+  out.v5 = true;
+  const v5C = typeof v5 === "string" ? new ethers.Contract(v5, SEAT_VAULT_V5_ABI, signer) : v5.connect ? v5.connect(signer) : v5;
+  const me = ethers.getAddress(await signer.getAddress());
+  const owner = ethers.getAddress(ownerOf ? await ownerOf(id) : await new ethers.Contract(await poolC.registry(), REGISTRY_OWNER_ABI, signer).ownerOf(id));
+  const room = BigInt(ag.delegatedIn) > BigInt(ag.principalOut) ? BigInt(ag.delegatedIn) - BigInt(ag.principalOut) : 0n;
+  const refresh = async () => {
+    try { await v5C.refresh.staticCall(id); } catch (e) { throw new FloatError("V5_REFRESH_WOULD_REVERT", `agent #${id}'s line is on SeatVaultV5 and its refresh would revert (${revertText(e, v5C.interface)}): the line can't be raised now`); }
+    await (await v5C.refresh(id)).wait();
+    out.refreshed = true;
+  };
+  if (owner === me) { await refresh(); return out; }
+  const [who, at] = await v5C.delegateOf(id);
+  const ready = Number(at) + V5_DELEGATE_WAIT_S;
+  if (ethers.getAddress(who) === me && now() >= ready) { await refresh(); return out; }
+  // not (yet) a key V5 lets raise the line: never refresh (a refresh it may not raise can lower the vouch)
+  if (ethers.getAddress(who) !== me) {
+    if (!(await poolC.isController(id, me))) throw new FloatError("NOT_CONTROLLER", `agent #${id} is not controlled by ${me} (neither its owner nor its pool delegate)`);
+    const tx = await v5C.noteDelegate(id);
+    await tx.wait();
+    out.noted = tx.hash;
   }
-
-  const refresh = v5.getFunction("refresh");
-  const failed = (e, sent) => new FloatError("V5_REFRESH_FAILED", `refresh(${id}) on the V5 seat vault ${sent ? "failed" : "would revert"}: ${v5Reason(e, v5.interface)}. Nothing was borrowed.`, { agentId: id, cause: e });
-  let gasLimit;
-  try {
-    await refresh.staticCall(id);
-    gasLimit = v5GasLimit(await refresh.estimateGas(id));
-  } catch (e) { throw failed(e, false); }
-  let tx, rc;
-  try { tx = await refresh(id, { gasLimit }); rc = await tx.wait(); } catch (e) { throw failed(e, true); }
-  if (!rc || rc.status !== 1) throw failed(new Error(`mined with status 0 (tx ${tx.hash})`), true);
-
-  const a = await poolR.getAgent(id);
-  const available = a.delegatedIn > a.principalOut ? a.delegatedIn - a.principalOut : 0n;
-  if (amount !== undefined && available < BigInt(amount)) {
-    throw new FloatError("V5_LINE_SHORT", `refresh(${id}) on the V5 seat vault (tx ${tx.hash}) left ${usdgText(available)} to draw, below the ${usdgText(BigInt(amount))} asked: V5 raises a line only from a price under 45 minutes old (try again after V5's keeper syncs), and only as far as its backing allows now. Nothing was borrowed.`, { agentId: id, available, hash: tx.hash });
-  }
-  return { hash: tx.hash, sponsor, available };
+  if (room >= BigInt(amount)) return out;
+  const when = ethers.getAddress(who) === me ? ready : now() + V5_DELEGATE_WAIT_S;
+  throw new FloatError("V5_DELEGATE_WAIT",
+    `agent #${id}'s line is on SeatVaultV5, which raises it only for the agent's owner, or for the agent's key 24 hours after V5 recorded it${out.noted ? ` (recorded now, tx ${out.noted})` : ""}. `
+    + `The line has room for ${room} atomic USDG now. This key can borrow more from ${utc(when)}; before then, the owner can borrow from Go mode, which raises the line first.`,
+    { room, readyAt: when, noted: out.noted });
 }
 
 /** Pick the first "exact" USDG-on-Robinhood requirement from a 402 body. */
@@ -181,9 +159,9 @@ export async function signPayment(signer, req, { now = Math.floor(Date.now() / 1
  * @param {number} [o.termSeconds]  loan term (default 7 days, clamped to the pool's [minTerm, maxTerm]); an explicit
  *   term below minTerm is raised, above maxTerm refused
  * @param {bigint} [o.maxFee]  refuse a loan whose fee is above this
- * @param {string|ethers.Contract} [o.seatVaultV5]  the V5 seat vault (the deployment record's `seatVaultV5`): on a line
- *   it sponsors, the borrow is preceded by the borrower's refresh on V5 (`refreshV5Line`)
- * @param {bigint|number|string} [o.seatVaultV5AgentId]  V5's root agent id (default: read from V5's `rootId()`)
+ * @param {string|ethers.Contract} [o.v5]  SeatVaultV5 (the deployment record's `seatVaultV5`), with `o.v5Root` (its
+ *   `seatVaultV5AgentId`): a borrow on a line V5 sponsors takes `v5BeforeBorrow`'s step first
+ * @param {bigint|number|string} [o.v5Root]
  * @param {RequestInit} [o.init]  passed to every fetch (a redirect is not followed unless `init.redirect` says so)
  * @param {number} [o.pendingRetries]  resends of the SAME payment while the merchant answers "pending" (default 6)
  * @param {number} [o.timeoutMs]  per-request timeout (default 60 s; 0 = none)
@@ -209,7 +187,7 @@ export async function pay(url, o = {}) {
 }
 const payQueues = new Map();
 
-async function payOne(url, { signer, pool, agentId, maxBorrow = 0n, maxPrice = DEFAULT_MAX_PRICE, maxValiditySeconds = DEFAULT_MAX_VALIDITY_SECONDS, fetchImpl = fetch, termSeconds, maxFee, init = {}, asset, pendingRetries = 6, sleep = defaultSleep, timeoutMs = DEFAULT_TIMEOUT_MS, seatVaultV5, seatVaultV5AgentId } = {}) {
+async function payOne(url, { signer, pool, agentId, maxBorrow = 0n, maxPrice = DEFAULT_MAX_PRICE, maxValiditySeconds = DEFAULT_MAX_VALIDITY_SECONDS, fetchImpl = fetch, termSeconds, maxFee, init = {}, asset, pendingRetries = 6, sleep = defaultSleep, timeoutMs = DEFAULT_TIMEOUT_MS, v5, v5Root } = {}) {
   const first = await fetchImpl(url, requestInit(init, timeoutMs)); // a timeout here throws: nothing is signed yet
   if (first.status !== 402) return { response: first, paid: 0n, borrowed: 0n, loanId: null, dueAt: null };
 
@@ -246,8 +224,8 @@ async function payOne(url, { signer, pool, agentId, maxBorrow = 0n, maxPrice = D
     if (term > p.maxTerm) throw new FloatError("TERM_OUT_OF_RANGE", `pay: term ${term} is above the pool's maxTerm ${p.maxTerm}`);
     const [fee] = await poolC.quoteFee(agentId, amount, term);
     if (maxFee !== undefined && fee > BigInt(maxFee)) throw new FloatError("FEE_TOO_HIGH", `pay: loan fee ${fee} is above maxFee ${maxFee}`);
-    // A line the V5 seat vault sponsors is borrowable only after the borrower's refresh on V5 (refreshV5Line).
-    if (seatVaultV5) await refreshV5Line({ signer, pool: poolC, seatVaultV5, seatVaultV5AgentId, agentId, amount });
+    // A SeatVaultV5 line: its refresh (or the key's noteDelegate) first, as @priors/x402's borrowGap does.
+    await v5BeforeBorrow({ signer, pool: poolC, v5, v5Root, agentId, amount });
     // to = the agent itself: EIP-3009 needs the payer to hold the funds, so the draw lands in the agent's wallet and
     // is spent by the signed authorization below. (A borrow-and-pay router would send it straight to payTo.)
     // A lost answer (the broadcast's or the receipt's) may hide a loan that mined: BORROW_UNCONFIRMED carries the amount

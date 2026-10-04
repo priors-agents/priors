@@ -129,16 +129,17 @@ Every write is simulated first, so a revert is explained with the contract's own
 spent. Approvals are for the exact amount. `borrow` passes the pool's own quote as `maxFee`, and `repay` binds the
 loan's agent and amount, so a changed premium or a wrong loan id reverts instead of costing more.
 
-**A line sponsored by the V5 seat vault.** V5 vouches nothing when it opens a line: it raises the pool's vouch only on
-the borrower's own `refresh(agentId)`, from a price under 45 minutes old. With `seatVaultV5` in the addresses (the
-deployment record names it once V5 is live; `seatVaultV5AgentId` is its root, else read from V5's `rootId()`),
-`borrow`, `pay` and `npx priors-v2 borrow` on a line whose sponsor is V5's root send that refresh first, with gas =
-estimate × 1.5 + 150 000 (at a bare estimate V5 skips its raise without reverting), and wait for it. Only the agent's
-owner, or a pool delegate V5 recorded at least 24 hours earlier (`noteDelegate(agentId)` on V5, which anyone may
-send), can raise the line: another key is refused before anything is sent (`V5_DELEGATE_NOT_NOTED`,
-`V5_DELEGATE_WAITING`). A refresh that reverts, or that leaves the line short of the amount (a stale price: try again
-after V5's keeper syncs), throws `V5_REFRESH_FAILED` or `V5_LINE_SHORT` instead of the pool's `InsufficientCapacity`,
-and nothing is borrowed. Without `seatVaultV5`, nothing changes.
+**A line sponsored by SeatVaultV5.** V5 vouches nothing when it opens a line: it raises the pool's vouch only on
+`refresh(agentId)` from the agent's owner, or from the pool delegate V5 recorded (`noteDelegate(agentId)`, which
+anyone may send) at least 24 hours earlier. With `seatVaultV5` and `seatVaultV5AgentId` (V5 and its root) in the
+addresses, which the deployment record names once V5 is live, `borrow`, `pay` and `npx priors-v2 borrow` on a line
+whose sponsor is V5's root take that step first (`v5BeforeBorrow` in `sdk/float.mjs`). The owner's key, or a key V5
+recorded 24 hours ago, refreshes the line, and the borrow follows. A key V5 has not recorded yet is recorded now with
+`noteDelegate` (it must control the agent on the pool, else `NOT_CONTROLLER`) and does not refresh, because a refresh
+V5 may not raise on can lower the vouch. Until its 24 hours have run, such a key borrows only within the line's
+current room; beyond it, `V5_DELEGATE_WAIT` says when it can (`readyAt`), and the owner can borrow before then. A
+refresh that would revert stops with `V5_REFRESH_WOULD_REVERT` before anything is sent. Without both fields, nothing
+changes.
 
 **Reading records.** `CreditLensV2` exposes v1-shaped views on the v2 pool: `score(id)`, `creditReport(id)` and
 `available(id)`. The v1 CLI (`npx priors score|report|loans`) still reads the v1 pool's history.
