@@ -122,6 +122,65 @@ contract StockVaultEpochRefundTest is StockVaultBase {
         assertEq(vault.linedThisEpoch(), LINE);
     }
 
+    // ---- settle(): the same ending when the pool's last onRelease call failed (reported by Muse, 2026-10-04). Before
+    // the fix settle() always ended with no refund, so whoever called it first kept the depositor's line counted. ----
+
+    /// The pool's onRelease call into the vault fails once (a token paused at the repay block, say): the pool carries
+    /// on (HookFailed), the sponsor is gone, the position is still open in the vault.
+    function _withFailedRelease(function() internal action) internal {
+        vm.mockCallRevert(address(vault), abi.encodeWithSelector(StockVault.onRelease.selector), "");
+        action();
+        vm.clearMockedCalls();
+        assertEq(pool.getAgent(AGENT).sponsor, 0);
+        assertEq(uint256(vault.getPosition(AGENT).status), uint256(StockVault.Status.Open));
+    }
+
+    uint256 internal loan_;
+
+    function _repayLoan() internal {
+        _repay(agentOp, loan_, AGENT);
+    }
+
+    function _leave() internal {
+        vm.prank(agentOp);
+        pool.leave(AGENT);
+    }
+
+    function test_closeWithLoanOpen_failedHook_settleByAnyone_refunds() public {
+        _openMax(AGENT_PK, AGENT);
+        loan_ = _draw(agentOp, AGENT);
+        vm.prank(agentOp);
+        vault.close(AGENT);
+        _withFailedRelease(_repayLoan);
+        vm.prank(anyone);
+        vault.settle(AGENT, 0);
+        assertEq(uint256(vault.getPosition(AGENT).status), uint256(StockVault.Status.Closed));
+        assertEq(spy.balanceOf(agentOp), 10 * SHARE, "every token back");
+        assertEq(vault.linedThisEpoch(), 0, "settle refunds the deferred close as onRelease would");
+        assertEq(vault.epochRoom(), 1000 * USDC);
+    }
+
+    function test_freezeWithLoanOpen_failedHook_settle_keepsTheSpend() public {
+        _openMax(AGENT_PK, AGENT);
+        loan_ = _draw(agentOp, AGENT);
+        vm.prank(owner);
+        vault.freezePosition(AGENT);
+        _withFailedRelease(_repayLoan);
+        vm.prank(anyone);
+        vault.settle(AGENT, 0);
+        assertEq(uint256(vault.getPosition(AGENT).status), uint256(StockVault.Status.Closed));
+        assertEq(vault.linedThisEpoch(), LINE, "an owner eviction keeps its spend through settle too");
+    }
+
+    function test_leave_failedHook_settle_refunds() public {
+        _openMax(AGENT_PK, AGENT);
+        _withFailedRelease(_leave);
+        vm.prank(anyone);
+        vault.settle(AGENT, 0);
+        assertEq(uint256(vault.getPosition(AGENT).status), uint256(StockVault.Status.Closed));
+        assertEq(vault.linedThisEpoch(), 0, "a leave refunds through settle as through onRelease");
+    }
+
     /// No stale intent: a position that ended after a deferred close does not hand its refund to the next one.
     function test_nextPositionStartsClean() public {
         _closeThenRepay(AGENT_PK, AGENT);

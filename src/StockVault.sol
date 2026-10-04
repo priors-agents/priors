@@ -525,6 +525,8 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     ///         - The agent defaulted and the vault no longer backs it: `loanId` must be one of its defaulted loans.
     ///           Backed by this vault since the position opened: seized. Otherwise every token goes back.
     ///         - The agent did not default and the vault no longer backs it: every token goes back.
+    ///         A position it closes gets the refund onRelease would have given it (the line back in this epoch's budget
+    ///         unless the agent defaulted or the owner evicted the position): who calls settle first changes nothing.
     function settle(uint256 id, uint256 loanId) external nonReentrant {
         Position storage p = positions[id];
         if (p.status != Status.Open) revert NoPosition(id);
@@ -543,7 +545,7 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
                 seize = true;
             }
         }
-        _end(id, p, seize, false);
+        _end(id, p, seize, !seize && !a.defaulted && (!p.closing || closeRefund[id]));
     }
 
     // ------------------------------------------------------------------

@@ -68,7 +68,7 @@ The v2 contracts on Robinhood Chain (chain 4663), live since block 71,702,460, a
 | `TimelockController` (the pool's owner, 48 h) | [`0x5d984C274035F81BB327d532897a902C5125F87c`](https://robinhoodchain.blockscout.com/address/0x5d984C274035F81BB327d532897a902C5125F87c) |
 | `InviteBond` (the bond an automatic invite needs) | [`0x8BE478c754D9124D11e78dB20F5bf4dA45403275`](https://robinhoodchain.blockscout.com/address/0x8BE478c754D9124D11e78dB20F5bf4dA45403275) |
 | `StockVault`, the stock vault (root `#6424`; live since 2026-09-28): the proxy users call | [`0xbEcd07EC689988e16b870C121756C4c2C8cb02B6`](https://robinhoodchain.blockscout.com/address/0xbEcd07EC689988e16b870C121756C4c2C8cb02B6) |
-| its implementation (`src/StockVault.sol`) | [`0x32F1c32A8bdDCd72B18A4f97dc815F50099ad0A5`](https://robinhoodchain.blockscout.com/address/0x32F1c32A8bdDCd72B18A4f97dc815F50099ad0A5) (since 2026-10-01) |
+| its implementation (`src/StockVault.sol`) | [`0xC16f7230b79Fb7dB3b1761A23e9d56365300B2A4`](https://robinhoodchain.blockscout.com/address/0xC16f7230b79Fb7dB3b1761A23e9d56365300B2A4) (since 2026-10-04) |
 
 The stock vault is the one upgradeable contract: what is in scope is the implementation its proxy points to when you
 report (the ERC-1967 implementation slot), which the table will follow after any upgrade.
