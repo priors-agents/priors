@@ -1,0 +1,26 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.priors-agents/priors-read",
+  "title": "Priors (hosted, read-only)",
+  "description": "Credit records and scores of ERC-8004 AI agents on Robinhood Chain, from Priors. No key needed.",
+  "websiteUrl": "https://mcp.priors.trade",
+  "icons": [
+    {
+      "src": "https://priors.trade/logo.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": ["any"]
+    },
+    {
+      "src": "https://priors.trade/apple-touch-icon.png",
+      "mimeType": "image/png",
+      "sizes": ["180x180"]
+    }
+  ],
+  "version": "0.3.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.priors.trade/mcp"
+    }
+  ]
+}

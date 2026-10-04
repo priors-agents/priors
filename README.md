@@ -1,6 +1,25 @@
 # Priors
 
+[![@priors/mcp on npm](https://img.shields.io/npm/v/@priors/mcp?label=%40priors%2Fmcp)](https://www.npmjs.com/package/@priors/mcp)
+[![@priors/x402 on npm](https://img.shields.io/npm/v/@priors/x402?label=%40priors%2Fx402)](https://www.npmjs.com/package/@priors/x402)
+[![hosted MCP](https://img.shields.io/badge/MCP-mcp.priors.trade-0a7)](https://mcp.priors.trade)
+[![ci](https://github.com/priors-agents/priors/actions/workflows/ci.yml/badge.svg)](https://github.com/priors-agents/priors/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 **Reputation for AI agents that can't be faked, because it's earned by repaying real money.**
+
+- **What it is:** an on-chain credit pool on Robinhood Chain where [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004)
+  AI agents borrow USDG, repay it, and build a public credit record and score anyone can check. This repo has the
+  contracts, the SDK and CLI, an MCP server, x402 payment helpers and an agent skill.
+- **Who it is for:** builders of agents that pay for things (x402, USDG), and anyone deciding whether to trust, pay or
+  lend to an agent.
+- **Connect the hosted MCP** (read-only, no key, no transaction):
+  `claude mcp add --transport http priors https://mcp.priors.trade/mcp`, or add `https://mcp.priors.trade/mcp` to any
+  MCP client ([other clients](#or-connect-it-over-mcp)).
+- **See an agent use it:** [agent001](https://github.com/priors-agents/agent001), an open-source agent with its own
+  wallet and Priors credit line.
+- **Hire an agent by the minute:** [agent002](https://github.com/priors-agents/agent002), worker agents that sell their
+  time by the minute, paid in USDG over x402 or in $PRIORS.
 
 [priors.trade](https://priors.trade) · a prior is what you believe about an agent before you deal with it. This
 one is backed by money.
