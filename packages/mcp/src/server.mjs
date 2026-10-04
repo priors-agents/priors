@@ -335,9 +335,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     if (stateFile) { try { await locked(() => { const m = readState(); if (same(m.get(key)) && m.delete(key)) writeState(m); }); } catch (_) { /* best effort */ } }
   }
   refresh();
-  // seatVaultV5 (absent from the deployments file until V5 is live): borrow refreshes a line V5 sponsors on V5 first
-  const v5 = { seatVaultV5: addresses.seatVaultV5 || null, seatVaultV5AgentId: addresses.seatVaultV5AgentId };
-  const contracts = C.creditContracts({ runner: provider, addresses: { pool: addresses.pool, lens: addresses.lens, usdg: addresses.usdg, registry: addresses.registry, stockVault: addresses.stockVault || null, ...v5 } });
+  const contracts = C.creditContracts({ runner: provider, addresses: { pool: addresses.pool, lens: addresses.lens, usdg: addresses.usdg, registry: addresses.registry, stockVault: addresses.stockVault || null } });
 
   // The chain, behind one facade (tests replace it).
   const credit = deps.credit || {
@@ -473,7 +471,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       if (maxBorrow > 0n && session.borrowed + maxBorrow > borrowTotalCap) throw new ToolError(`this could bring what is borrowed in this session to ${usd(session.borrowed + maxBorrow)}, above ${usd(borrowTotalCap)} (PRIORS_MAX_BORROW_TOTAL_USD).`);
       let agentId;
       if (maxBorrow > 0n) { agentId = await resolveAgent(); await needController(agentId); }
-      const payer = X.createPayer({ signer, maxPrice, maxBorrow, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}), ...(maxBorrow > 0n ? { pool: addresses.pool, agentId, ...v5 } : {}),
+      const payer = X.createPayer({ signer, maxPrice, maxBorrow, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}), ...(maxBorrow > 0n ? { pool: addresses.pool, agentId } : {}),
         // Recorded, then counted, when signed, at the price the payer checked and signed (a v1 requirement's `amount` is the
         // merchant's text). A record that cannot be kept throws, and the payer does not send the payment.
         onSigned: async (s) => { await record(purchase, { paymentHeaders: s.paymentHeaders, validBefore: s.validBefore, price: s.price, payTo: s.requirement.payTo }); signedPrice = s.price; session.spent += s.price; } });

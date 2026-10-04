@@ -440,10 +440,6 @@ export function createPayer(opts = {}) {
   if (typeof fetchImpl !== "function") throw new PayError("NO_FETCH", "createPayer: no fetch implementation");
   const maxPrice = toAtomicUsdg(opts.maxPrice ?? DEFAULT_MAX_PRICE, "maxPrice");
   const maxBorrow = toAtomicUsdg(opts.maxBorrow ?? 0n, "maxBorrow");
-  // The V5 seat vault, whose lines need the borrower's refresh before a borrow: given, else robinhood's once it is
-  // live (robinhood.seatVaultV5, absent until then); null turns the step off.
-  const seatVaultV5 = opts.seatVaultV5 === undefined ? robinhood.seatVaultV5 : opts.seatVaultV5;
-  const v5 = seatVaultV5 ? { seatVaultV5, seatVaultV5AgentId: opts.seatVaultV5AgentId } : {};
   const http = new x402HTTPClient(new x402Client());
 
   const fx = timedFetch(fetchImpl, { timeoutMs, signal });
@@ -499,7 +495,7 @@ export function createPayer(opts = {}) {
     const balance = await new ethers.Contract(usdgAddr, ERC20_ABI, signer).balanceOf(me);
 
     let loan = { borrowed: 0n, loanId: null, dueAt: null };
-    if (balance < price) loan = await borrowGap({ signer, pool: poolC, agentId, price, balance, maxBorrow, termSeconds, maxFee, me, ...v5 });
+    if (balance < price) loan = await borrowGap({ signer, pool: poolC, agentId, price, balance, maxBorrow, termSeconds, maxFee, me });
 
     // Exactly one signature for this purchase, from here on only resent. An error from here carries the loan (and,
     // once signed, the headers), so neither is lost with it.

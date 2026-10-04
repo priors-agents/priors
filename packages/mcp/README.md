@@ -62,13 +62,6 @@ Contract addresses (pool, lens, registry, USDG) come from `deployments/4663.v2.j
 accepted stock tokens from `deployments/stock-assets.4663.json`. The stock vault's address (live since 2026-09-28)
 comes from the same deployments file, or from `PRIORS_STOCK_VAULT`.
 
-A line sponsored by the V5 seat vault vouches nothing until the borrower refreshes it on V5. Once the deployments file
-names the V5 seat vault (`seatVaultV5`), `borrow` and `pay_url` send the agent's `refresh(agentId)` to V5 before
-borrowing on such a line (gas: estimate × 1.5 + 150 000) and wait for it. The wallet must be the agent's owner, or its
-pool delegate recorded by V5 (`noteDelegate(agentId)`) at least 24 hours earlier; otherwise the call is refused before
-anything is sent. A refresh that reverts or leaves the line short (a stale V5 price: try again after V5's keeper
-syncs) is reported as such (`V5_REFRESH_FAILED`, `V5_LINE_SHORT`), and nothing is borrowed.
-
 ### Claude Desktop
 
 Settings → Developer → Edit Config (`claude_desktop_config.json`), then restart Claude Desktop:

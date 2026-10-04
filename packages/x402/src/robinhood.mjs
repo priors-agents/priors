@@ -23,8 +23,6 @@ export const robinhood = Object.freeze({
   registry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
   /** The stock vault (src/StockVault.sol, live since 2026-09-28; deployments/4663.v2.json `stockVault`). */
   stockVault: "0xbEcd07EC689988e16b870C121756C4c2C8cb02B6",
-  // seatVaultV5: the V5 seat vault, added here (from deployments/4663.v2.json `seatVaultV5`) once it is live. Until
-  // then it is absent, and createPayer and creditContracts send no V5 refresh unless given a `seatVaultV5`.
 });
 
 /** Both names a Robinhood Chain requirement can carry: v2 CAIP-2 and the v1 name. */
