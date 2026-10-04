@@ -43,6 +43,15 @@ can do that with any client). Caps bound what a merchant can take, they do not m
 overpaid") does not move a finding up a tier: what counts is whether money moved that the user had not signed for
 within their caps.
 
+**A request the caller re-spells is a new purchase.** The client keys a purchase by the request as a merchant reads
+it; P-24's row in [docs/SECURITY-v2.md](docs/SECURITY-v2.md) lists which spellings it merges. A caller that sends a
+purchase again in another spelling — another form of the URL (a trailing slash, an escape), a header added or dropped,
+another encoding of a hand-built multipart body — has asked for a second purchase, and the client counts it in the
+per-call and session caps like any other. That is P-24's known residual, not a new finding: a further spelling
+reported under it is credited in P-24's row, rated Low at most, and not paid. What still counts is a second signature
+for one request resent unchanged (the same method, URL, headers and bytes), or a re-spelled request that gets past
+the caps.
+
 ## In scope
 
 The v2 contracts on Robinhood Chain (chain 4663), live since block 71,702,460, and the ones added to the set since:
