@@ -3,7 +3,10 @@
 // through both. The facilitator here is a spy, and the check API a stub answering like https://priors.trade/api/check.
 //   node scripts/test-x402-gate.mjs
 import assert from "node:assert/strict";
-import { createResourceServer, recordGate, payerOf, robinhood } from "../packages/x402/index.mjs";
+import { pathToFileURL } from "node:url";
+// PRIORS_X402=<an installed @priors/x402's directory> runs these checks on that copy, as published
+const X402 = process.env.PRIORS_X402 ? pathToFileURL(`${process.env.PRIORS_X402}/index.mjs`).href : "../packages/x402/index.mjs";
+const { createResourceServer, recordGate, payerOf, robinhood } = await import(X402);
 
 const GOOD = "0x1111111111111111111111111111111111111111";
 const DEFAULTED = "0x2222222222222222222222222222222222222222";
@@ -61,6 +64,26 @@ await t("payerOf reads the signer of an EIP-3009 or a Permit2 payment, and nothi
   assert.equal(payerOf(payment(GOOD, 1)), "0x1111111111111111111111111111111111111111");
   assert.equal(payerOf({ payload: { permit2Authorization: { from: NEW } } }), "0x3333333333333333333333333333333333333333");
   assert.equal(payerOf({ payload: { authorization: { from: "not an address" } } }), null);
+});
+
+// GHSA-6vjc: @x402/evm's exact scheme settles by the Permit2 arm whenever the payload has a `permit2Authorization` key
+// ("permit2Authorization" in payload), whatever else it carries; a gate that judged `authorization.from` first was judging
+// one address and letting another pay. A payload naming both arms has no single payer and is refused.
+await t("payerOf follows the arm the facilitator settles by, and a payload naming both arms has no payer (GHSA-6vjc)", async () => {
+  const both = { payload: { authorization: { from: GOOD }, permit2Authorization: { from: DEFAULTED } } };
+  assert.equal(payerOf(both), null);
+  assert.equal(payerOf({ payload: { authorization: { from: GOOD }, permit2Authorization: null } }), null, "the key alone picks the Permit2 arm");
+  assert.equal(payerOf({ payload: { permit2Authorization: { from: "not an address" } } }), null);
+});
+
+await t("a payment naming both arms is refused before the facilitator's verify is called (GHSA-6vjc)", async () => {
+  const { s, fac } = await server({ refuseDefaulted: true, basePrice: "$0.10", tiers: [{ minRepaid: 3, price: "$0.01" }] });
+  const p = payment(GOOD, 10_000);
+  p.payload.permit2Authorization = { from: DEFAULTED, permitted: { token: robinhood.usdg, amount: "10000" }, spender: MERCHANT, nonce: "1", deadline: "9999999999", witness: { to: MERCHANT, validAfter: "0", extra: "0x" } };
+  const v = await s.verifyPayment(p, requirements(10_000));
+  assert.equal(v.isValid, false);
+  assert.match(String(v.invalidReason), /priors_payer_unknown/);
+  assert.deepEqual(fac.calls, []);
 });
 
 await t("a defaulted payer is refused before the facilitator's verify is called (Criterion 4)", async () => {

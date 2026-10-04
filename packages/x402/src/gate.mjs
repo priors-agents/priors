@@ -25,10 +25,16 @@ import { creditContracts, creditStatus } from "./credit.mjs";
 
 export const CHECK_API = "https://priors.trade/api/check";
 
-/** The address that signed an x402 v2 EVM payment (EIP-3009 `authorization.from`, or Permit2's `from`), or null. */
+/** The address that pays an x402 v2 EVM payment, or null. The arm is the one the facilitator settles by: @x402/evm's
+ *  exact scheme takes the Permit2 arm whenever the payload has a `permit2Authorization` key, so its `from` pays, else
+ *  EIP-3009's `authorization.from`. A payload naming both arms has no single payer: null, so the gate refuses it
+ *  (GHSA-6vjc: judged on one address, paid from the other). */
 export function payerOf(paymentPayload) {
   const p = paymentPayload?.payload;
-  const from = p?.authorization?.from ?? p?.permit2Authorization?.from ?? null;
+  if (!p || typeof p !== "object") return null;
+  const permit2 = "permit2Authorization" in p, eip3009 = "authorization" in p;
+  if (permit2 && eip3009) return null;
+  const from = permit2 ? p.permit2Authorization?.from : p.authorization?.from;
   return typeof from === "string" && ethers.isAddress(from) ? ethers.getAddress(from) : null;
 }
 
@@ -86,12 +92,18 @@ export function recordGate(opts = {}) {
     if (!r.ok) throw new Error(`the Priors check API answered HTTP ${r.status}`);
     return recordFromCheck(await r.json());
   }
+  // The pool marks the owner of an agent that defaulted (ownerDefaults; not a custodian, which holds others' agents),
+  // and the API source counts every agent of the payer's address. So the chain source counts the mark too, for the
+  // payer and for the named agent's owner: naming a clean sibling, or no agent, does not pass refuseDefaulted
+  // (reported by Muse, 2026-10-04).
+  const marked = async (who) => !!who && who !== ethers.ZeroAddress && (await contracts.pool.ownerDefaults(who)) > 0n && !(await contracts.pool.custodian(who));
   async function readChain(address, agentId) {
-    if (agentId === null || agentId === undefined || !/^\d{1,12}$/.test(String(agentId))) return { ...NO_RECORD };
     contracts ||= creditContracts({ runner: new ethers.JsonRpcProvider(rpc, undefined, { staticNetwork: true }), addresses: pool ? { pool } : {} });
-    if (!(await contracts.pool.isController(BigInt(agentId), address))) return { ...NO_RECORD };
+    const named = agentId !== null && agentId !== undefined && /^\d{1,12}$/.test(String(agentId)) && (await contracts.pool.isController(BigInt(agentId), address));
+    if (!named) return (await marked(address)) ? { ...NO_RECORD, known: true, defaulted: true } : { ...NO_RECORD };
     const s = await creditStatus(contracts, agentId);
-    return { known: s.enrolled, agents: [Number(agentId)], defaulted: s.defaulted, loansRepaid: Number(s.loansRepaid), score: s.score };
+    const defaulted = s.defaulted || (await marked(address)) || (await marked(s.owner));
+    return { known: s.enrolled || defaulted, agents: [Number(agentId)], defaulted, loansRepaid: Number(s.loansRepaid), score: s.score };
   }
   /** The record of `address` (and, for the chain source, of the agent it names), cached `cacheSeconds`. */
   async function recordOf(address, agentId = null) {

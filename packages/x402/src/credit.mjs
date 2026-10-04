@@ -26,6 +26,9 @@ export const POOL_ABI = [
   `function getLoan(uint256 loanId) view returns (${LOAN_T})`,
   `function getAgent(uint256) view returns (${AGENT_T})`,
   "function isController(uint256 id, address who) view returns (bool)",
+  // the pool marks the owner of an agent that defaulted (custodians, which hold others' agents, are skipped)
+  "function ownerDefaults(address owner) view returns (uint256)",
+  "function custodian(address who) view returns (bool)",
   "function pausedUntil() view returns (uint64)",
   "event Borrowed(uint256 indexed loanId, uint256 indexed agentId, uint256 indexed sponsorId, uint256 principal, uint256 fee, uint64 dueAt, address to)",
   "error Paused()", "error ZeroAmount()", "error NotOwnerOf(uint256 id, address caller)", "error NotController(uint256 id, address caller)",
