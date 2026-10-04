@@ -28,10 +28,10 @@
 // it needs is public on an instance: `borrow`, `repay`, `openLoans`, `quoteFee`, `toUnits`, `usdg`, `pool`, `signer`.
 import { ethers } from "ethers";
 import { parseInvite, explainRevert } from "./priors.mjs";
-import { pay as floatPay, resend as floatResend, settleLoans as floatSettleLoans } from "./float.mjs";
+import { pay as floatPay, resend as floatResend, settleLoans as floatSettleLoans, refreshV5Line, SEAT_VAULT_V5_ABI } from "./float.mjs";
 import { STOCK_VAULT_ABI, stockAssets as readStockAssets, stockPosition as readStockPosition, collateralOf, borrowable } from "./stock-vault.mjs";
 
-export { parseInvite, explainRevert };
+export { parseInvite, explainRevert, SEAT_VAULT_V5_ABI };
 
 // ---------------------------------------------------------------------------------------------------------------
 // ABIs (human-readable, from src/CreditPoolV2.sol, src/SeatVaultV2.sol, src/TreasurySponsorV4.sol)
@@ -249,8 +249,10 @@ const consentTuple = (c) => [BigInt(c.agentId), BigInt(c.sponsorId), c.owner, Bi
 export class PriorsV2 {
   /**
    * @param {{ signer?: any, provider?: any, rpc?: string,
-   *           addresses: { pool: string, treasuryV4?: string, seatVault?: string, seatVaultV4?: string, usdg?: string, registry?: string, priors?: string, stockVault?: string } }} opts
+   *           addresses: { pool: string, treasuryV4?: string, seatVault?: string, seatVaultV4?: string, usdg?: string, registry?: string, priors?: string, stockVault?: string,
+   *                        seatVaultV5?: string, seatVaultV5AgentId?: number } }} opts
    * With `seatVaultV4` (the growth seat vault), new seats go to it; a seat already open stays on its own vault.
+   * With `seatVaultV5`, `borrow` and `pay` on a line the V5 seat vault sponsors send the borrower's refresh on V5 first.
    */
   constructor(opts = {}) {
     const a = opts.addresses || {};
@@ -268,8 +270,9 @@ export class PriorsV2 {
     this.token = a.priors ? new ethers.Contract(a.priors, ERC20_ABI, run) : null;
     this.registry = a.registry ? new ethers.Contract(a.registry, REGISTRY_ABI, run) : null;
     this.stockVault = a.stockVault ? new ethers.Contract(a.stockVault, STOCK_VAULT_ABI, run) : null;
+    this.vaultV5 = a.seatVaultV5 ? new ethers.Contract(a.seatVaultV5, SEAT_VAULT_V5_ABI, run) : null;
     // every interface a call here can revert with: a vault or treasury call bubbles the pool's errors up
-    this._ifaces = [this.pool.interface, ...(this.vault ? [this.vault.interface] : []), ...(this.vaultV4 ? [this.vaultV4.interface] : []), ...(this.treasury ? [this.treasury.interface] : []), ...(this.stockVault ? [this.stockVault.interface] : []), new ethers.Interface(ERC20_ABI), new ethers.Interface(REGISTRY_ABI)];
+    this._ifaces = [this.pool.interface, ...(this.vault ? [this.vault.interface] : []), ...(this.vaultV4 ? [this.vaultV4.interface] : []), ...(this.treasury ? [this.treasury.interface] : []), ...(this.stockVault ? [this.stockVault.interface] : []), ...(this.vaultV5 ? [this.vaultV5.interface] : []), new ethers.Interface(ERC20_ABI), new ethers.Interface(REGISTRY_ABI)];
     this.toUnits = toUnits;
   }
 
@@ -557,11 +560,17 @@ export class PriorsV2 {
   /**
    * Borrow `amount` for `termSeconds`. USDG lands in `to` (default: the signer). `maxFee` defaults to the pool's
    * own quote, so a premium raised between quote and mining reverts (FeeTooHigh) instead of costing more.
+   * With `seatVaultV5` in the addresses, on a line the V5 seat vault sponsors the borrower's `refresh(agentId)` on V5 is
+   * sent first and waited for (V5 vouches nothing until then: sdk/float.mjs `refreshV5Line`).
    */
   async borrow(agentId, amount, termSeconds, { to, maxFee } = {}) {
     const units = toUnits(amount);
     const term = BigInt(termSeconds);
     const fee = maxFee ?? (await this.pool.quoteFee(agentId, units, term)).fee;
+    if (this.vaultV5) {
+      this._needSigner();
+      await refreshV5Line({ signer: this.signer, pool: this.pool, seatVaultV5: this.vaultV5, seatVaultV5AgentId: this.addresses.seatVaultV5AgentId, agentId, amount: units });
+    }
     const rc = await sendChecked(this.pool, "borrow", [agentId, units, term, to || (await this.me()), fee], this._ifaces);
     const ev = this._event(rc, "Borrowed");
     if (!ev) throw new Error("Borrowed event not found");
@@ -705,7 +714,11 @@ export function extendPriorsV2(methods) {
    in float.mjs; these bind it to this instance's signer and pool. */
 extendPriorsV2({
   /** @param {string} url @param {{agentId, maxBorrow, maxPrice?, maxValiditySeconds?, termSeconds?, maxFee?, fetchImpl?, init?}} opts */
-  pay(url, opts = {}) { this._needSigner(); return floatPay(url, { ...opts, signer: this.signer, pool: this.pool }); },
+  pay(url, opts = {}) {
+    this._needSigner();
+    const v5 = this.vaultV5 ? { seatVaultV5: this.vaultV5, seatVaultV5AgentId: this.addresses.seatVaultV5AgentId } : {};
+    return floatPay(url, { ...opts, signer: this.signer, pool: this.pool, ...v5 });
+  },
   /** Send again the payment a `pay()` handed back (`paymentHeader` without `paid`): the same authorization, never a new
    *  one. Never call `pay()` again for that purchase. @param {{init?, fetchImpl?, retries?, timeoutMs?}} opts */
   resend(url, paymentHeader, opts = {}) { return floatResend(url, paymentHeader, opts); },

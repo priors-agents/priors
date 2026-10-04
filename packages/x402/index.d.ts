@@ -26,6 +26,9 @@ export interface RobinhoodConstants {
   readonly registry: `0x${string}`;
   /** The Priors stock vault (lines backed by the agent's own stock tokens), live since 2026-09-28. */
   readonly stockVault: `0x${string}` | null;
+  /** The V5 seat vault, once it is live (absent until then): a line it sponsors needs the borrower's refresh on it
+   *  before a borrow, which `createPayer` and `creditContracts` then send by default. */
+  readonly seatVaultV5?: `0x${string}`;
 }
 export declare const robinhood: RobinhoodConstants;
 export declare const ROBINHOOD_NETWORKS: ReadonlySet<string>;
@@ -77,6 +80,12 @@ export interface CreatePayerOptions {
   termSeconds?: bigint | number;
   /** Refuse a loan whose fee is above this (atomic USDG). */
   maxFee?: bigint;
+  /** The V5 seat vault (address or ethers Contract): before borrowing on a line it sponsors, the payer sends the
+   *  borrower's `refresh(agentId)` to it (gas: estimate × 1.5 + 150 000) and waits for it. Default
+   *  `robinhood.seatVaultV5` (absent until V5 is live); `null`: never. */
+  seatVaultV5?: string | any | null;
+  /** V5's root agent id; default: read from V5's `rootId()`. */
+  seatVaultV5AgentId?: bigint | number | string;
   /** Signed authorizations are valid at most this long (≤ 600 s, the default). */
   maxValiditySeconds?: number;
   /** USDG address override (fork or test token); default the pool's usdg(), else mainnet USDG. */

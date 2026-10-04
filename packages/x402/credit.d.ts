@@ -9,14 +9,20 @@ export declare const STOCK_VAULT_ABI: string[];
 /** Why the stock vault holds new loans on a token (index = StockVault.lendStatus; "" for 0). */
 export declare const STOCK_HOLDS: readonly string[];
 
+/** The V5 seat vault's `rootId`, `refresh`, `noteDelegate`, `delegateOf` and the errors `refresh` can revert with. */
+export declare const SEAT_VAULT_V5_ABI: string[];
+
 export interface CreditContracts {
-  addresses: { pool: string; lens: string; usdg: string; registry: string; stockVault: string | null };
+  addresses: { pool: string; lens: string; usdg: string; registry: string; stockVault: string | null; seatVaultV5?: string | null; seatVaultV5AgentId?: bigint | number | string };
   pool: any;
   lens: any;
   usdg: any;
   registry: any;
   /** The stock vault contract, or null when the addresses give none. */
   stockVault: any | null;
+  /** The V5 seat vault contract, or null when the addresses give none (none until V5 is live): `borrowLine` refreshes a
+   *  line it sponsors before borrowing. */
+  seatVaultV5: any | null;
 }
 export declare function creditContracts(o: { runner: any; addresses?: Partial<CreditContracts["addresses"]> }): CreditContracts;
 export declare function poolContract(pool: string | any, runner: any): any;
@@ -61,4 +67,11 @@ export declare function quoteBorrow(c: CreditContracts, agentId: bigint | number
 export declare function borrowLine(c: CreditContracts, signer: any, agentId: bigint | number | string, amount: bigint, termSeconds: bigint | number): Promise<{ hash: string; loanId: bigint | null; principal: bigint; fee: bigint; dueAt: number | null }>;
 export declare function repayLoan(c: CreditContracts, signer: any, loanId: bigint | number | string): Promise<{ hash: string; loanId: bigint; agentId: bigint; paid: bigint }>;
 export declare function balances(c: CreditContracts, provider: any, address: string): Promise<{ address: string; usdg: bigint; native: bigint }>;
-export declare function borrowGap(o: { signer: any; pool: any; agentId?: bigint | number | string; price: bigint; balance: bigint; maxBorrow: bigint; termSeconds?: bigint | number; maxFee?: bigint; me?: string }): Promise<{ borrowed: bigint; loanId: bigint | null; dueAt: bigint | null; fee: bigint; term: bigint }>;
+export declare function borrowGap(o: { signer: any; pool: any; agentId?: bigint | number | string; price: bigint; balance: bigint; maxBorrow: bigint; termSeconds?: bigint | number; maxFee?: bigint; me?: string; seatVaultV5?: string | any | null; seatVaultV5AgentId?: bigint | number | string }): Promise<{ borrowed: bigint; loanId: bigint | null; dueAt: bigint | null; fee: bigint; term: bigint }>;
+/**
+ * Before a borrow on a line the V5 seat vault sponsors: sends the borrower's `refresh(agentId)` to V5 with gas =
+ * estimate × 1.5 + 150 000, waits for it, and checks the line covers `amount`. null (nothing sent) without
+ * `seatVaultV5` or on a line another root sponsors. Throws PayError V5_DELEGATE_NOT_NOTED / V5_DELEGATE_WAITING (a
+ * delegate key V5 has not recorded for 24 h; nothing sent), V5_REFRESH_FAILED or V5_LINE_SHORT; nothing is borrowed.
+ */
+export declare function refreshV5Line(o: { signer: any; pool: string | any; seatVaultV5?: string | any | null; seatVaultV5AgentId?: bigint | number | string; agentId: bigint | number | string; amount?: bigint }): Promise<{ hash: string; sponsor: bigint; available: bigint } | null>;
