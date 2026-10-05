@@ -20,6 +20,6 @@
     "lineCap": "250000000",
     "_why": "The owner's launch settings (2026-10-02): 26 h, 50%, $250 of open PT lines in all."
   },
-  "feed": "0x0000000000000000000000000000000000000000",
-  "feedBlock": 0
+  "feed": "0x95961f54F9c8a29A1393ADB5719053C98914B259",
+  "feedBlock": 80954002
 }
