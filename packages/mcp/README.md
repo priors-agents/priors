@@ -35,6 +35,11 @@ repaying.
 | `autopay_off(clear_budget?)` | turn Autopay off (and with `clear_budget`, set the approvals to 0) | yes |
 | `score_of(agent_id)` | any agent's on-chain score (0 to 1000) and repayment record, plus its Priors Score v2 and trust rung when published | no |
 | `find_services(query?)` | services registered with the Priors facilitator that accept USDG (`GET /merchants`), each marked as approved by Priors or self-registered and not reviewed | no |
+| `pt_quote(side, amount, slippage_bps?)` | quote buying PT-USDG with USDG, selling it before maturity or redeeming it after: what comes out at the oracle's spot rate, the minimum a trade would name, the days to maturity and the fixed APY to maturity | no |
+| `pt_position(address?)` | the wallet's (or any address's) PT-USDG: balance, what it is worth now, what it pays at maturity, and whether the Priors stock vault takes PT-USDG behind a line yet | no (with `address`) |
+| `pt_buy(amount_usdg, slippage_bps?, dry_run?)` | buy PT-USDG with the wallet's USDG through Pendle's router (at most `PRIORS_MAX_PT_USD` per call, `PRIORS_MAX_PT_TOTAL_USD` per run); `dry_run` lists the calls; needs ETH for gas | yes |
+| `pt_sell(amount_pt \| "all", slippage_bps?, dry_run?)` | sell the wallet's PT-USDG for USDG at the market, before maturity; needs ETH for gas | yes |
+| `pt_redeem(amount_pt \| "all", slippage_bps?, dry_run?)` | redeem the wallet's PT-USDG for USDG 1:1, from maturity (2027-03-25) on; needs ETH for gas | yes |
 
 Tools that move money state the amounts in their answer, are marked destructive for MCP clients, and their
 descriptions tell the assistant to confirm with you first. Merchant text (response bodies, listings, redirect targets)
@@ -68,6 +73,21 @@ on the default vault. Pointing `PRIORS_SAVINGS_VAULT` at another vault means tru
 contract whose asset is USDG); money saved in the default one stays there, and money saved in a custom one is reached
 by setting that vault again.
 
+## PT-USDG
+
+PT-USDG is Pendle's principal token for USDG on Robinhood Chain (the market maturing 2027-03-25, 00:00 UTC): bought
+below 1 USDG, it redeems for exactly 1 USDG at maturity, so a buyer held to maturity locks in a fixed yield; sold
+before then, it gets the market's rate at that moment, which can be lower. The `pt_*` tools trade it through Pendle's
+router with the same calls as the Priors SDK (`sdk/pt-usdg.mjs` and `sdk/pendle-pt.mjs`, bundled here byte for byte):
+an approval of exactly the trade's amount, right before the router call that uses it; USDG in or out directly (no
+outside aggregator, no limit orders); the PT or USDG always paid to the wallet itself; and a minimum out (the quote
+less `slippage_bps`, 1% by default): the router reverts rather than fill worse. Each call is simulated before it is
+sent and its receipt checked. The quote is the oracle's spot rate, before the trade's own price impact, so a large
+trade may need a wider margin.
+
+Once the Priors stock vault lists PT-USDG, an agent's owner can post it behind a line (`pt_position` says when);
+until then it is a token the wallet holds. `PRIORS_PT=off` removes the five tools.
+
 ## Configure
 
 The only secret is the wallet key, and it is read from the environment variable `PRIORS_KEY`, never from the command
@@ -94,6 +114,9 @@ dedicated agent wallet holding only what the agent may spend.
 | `PRIORS_V5`, `PRIORS_V5_ROOT` | the bundled deployments file's `seatVaultV5` and `seatVaultV5AgentId` (none until V5 is deployed) | SeatVaultV5 and its root's agent id: a borrow on a V5 line (the `borrow` tool, `pay_url`) refreshes it first. The agent's key may do so 24 hours after V5 recorded it (`noteDelegate`, sent for it when needed); until then a borrow goes ahead only within the line's room, and the tool says when the key can borrow more |
 | `PRIORS_MAX_AUTOPAY_USD` | `25` | the most `autopay_on` enrolls per loan (stage 0) |
 | `PRIORS_AUTOPAY_RESERVE` | on | with Autopay on, `pay_url` keeps back what loans whose window opens in the next 24 h will pull, and says so when a payment would cut into it; `off` turns that off |
+| `PRIORS_PT` | on | `off` (or `false`, `0`, `no`) removes the PT-USDG tools |
+| `PRIORS_MAX_PT_USD` | `50` | most USDG one `pt_buy` may spend (sales and redemptions only turn the wallet's PT back into USDG) |
+| `PRIORS_MAX_PT_TOTAL_USD` | `200` | most USDG `pt_buy` may spend in total while the server runs (a buy whose transaction was sent counts, even if its answer is lost) |
 | `PRIORS_STATE_DIR` | `~/.local/state/priors-mcp` | where the payments signed and not yet settled are kept (one owner-only file per wallet, never the key, with a short-lived `.lock` beside it while it is written), so a restart, a new session or another session of the same wallet resends them instead of signing again. An absolute path, or one starting with `~/` (a relative one is refused at start). A payment that cannot be written there is not sent. `off` keeps them in memory only |
 
 Contract addresses (pool, lens, registry, USDG) come from `deployments/4663.v2.json`, bundled in the package, and the
@@ -109,7 +132,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.5.0"],
+      "args": ["-y", "@priors/mcp@0.6.0"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -131,7 +154,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.5.0"],
+      "args": ["-y", "@priors/mcp@0.6.0"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -141,7 +164,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 }
 ```
 
-or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.5.0`
+or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.6.0`
 (the key is expanded by your shell from the environment; do not paste it on the command line).
 
 ## Try it

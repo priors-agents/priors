@@ -1,6 +1,7 @@
 // @priors/mcp: an MCP server that lets an AI assistant pay x402 URLs in USDG on Robinhood Chain and run a Priors
 // credit line, with the agent's spare USDG saved in a Morpho vault. Tools: pay_url, wallet_balance, credit_status,
-// stock_assets, stock_position, borrow, repay, score_of, find_services, savings, save, unsave, autopay_on, autopay_off.
+// stock_assets, stock_position, borrow, repay, score_of, find_services, savings, save, unsave, autopay_on, autopay_off,
+// and PT-USDG (Pendle's principal token for USDG): pt_quote, pt_position, pt_buy, pt_sell, pt_redeem.
 //
 // The private key comes from the environment (PRIORS_KEY) only. It is never read from argv, never logged, and never
 // part of any tool result or error: every text this server returns passes through `redact()`, which removes the key
@@ -32,6 +33,9 @@
 //   PRIORS_AUTOPAY_RESERVE "off": pay_url no longer keeps back what Autopay loans pull in the next 24 h (default on)
 //   PRIORS_STATE_DIR       where signed, unsettled payments are kept across restarts and shared by every session of the
 //                          wallet (default ~/.local/state/priors-mcp; "off": memory only)
+//   PRIORS_PT              "off": no PT-USDG tool (default on: the market is Pendle's, live on Robinhood Chain)
+//   PRIORS_MAX_PT_USD      most USDG one pt_buy may spend (default 50); sales and redemptions only turn PT back into USDG
+//   PRIORS_MAX_PT_TOTAL_USD  most USDG pt_buy may spend in total while the server runs (default 200)
 import { readFileSync, writeFileSync, mkdirSync, renameSync, openSync, closeSync, statSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -43,6 +47,10 @@ import { fetch as undiciFetch, Agent } from "undici";
 import { ethers } from "ethers";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+// PT-USDG: byte-for-byte copies of the repository's sdk/pt-usdg.mjs and sdk/pendle-pt.mjs (the calls the SDK, the
+// hosted MCP and the gas gate's check share), with their deployments/pendle.4663.json and pt-usdg.4663.json beside
+// this package's other records (scripts/test-packages.mjs fails on any drift).
+import * as P from "./pt-usdg.mjs";
 
 // @priors/x402 when installed from npm; the sibling package in the monorepo otherwise.
 async function loadX402() {
@@ -206,7 +214,12 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   // window. The cap per loan is bounded by this server (stage 0: $25); pay_url keeps back what Autopay loans pull soon.
   const maxAutopayCap = envDollars(env, "PRIORS_MAX_AUTOPAY_USD", 25);
   const reserveOn = !/^(off|false|0|no)$/i.test(String(env.PRIORS_AUTOPAY_RESERVE ?? "").trim());
-  const session = { spent: 0n, borrowed: 0n, saved: 0n };
+  // PT-USDG (Pendle's principal token for USDG, maturing 2027-03-25): on unless PRIORS_PT=off. Buys are capped per call
+  // and per process like save; a sale or a redemption turns the wallet's own PT back into USDG and has no cap.
+  const ptOn = !/^(off|false|0|no|none)$/i.test(String(env.PRIORS_PT ?? "").trim());
+  const maxPtCeiling = envDollars(env, "PRIORS_MAX_PT_USD", 50);
+  const ptTotalCap = envDollars(env, "PRIORS_MAX_PT_TOTAL_USD", 200);
+  const session = { spent: 0n, borrowed: 0n, saved: 0n, ptBought: 0n };
   const allowLocal = env.PRIORS_ALLOW_LOCAL === "1";
   const lookup = deps.lookup || ((host) => dnsLookup(host, { all: true }));
   const sleep = deps.sleep; // undefined: the library's own
@@ -558,7 +571,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   }
 
   const server = new McpServer({ name: "priors", version: VERSION }, {
-    instructions: "Priors on Robinhood Chain (chain 4663): pay x402-priced URLs in USDG, and run the agent's Priors credit line. Tools that move money (pay_url, borrow, repay, save, unsave, autopay_on, autopay_off) act immediately on mainnet: state the amounts to the user and get their go-ahead first. Spare USDG can be saved in a Morpho vault (save); pay_url and repay take it back out when the wallet is short, before any borrowing. Amounts are in US dollars of USDG.",
+    instructions: `Priors on Robinhood Chain (chain 4663): pay x402-priced URLs in USDG, and run the agent's Priors credit line. Tools that move money (pay_url, borrow, repay, save, unsave, autopay_on, autopay_off${ptOn ? ", pt_buy, pt_sell, pt_redeem" : ""}) act immediately on mainnet: state the amounts to the user and get their go-ahead first. Spare USDG can be saved in a Morpho vault (save); pay_url and repay take it back out when the wallet is short, before any borrowing.${ptOn ? ` PT-USDG (Pendle's principal token for USDG, redeemable 1:1 for USDG on ${P.PT_USDG.maturity.slice(0, 10)}) can be bought, sold and redeemed through Pendle's router (pt_quote, pt_position first).` : ""} Amounts are in US dollars of USDG.`,
   });
   const tool = (name, config, handler) => server.registerTool(name, config, async (args) => {
     try { return text(await handler(args || {})); } catch (e) { return failure(explain(e)); }
@@ -999,6 +1012,117 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     try { const s = await credit.savingsOf(wallet.address); after = ` Now ${usd(s.saved)} saved, ${usd(s.wallet)} in the wallet.`; } catch (_) { after = " (The balances could not be read just now: check the savings tool.)"; }
     return `Took ${usd(r.amount)} out of savings${r.inKind ? " (part of it from the vault's other markets, in one transaction)" : ""}. Tx ${r.hash}.${after}`;
   }));
+
+  // ---- PT-USDG: pt_quote / pt_position / pt_buy / pt_sell / pt_redeem ---------------------------------------------
+  // Pendle's principal token for USDG (the markets of deployments/pendle.4663.json: the active one, maturing 2027-03-25
+  // today, and any earlier one kept for redemption): bought with USDG, sold for USDG before maturity and redeemed 1:1 from it, through Pendle's router, with the calls sdk/pt-usdg.mjs builds (an approval of exactly the
+  // trade's amount, then the router call paying the wallet itself, with a minimum out). Like borrow and save, this server
+  // signs and sends them from the configured wallet (its own ETH pays the gas), one money call at a time; dry_run
+  // returns the calls without sending. The chain, behind one facade (tests replace it).
+  if (ptOn) {
+    const pt = deps.pt || {
+      quote: (o) => P.ptQuote(provider, o),
+      position: (addr) => P.ptPosition(provider, addr),
+      trade: (kind, o) => ({ buy: P.ptBuy, sell: P.ptSell, redeem: P.ptRedeem })[kind](provider, o),
+    };
+    const nf = (x) => Number(x).toLocaleString("en-US", { maximumFractionDigits: 6 });
+    const capText = (u) => `${X.formatUsdg(u)} USDG`;
+    const termsLine = (q) => (q.matured ? `PT-USDG matured on ${q.maturity.slice(0, 10)}: it redeems 1:1 for USDG.` : `PT-USDG trades at ${q.price.toFixed(6)} USDG and redeems 1:1 for USDG on ${q.maturity.slice(0, 10)} (${q.daysToMaturity} days): a fixed ${q.impliedApyText} a year to maturity, at the oracle's spot rate.`);
+    // the wallet's PT of other listed markets (an earlier, redeem-only one): each with what to do with it
+    const otherLines = (p) => (p.markets || []).filter((m) => m.token !== p.token && m.balance != null && m.balance > 0n).map((m) => (m.matured
+      ? `It also holds ${nf(m.balanceText)} PT-USDG of the market that matured on ${m.maturity.slice(0, 10)} (token ${m.token}): it redeems 1:1 for USDG now (pt_redeem with market ${m.market}).`
+      : `It also holds ${nf(m.balanceText)} PT-USDG of an earlier market (token ${m.token}): it redeems 1:1 for USDG from ${m.maturity.slice(0, 10)}.`));
+    const listingLine = (l) => (!l ? "The stock vault's listing could not be read just now."
+      : l.backsLines ? `The Priors stock vault takes PT-USDG behind an agent's line now, at up to ${l.ltvBps / 100}% of its value (all PT-USDG lines share one ${capText(l.lineCap)} cap): deposit it with the SDK's openPtLine(agentId, amount) or in Go mode's Backing tab.`
+      : l.listed ? "The Priors stock vault lists PT-USDG but takes no new line on it now (disabled, or the shared cap is used up)."
+      : `The Priors stock vault does not list PT-USDG yet. Once it does, PT-USDG backs an agent's line (planned: up to ${l.planned.ltvBps / 100}% of its value, one ${capText(BigInt(l.planned.lineCap))} cap for all PT-USDG lines).`);
+    const slippage = z.number().int().min(0).max(500).optional().describe("Slippage margin in basis points under the quote, 0 to 500. Default 100 (1%), 10 for a redemption.");
+    const ptAmount = z.union([z.number().positive().max(10_000_000), z.literal("all")]).describe('PT-USDG, e.g. 25.5, or "all" for the wallet\'s whole balance.');
+    const dryRun = z.boolean().optional().describe("true: only quote and list the calls, send nothing.");
+    const asked = (e) => new ToolError(clean(e?.shortMessage || e?.message || String(e), 300));
+    const callsText = (b) => b.calls.map((c, i) => `${i + 1}. ${c.what}: to ${c.to}, data ${c.data}`).join("\n");
+    const minLine = (b) => `The router call names a minimum out of ${nf(b.quote.minOutText)} ${b.quote.tokenOut} (the quote ${nf(b.quote.expectedOutText)}, less ${b.quote.slippageBps / 100}%): it reverts rather than fill worse. The quote is the oracle's spot rate, before the trade's own price impact.`;
+
+    tool("pt_quote", {
+      title: "Quote a PT-USDG trade",
+      description: "Quote buying PT-USDG (Pendle's principal token for USDG on Robinhood Chain, redeemable 1:1 for USDG at its maturity) with USDG, selling it before maturity, or redeeming it after: what comes out at the oracle's spot rate, the minimum a trade would name, the days to maturity and the fixed APY a buyer locks in. Read-only.",
+      inputSchema: { side: z.enum(["buy", "sell", "redeem"]).describe("buy: USDG in, PT-USDG out. sell: PT-USDG in, USDG out, before maturity. redeem: PT-USDG in, USDG out 1:1, from maturity."), amount: z.number().positive().max(10_000_000).describe("USDG to spend (buy), or PT-USDG to sell or redeem."), slippage_bps: slippage },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    }, async ({ side, amount, slippage_bps }) => {
+      let q;
+      try { q = await pt.quote({ side, amount, slippageBps: slippage_bps }); } catch (e) { throw asked(e); }
+      return [termsLine(q), `${nf(q.amountInText)} ${q.tokenIn} -> about ${nf(q.expectedOutText)} ${q.tokenOut} (at least ${nf(q.minOutText)} with a ${q.slippageBps / 100}% margin).`,
+        side === "buy" ? `Held to maturity it pays ${nf(q.atMaturityText)} USDG, ${nf(q.fixedGainText)} USDG more than it costs.` : "",
+        `pt_${side} ${side === "buy" ? `spends it from this server's wallet (at most ${capText(maxPtCeiling)} a call, PRIORS_MAX_PT_USD)` : "sends it from this server's wallet"}; dry_run: true lists the calls first.`].filter(Boolean).join("\n");
+    });
+
+    tool("pt_position", {
+      title: "A wallet's PT-USDG",
+      description: "Show a wallet's PT-USDG on Robinhood Chain: its balance, what it is worth now at the oracle's spot rate, what it pays at maturity, the days left and the fixed APY to maturity; and whether the Priors stock vault takes PT-USDG behind an agent's line. Defaults to the configured wallet; any address works without a key. Read-only.",
+      inputSchema: { address: z.string().optional().describe("0x address to check; default: the configured wallet.") },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    }, async ({ address }) => {
+      const addr = address ?? wallet?.address;
+      if (!addr) throw new ToolError("No wallet is configured (PRIORS_KEY is not set): pass an address to check.");
+      if (!ethers.isAddress(addr)) throw new ToolError(`not an address: ${clean(addr, 80)}`);
+      let p;
+      try { p = await pt.position(ethers.getAddress(addr)); } catch (e) { throw asked(e); }
+      return [`${p.account}${wallet && p.account === wallet.address ? " (this server's wallet)" : ""} holds ${nf(p.balanceText)} PT-USDG${p.balance > 0n ? `, worth ${nf(p.valueText)} USDG now and ${nf(p.atMaturityText)} USDG at maturity` : ""}.`, termsLine(p), ...otherLines(p), listingLine(p.listing)].join("\n");
+    });
+
+    /** One trade from the configured wallet: the SDK's calls, sent in order (each simulated, then waited for). */
+    async function ptTrade(kind, amount, slippage_bps, dry_run, market) {
+      const signer = needWallet(`pt_${kind}`);
+      let units = null;
+      if (kind === "buy") {
+        units = dollars(amount, "amount_usdg");
+        if (units === 0n) throw new ToolError("amount_usdg must be above zero");
+        if (units > maxPtCeiling) throw new ToolError(`amount_usdg ${X.formatUsdg(units)} is above this server's ceiling of ${usd(maxPtCeiling)} per buy (PRIORS_MAX_PT_USD).`);
+        if (!dry_run && session.ptBought + units > ptTotalCap) throw new ToolError(`this would bring what pt_buy spent in this session to ${usd(session.ptBought + units)}, above ${usd(ptTotalCap)} (PRIORS_MAX_PT_TOTAL_USD).`);
+      }
+      const o = { account: signer.address, amount: units ?? amount, slippageBps: slippage_bps, ...(market ? { market } : {}) };
+      if (dry_run) {
+        let b;
+        try { b = await pt.trade(kind, o); } catch (e) { throw asked(e); }
+        return [termsLine(b.quote), `Nothing was sent. From ${b.account}, ${b.calls.length} call${b.calls.length > 1 ? "s" : ""} in order:`, callsText(b), minLine(b), ...b.warnings.map((w) => `Note: ${w}.`)].join("\n");
+      }
+      // what left the wallet is counted even when the answer is lost: a send that started may have landed
+      const sent = [];
+      const counting = { getAddress: async () => signer.address, sendTransaction: async (tx) => { const r = await signer.sendTransaction(tx); sent.push(r.hash); return r; } };
+      if (units !== null) session.ptBought += units;
+      let r;
+      try { r = await pt.trade(kind, { ...o, wallet: counting }); } catch (e) {
+        if (sent.length === 0 && units !== null) session.ptBought -= units;
+        if (sent.length) throw new ToolError(`${sent.length} transaction${sent.length > 1 ? "s were" : " was"} sent (${sent.join(", ")}), then: ${clean(e?.shortMessage || e?.message || String(e), 300)}. Check pt_position and wallet_balance before trying again.`);
+        throw asked(e);
+      }
+      const done = kind === "buy" ? `Bought about ${nf(r.quote.expectedOutText)} PT-USDG (at least ${nf(r.quote.minOutText)}) with ${usd(units)}`
+        : kind === "sell" ? `Sold ${nf(r.quote.amountInText)} PT-USDG for about ${nf(r.quote.expectedOutText)} USDG (at least ${nf(r.quote.minOutText)})`
+        : `Redeemed ${nf(r.quote.amountInText)} PT-USDG for ${nf(r.quote.expectedOutText)} USDG`;
+      return [`${done}, from and to ${r.account}. Tx ${r.hashes.join(", ")}.`, kind === "buy" ? termsLine(r.quote) : "", ...r.warnings.filter((w) => !/sponsorship/.test(w)).map((w) => `Note: ${w}.`)].filter(Boolean).join("\n");
+    }
+
+    tool("pt_buy", {
+      title: "Buy PT-USDG with USDG",
+      description: `Buy PT-USDG (Pendle's principal token for USDG, redeemable 1:1 for USDG on ${P.PT_USDG.maturity.slice(0, 10)}) with the configured wallet's USDG, through Pendle's router: an approval of exactly that USDG, then the swap, paying the PT-USDG to this wallet with a minimum out. Held to maturity it pays a fixed amount of USDG; sold earlier, it gets the market's rate then, which can be lower. Moves real money: quote it (pt_quote), state the amount and what it buys to the user and get their go-ahead first; dry_run: true lists the calls without sending. Needs ETH for gas.`,
+      inputSchema: { amount_usdg: z.number().positive().describe("USDG to spend, in US dollars (required, no default)."), slippage_bps: slippage, dry_run: dryRun },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    }, serial(async ({ amount_usdg, slippage_bps, dry_run }) => ptTrade("buy", amount_usdg, slippage_bps, dry_run)));
+
+    tool("pt_sell", {
+      title: "Sell PT-USDG for USDG",
+      description: "Sell the configured wallet's PT-USDG for USDG at the market, before maturity, through Pendle's router: an approval of exactly that PT-USDG, then the swap, paying the USDG to this wallet with a minimum out. Moves real money: quote it (pt_quote), state the amount to the user and get their go-ahead first; dry_run: true lists the calls without sending. Needs ETH for gas.",
+      inputSchema: { amount_pt: ptAmount, slippage_bps: slippage, dry_run: dryRun },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    }, serial(async ({ amount_pt, slippage_bps, dry_run }) => ptTrade("sell", amount_pt, slippage_bps, dry_run)));
+
+    tool("pt_redeem", {
+      title: "Redeem PT-USDG for USDG",
+      description: `Redeem the configured wallet's PT-USDG for USDG 1:1, from its maturity (${P.PT_USDG.maturity.slice(0, 10)}) on, through Pendle's router: an approval of exactly that PT-USDG, then the redemption to this wallet. By default the PT of the oldest matured market the wallet holds (an earlier market's included); \`market\` names one (pt_position lists them). Before maturity it says to sell instead. State the amount to the user and get their go-ahead first; dry_run: true lists the calls without sending. Needs ETH for gas.`,
+      inputSchema: { amount_pt: ptAmount, slippage_bps: slippage, dry_run: dryRun, market: z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional().describe("Optional: the market (or its PT) to redeem, as pt_position lists it. Default: the oldest matured market the wallet holds PT of.") },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    }, serial(async ({ amount_pt, slippage_bps, dry_run, market }) => ptTrade("redeem", amount_pt, slippage_bps, dry_run, market)));
+  }
 
   // ---- find_services -------------------------------------------------------------------------------------------
   tool("find_services", {

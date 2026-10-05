@@ -1,0 +1,25 @@
+{
+  "_what": "The PT-USDG collateral track on the live StockVault (docs/PT-USDG.md). Read by script/DeployPtFeed.s.sol (the feed's constructor and its checks), the keeper (ops/pt-usdg-keeper.mjs, once `feed` is set) and ops/2026-10-02-pt-usdg-safe-txs.md. Pendle's addresses were read on chain 4663 on 2026-10-02 (market.readTokens(), PT.expiry(), decimals()); the deploy script reads them again and refuses to deploy if any differs.",
+  "chainId": 4663,
+  "market": "0xc2b89e6eca583e2c232201ac557e9be58af55f4c",
+  "pt": "0x6982e39521A070a3C40782548bfBED6Dc8F566ef",
+  "sy": "0x8d3127aAbf76F95fE2970A0480B8662B4ad4C286",
+  "yt": "0xF35Ee6bd9A93fE42BC7e628BFC4DDbdc6DE1f615",
+  "usdg": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+  "pyLpOracle": "0x5542be50420E88dd7D5B4a3D488FA6ED82F6DAc2",
+  "expiry": 1805932800,
+  "expiryUtc": "2027-03-25T00:00:00Z",
+  "ptDecimals": 6,
+  "rateBps": 600,
+  "safe": "0x20c6816B2419616238772591965E6E9AbE493fD5",
+  "stockVault": "0xbEcd07EC689988e16b870C121756C4c2C8cb02B6",
+  "setAsset": {
+    "maxAge": 93600,
+    "enabled": true,
+    "ltvBps": 5000,
+    "lineCap": "250000000",
+    "_why": "The owner's launch settings (2026-10-02): 26 h, 50%, $250 of open PT lines in all."
+  },
+  "feed": "0x0000000000000000000000000000000000000000",
+  "feedBlock": 0
+}

@@ -1,0 +1,21 @@
+{
+  "_what": "Pendle's router on Robinhood Chain and the PT-USDG markets Priors trades through it, for buying, selling and redeeming PT-USDG (sdk/pendle-pt.mjs, gas-worker/gate.mjs, mcp-worker/tools.mjs, and the pages through scripts/build-site.mjs's generated pt-markets.js). From pendle-core-v2-public deployments/4663-core.json and the Pendle API, read 2026-10-05: the API's own routes for USDG to PT and PT to USDG on the 2027-03-25 market call swapExactTokenForPt (0xc81f847a) and swapExactPtForToken (0x594a88cc) on this router, with no outside aggregator.",
+  "_markets": "Every market Priors trades or has traded, oldest first. status \"active\": bought and sold (until its expiry) and redeemed after it; at most one market is active. \"redeem-only\": a matured or retired market, redeemed only, after its expiry, so holders can always cash out through Priors. A new market is listed by adding its entry as active and setting the old one to redeem-only, never by editing addresses in place (docs/PT-USDG.md, \"Rollover at maturity\"). pyLpOracle: Pendle's PY/LP oracle for the market's spot rate (the top-level one unless the entry names its own).",
+  "chainId": 4663,
+  "router": "0x888888888889758F76e7103c6CbF23ABbF58F946",
+  "routerStatic": "0x6813d43782395A1F2AAb42f39aeEDE03ac655e09",
+  "usdg": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+  "pyLpOracle": "0x5542be50420E88dd7D5B4a3D488FA6ED82F6DAc2",
+  "maxUsdgPerOp": "2000000000",
+  "_maxUsdgPerOp": "The most USDG one sponsored buy may spend, and the most PT one sponsored sale may sell (6 decimals both): 2,000. The market moved 0.09% per 1,000 USDG and 0.76% per 10,000 on 2026-10-01 (reports/Pendle integration for Priors.md).",
+  "markets": [
+    {
+      "market": "0xc2b89e6eca583e2c232201ac557e9be58af55f4c",
+      "pt": "0x6982e39521A070a3C40782548bfBED6Dc8F566ef",
+      "sy": "0x8d3127aAbf76F95fE2970A0480B8662B4ad4C286",
+      "yt": "0xF35Ee6bd9A93fE42BC7e628BFC4DDbdc6DE1f615",
+      "expiry": 1805932800,
+      "status": "active"
+    }
+  ]
+}
