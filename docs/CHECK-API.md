@@ -82,8 +82,14 @@ getSummary(agentId, [0x613854463BB854225306b9b18bdb451A78430a73], "priors-score"
 ```
 
 Each entry is the Priors Score v2 as `value` (0 decimals), `tag1` `priors-score`, `tag2` `rung-<n>/v<weights version>`
-(for example `rung-0/v2.0.1`), and `feedbackURI` this API's record of the agent. The attester checks once an hour and
-posts when an agent first has a score above 0, when it defaults (value 0), when its rung or the weights version
-changes, when the score moves by 25 points or more, or when an entry is 30 days old and the score differs. It revokes
+(for example `rung-0/v2.0.1`). Since 2026-10-05 (attestation v2) `feedbackURI` is a `data:application/json;base64,`
+URI holding the note's own file (the agent's line at a block, its on-time repayments with their transactions, and the
+pool's payment to it as `proofOfPayment`) and `feedbackHash` is keccak256 of the file's bytes: see
+[ATTESTATION-v2.md](ATTESTATION-v2.md), and check a note from the chain alone with
+`node scripts/verify-attestation.mjs <agentId>`. An older entry (a defaulted agent's 0 among them) points at this API's
+record of the agent, with `feedbackHash` 0. The attester checks once an hour and posts when an agent first has a score
+above 0, when it defaults (value 0), when its rung or the weights version changes, when the score moves by 25 points
+or more, when its line opens, closes or moves by a quarter and at least 1 USDG, or when an entry is 30 days old and
+the score differs. It revokes
 its previous entry first, so there is one live entry per agent and the summary is that score. No entry means no Priors
 score yet. The entry can lag the API by up to an hour, and by under 25 points.

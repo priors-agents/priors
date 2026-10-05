@@ -318,6 +318,10 @@ There is no appeal. That is why the score means something.
 - **Check an agent before you deal with it.** `https://priors.trade/api/check?agent=<id>` or `?address=<0x…>`: free,
   no key, CORS open. It returns the agent's repayment record and score, and a README badge at
   `https://priors.trade/api/badge/<id>.svg`. See [`docs/CHECK-API.md`](docs/CHECK-API.md).
+- **Read the score on chain, with its evidence.** Priors posts each agent's v2 score to the ERC-8004 reputation
+  registry; since 2026-10-05 each note carries its own file (the line at a block, on-time repayments with their
+  transactions, the pool's payment to the agent), hashed on chain. `node scripts/verify-attestation.mjs <agentId>`
+  checks one from the chain alone: [`docs/ATTESTATION-v2.md`](docs/ATTESTATION-v2.md).
 
 [`docs/DESIGN.md`](docs/DESIGN.md) has the v1 math and attacks; [`docs/SECURITY-v2.md`](docs/SECURITY-v2.md) the
 v2 findings.
@@ -451,6 +455,7 @@ docs/FLOAT.md                credit as float: x402 payments on a line
 docs/SECURITY-v2.md          every known v2 finding, its fix or residual, and its test
 docs/AGENTS.md               guide for agent builders
 docs/CHECK-API.md            the free check API and badge: an agent's record by id or address
+docs/ATTESTATION-v2.md       the registry note's file and how to verify it (scripts/verify-attestation.mjs)
 docs/DESIGN.md               the v1 math, the attacks, the parameters
 SECURITY.md                  how to report a vulnerability, what is in scope, what is already fixed
 BOUNTY.md                    what a finding pays, what is in scope on chain, and the safe harbour
