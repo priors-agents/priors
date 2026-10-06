@@ -29,7 +29,8 @@ Other v2 changes:
 - **Consent.** A line needs the agent owner's EIP-712 signature (domain `Priors Credit`, version `2`). Nobody can
   vouch for your agent against your will, which closes v1's squat.
 - **Handoff.** An agent can move to another sponsor whenever no loan is open, so no sponsor is stuck forever.
-- **Timelock.** The pool's owner is a 48 h `TimelockController` (the Safe proposes and executes, no admin). The
+- **Timelock.** Since 2026-10-06 the pool's owner is the `PoolSteward`, which only the 48 h `TimelockController` can
+  call (the Safe proposes and executes, no admin), and only within a fixed policy on the fee split and the reserve. The
   Safe is the guardian: it can pause new risk for at most 14 days at a time, and exits never pause.
 - **History carried.** Every v1 record was imported (`importFromV1`), so repayments, volume and enrolment date
   survive; lines do not, as with every migration.
@@ -40,7 +41,7 @@ Other v2 changes:
 |---|---|
 | Loan size · term | $5 – $500 · 1 – 30 days |
 | Fee | 1% per 30 days, pro rata, plus the sponsor's premium (0 for treasury and seat lines; at most 2% per 30 days) |
-| Fee split | 60% lenders · 25% sponsor · 15% reserve |
+| Fee split | 50% lenders · 25% sponsor · 25% reserve |
 | Grace before anyone can mark a default | 3 days |
 | Qualified loan (counts for the score) | term ≥ 7 days |
 | `keeperBounty` | **0** (see [SECURITY-v2.md](SECURITY-v2.md), F-1) |

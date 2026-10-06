@@ -43,13 +43,13 @@ Reviews are cheap to fake. Repaid debt isn't.
 > **What v2 changes.** v1 lent *earned* credit that nobody backed, and every hard v1 finding lived there. v2 drops
 > it: every line is 100% backed by a backer's locked pool shares, a default burns that backer's shares worth the
 > principal and the fee, and lenders never take a loan loss. Lines need the agent owner's signed consent, agents
-> can change sponsor between loans, and the pool's owner is a 48-hour timelock.
+> can change sponsor between loans, and the pool's owner is the PoolSteward, which only a 48-hour timelock can drive.
 >
 > **Four ways onto the ledger.** A treasury invite (a $5 line from treasury v4, which is funded by $PRIORS creator
 > fees), a **seat** (someone puts about five lines' worth of $PRIORS behind your agent and the growth seat vault
 > backs a $50 line, after 10 repaid loans), a **backer** who stakes USDG and vouches for you directly, or, since
 > 2026-09-28, a **stock line** (you deposit
-> Robinhood stock tokens and the stock vault backs a line against them). Lenders deposit USDG and earn 60% of every
+> Robinhood stock tokens and the stock vault backs a line against them). Lenders deposit USDG and earn 50% of every
 > fee.
 >
 > **What was found before launch, and fixed.** A self-backing loop that took lender yield (fixed with a fee lock),
@@ -304,7 +304,7 @@ There is no appeal. That is why the score means something.
   $10+ of stake and vouch with consent, at a premium of up to 2% per 30 days. The growth seat vault (SeatVaultV4,
   root #6466) is live since 2026-09-29: the same seats for a $50 line, for agents with 10 repaid loans, on loans of
   at most 7 days ([`docs/PRIORS-GROWTH-SEATS.md`](docs/PRIORS-GROWTH-SEATS.md)).
-- **One money loop.** Loan fees split 60 / 25 / 15 between lenders, the sponsor, and the reserve.
+- **One money loop.** Loan fees split 50 / 25 / 25 between lenders, the sponsor, and the reserve.
 - **A score that is a pure function of the record.** `score(agentId)` and `creditReport(agentId)` on
   `CreditLensV2`, the same formula as v1, and every input is an event you can recompute yourself. Score v1 is
   dollar-days: principal × how long you actually held it (capped at the contracted term), summed over repaid loans
@@ -333,7 +333,7 @@ v2 findings.
 | Loan size | $5 – $500 |
 | Term | 1 – 30 days |
 | Fee | 1% per 30 days, pro rata, plus the sponsor's premium (0 on treasury and seat lines) |
-| Fee split | 60% lenders · 25% sponsor · 15% reserve |
+| Fee split | 50% lenders · 25% sponsor · 25% reserve |
 | Lender hold period | 7 days. Withdrawing sooner leaves **0.5%** behind for the lenders who stayed |
 | Grace before anyone can default you | 3 days |
 | Counts as a qualified loan at | 7 days |
@@ -343,7 +343,7 @@ v2 findings.
 | Growth seats (`SeatVaultV4`, root #6466; live since 2026-09-29) | seat ≈ 5 lines of $PRIORS (120,000 at deployment, resized by its own SeatSizer within [110,000, 20,000,000]) · line $50 · 50% burnt on default · agent needs 10 repaid loans · loans of at most 7 days · 20 open seats · seat expires after 30 idle days · $1,000 of new lines per 7-day epoch · protocol seats closed |
 | Stock lines (`StockVault`, root #6424) | 35 stock tokens · line 25-50% of the deposit's value by token, plus up to 15 points for a record of repaid treasury credit, never above 70% · at most $250 a line · $1,000 of new lines per 7-day epoch · $1,000 of open lines per token ($500 on CRCL, CRWV, NBIS, RGTI, SNDK, USAR) · whole deposit seized on default · idle after 30 days (7 if never drawn) |
 | Minimum root stake | $10 |
-| Pool owner | 48 h `TimelockController` (the Safe proposes and executes, no admin); the Safe is guardian (pause ≤ 14 days, exits never pause) |
+| Pool owner | `PoolSteward` since 2026-10-06 (no owner, not upgradeable), which only the 48 h `TimelockController` can call (the Safe proposes and executes, no admin), within a fixed policy: sponsor ≤ 25%, reserve ≤ 40%, lenders ≥ 35%, fee ≤ 2% per 30 days; the Safe is guardian (pause ≤ 14 days, exits never pause) |
 
 ## Robinhood Chain
 
@@ -356,7 +356,8 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | **TreasurySponsorV4** (live, root `#6228`, invite-gated) | `0x0c5091235A25bBFD3F5a009cBe04120D0CBAD573` |
 | **SeatVaultV3** (live since 2026-09-25, root `#6234`) | `0x59D155C42A9263fA7596867b992bB3e84dF680a9` |
 | SeatVaultV2 (retired and paused, root `#6229`; replaced by V3 for audit V-2) | `0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F` |
-| TimelockController (owns the pool, 48 h) | `0x5d984C274035F81BB327d532897a902C5125F87c` |
+| PoolSteward (owns the pool since 2026-10-06; only the timelock can call it) | `0x6D9D4135417E0AB2aafc69Fc842525Af279a5Da8` |
+| TimelockController (drives the PoolSteward, 48 h) | `0x5d984C274035F81BB327d532897a902C5125F87c` |
 | **SeatSizer** (owns the seat vault since 2026-09-26; resizes the seat from the $PRIORS price, within bounds) | `0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61` |
 | **SeatVaultV4**, the growth seat vault (live since 2026-09-29, root `#6466`) | `0xb1c3a04496238D62E3c93118C297163855e22192` |
 | SeatSizer of the growth seat vault (owns it; the Safe owns the sizer) | `0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777` |

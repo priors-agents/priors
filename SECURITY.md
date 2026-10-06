@@ -221,8 +221,9 @@ The levers we do hold, and how fast they move:
   `pauseSeats`, `freezeSeat`, `retire`), so those need two signatures and no delay. The same
   goes for the stock vault (`setAsset`, `setParams`, `pause`, `freezePosition`, `writeOff`, `retire`) and its
   ProxyAdmin (`upgradeAndCall`).
-- **Slow on purpose:** the pool's owner is a 48-hour `TimelockController` (the Safe proposes and executes, no
-  admin). `setParams`, `withdrawReserve` and the other owner calls are visible on chain for two days before they
-  can run. No owner call reaches lender deposits or a backer's locked shares.
+- **Slow on purpose:** the pool's owner is the `PoolSteward` (since 2026-10-06), which only a 48-hour
+  `TimelockController` can call (the Safe proposes and executes, no admin). `setParams`, `withdrawReserve` and the
+  other owner calls are visible on chain for two days before they can run, and the steward refuses a fee split or a
+  reserve withdrawal outside its fixed policy. No owner call reaches lender deposits or a backer's locked shares.
 
 Expect a pause first and a migration later.

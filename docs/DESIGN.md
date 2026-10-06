@@ -49,7 +49,7 @@ A single rule keeps liability from leaking: **a non-root may delegate at most `e
 
 - Size `minLoan..maxLoan` (defaults $5 to $500), term `minTerm..maxTerm` (1 to 30 days).
 - Fee is flat per loan: `principal × feeBps × term / 30 days` (default 1% per 30 days).
-- Every fee is split three ways on repayment: lenders (60%), the borrower's sponsor (25%, claimable with `claimSponsorFees`), and the first-loss reserve (15%). A root's own loans and recourse loans have no sponsor share; it goes to lenders. Vouching for a reliable agent is therefore an income, and every repayment grows the reserve that backs earned credit.
+- Every fee is split three ways on repayment: lenders (50%), the borrower's sponsor (25%, claimable with `claimSponsorFees`), and the first-loss reserve (25%). A root's own loans and recourse loans have no sponsor share; it goes to lenders. Vouching for a reliable agent is therefore an income, and every repayment grows the reserve that backs earned credit.
 - Anyone can repay any loan. Repayment records go to the borrower regardless of who paid.
 - After `dueAt + grace`, anyone can call `markDefault`. There is no partial default and no cure period after that.
 
@@ -158,6 +158,6 @@ The original score, version 0, since superseded by `ScoreLib` v1 (dollar-days; R
 | maxEarned | $250 | per agent |
 | minSeasoning | 1d | |
 | minStake | $10 | to enroll as root |
-| sponsorFeeBps / protocolFeeBps | 2500 / 1500 | fee split; the rest goes to lenders |
+| sponsorFeeBps / protocolFeeBps | 2500 / 2500 | fee split; the rest goes to lenders |
 
 All owner-settable through `setParams`. The pool can be paused (no new credit; repayments and lender withdrawals always work).
