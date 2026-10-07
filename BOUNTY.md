@@ -5,9 +5,10 @@ we will not do to you for looking.
 
 ## Read this first: the size of the thing
 
-The v2 pool holds **about $3,440 of assets** (lender deposits and backers' locked stake, $749 of it lent out) plus
-a reserve of about $196, read from the chain on 2026-09-29; about $1,015 of that stake is the stock vault's, which
-holds no stock deposit yet. That is the whole protocol, today. We are telling you
+The v2 pool holds **about $3,697 of assets** (lender deposits and backers' locked stake, $863 of it lent out) plus
+a reserve of about $216, read from the chain on 2026-10-07 (`totalAssets()`, `totalPrincipalOut()`, `reserve()`); about
+$1,030 of that stake is the stock vault's free backing, not yet behind a line (`freeBacking(6424)`). That is the whole
+protocol, today. We are telling you
 that up front because a bounty page that implies millions are at stake, from a contract holding a few thousand
 dollars, is asking you to spend a week of your time under false pretences.
 
@@ -65,7 +66,13 @@ The v2 contracts on Robinhood Chain (chain 4663), live since block 71,702,460, a
 | `SeatSizer` of `SeatVaultV3` (owns it; the Safe owns the sizer) | [`0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61`](https://robinhoodchain.blockscout.com/address/0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61) |
 | `SeatVaultV4`, the growth seat vault (root `#6466`; live since 2026-09-29) | [`0xb1c3a04496238D62E3c93118C297163855e22192`](https://robinhoodchain.blockscout.com/address/0xb1c3a04496238D62E3c93118C297163855e22192) |
 | `SeatSizer` of the growth seat vault (owns it; the Safe owns the sizer) | [`0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777`](https://robinhoodchain.blockscout.com/address/0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777) |
-| `TimelockController` (48 h; drives `PoolSteward` `0x6D9D4135417E0AB2aafc69Fc842525Af279a5Da8`, the pool's owner since 2026-10-06) | [`0x5d984C274035F81BB327d532897a902C5125F87c`](https://robinhoodchain.blockscout.com/address/0x5d984C274035F81BB327d532897a902C5125F87c) |
+| `TimelockController` (48 h; drives the steward, and owns the stock vault's ProxyAdmin since 2026-10-07) | [`0x5d984C274035F81BB327d532897a902C5125F87c`](https://robinhoodchain.blockscout.com/address/0x5d984C274035F81BB327d532897a902C5125F87c) |
+| `PoolSteward` (`src/PoolSteward.sol`), the pool's owner since 2026-10-06, and its daily `sweep()` | [`0x6D9D4135417E0AB2aafc69Fc842525Af279a5Da8`](https://robinhoodchain.blockscout.com/address/0x6D9D4135417E0AB2aafc69Fc842525Af279a5Da8) |
+| `RevenueRouter` (`src/RevenueRouter.sol`), the sweep's and the vaults' fees' destination | [`0xb2E217C5841a968C48Eee41DCbF7D2a03cCA4F43`](https://robinhoodchain.blockscout.com/address/0xb2E217C5841a968C48Eee41DCbF7D2a03cCA4F43) |
+| `BuyAndBack` (`src/BuyAndBack.sol`), engine 1 | [`0xEe40675aBEC90E52211526845433C10c80fD569E`](https://robinhoodchain.blockscout.com/address/0xEe40675aBEC90E52211526845433C10c80fD569E) |
+| `PriorsLiquidity` (`src/PriorsLiquidity.sol`), engine 2 | [`0xbEC159832D05749557F3f972c4823979C8dC8451`](https://robinhoodchain.blockscout.com/address/0xbEC159832D05749557F3f972c4823979C8dC8451) |
+| `SwapLimiter` (`src/SwapLimiter.sol`), the engines' depth guard | [`0x4535b1d92ebBe8176463dE4b58Ca9B66A231eb0E`](https://robinhoodchain.blockscout.com/address/0x4535b1d92ebBe8176463dE4b58Ca9B66A231eb0E) |
+| `KeeperHelper` (`src/KeeperHelper.sol`), SeatSizerV4's keeper since 2026-10-06 | [`0x3Ba233d2ac1C6233C5fA954C2DaaD83fcCFE5372`](https://robinhoodchain.blockscout.com/address/0x3Ba233d2ac1C6233C5fA954C2DaaD83fcCFE5372) |
 | `InviteBond` (the bond an automatic invite needs) | [`0x8BE478c754D9124D11e78dB20F5bf4dA45403275`](https://robinhoodchain.blockscout.com/address/0x8BE478c754D9124D11e78dB20F5bf4dA45403275) |
 | `StockVault`, the stock vault (root `#6424`; live since 2026-09-28): the proxy users call | [`0xbEcd07EC689988e16b870C121756C4c2C8cb02B6`](https://robinhoodchain.blockscout.com/address/0xbEcd07EC689988e16b870C121756C4c2C8cb02B6) |
 | its implementation (`src/StockVault.sol`) | [`0xC16f7230b79Fb7dB3b1761A23e9d56365300B2A4`](https://robinhoodchain.blockscout.com/address/0xC16f7230b79Fb7dB3b1761A23e9d56365300B2A4) (since 2026-10-04) |
@@ -83,8 +90,8 @@ scope on the same terms: the MCP server is read-only and holds no key, so a way 
 secret is a finding.
 
 **The Telegram invite bot** (`@priors_agents_bot`) is in scope for **public credit only, no payout**, whatever the
-severity. Its inviter key only signs first-line invites, and the treasury caps what those can draw each week
-($25), so the worst a bot bug can cost is bounded by that cap. A path around the treasury's cap itself is a
+severity. Its inviter key only signs first-line invites, and the treasury, which the Safe tops up by hand, caps the new
+lines it vouches each week ($100, `rules().epochCap`), so the worst a bot bug can cost is bounded by that cap. A path around the treasury's cap itself is a
 contract finding and is paid as one, and so is a way to get a treasury line without the bond `InviteBond` is
 meant to hold.
 
@@ -93,8 +100,12 @@ meant to hold.
 - **Anything needing the owner's Safe or the timelock.** The Safe is a 2-of-3 and it can change rules, through
   the 48 h timelock for the pool; that is the design, not a finding. "The owner could set a bad parameter" is not
   a bug. That includes upgrading the stock vault: its ProxyAdmin
-  (`0x5174A18550a295cd25aF59416a56B7e4c38C8Afc`) is owned by the Safe with no timelock, and an upgrade can move what
-  the vault holds; depositors trust the Safe for that.
+  (`0x5174A18550a295cd25aF59416a56B7e4c38C8Afc`) is owned by the 48 h timelock since 2026-10-07 (by the Safe before),
+  so an upgrade is scheduled in public and runs 48 hours later at the earliest, and an upgrade can move what the vault
+  holds; depositors trust the Safe for that, with two days to see it coming. It also includes the steward's 48-hour,
+  public handback of the pool to the timelock, which leaves its policy by design. The steward's daily `sweep()`, which
+  anyone can call with no timelock, is in scope the other way round: a sweep that moves more than its rule (the reserve
+  above its target, never below the hard floor, only to the `RevenueRouter`) is a finding.
 - **The Robinhood stock tokens, their issuer's powers** (pause, block, burn, upgrade) **and Chainlink's price feeds.**
   Not ours. How the stock vault copes with them (its price and pause holds, a burn shared pro rata) is in scope.
 - **USDG, the $PRIORS token and the ERC-8004 identity registry.** Not ours; how our contracts handle them is in scope.

@@ -80,8 +80,7 @@ contract DeployPtFeed is Script {
         console.log("Safe call, once 14 days of rounds exist: StockVault", c.stockVault);
         console.logBytes(
             abi.encodeCall(
-                StockVault.setAsset,
-                (c.pt, address(feed), uint64(c.maxAge), true, uint16(c.ltvBps), uint128(c.lineCap))
+                StockVault.setAsset, (c.pt, address(feed), uint64(c.maxAge), true, uint16(c.ltvBps), uint128(c.lineCap))
             )
         );
     }
@@ -115,7 +114,9 @@ contract DeployPtFeed is Script {
         PtLinearDiscountFeed feed = PtLinearDiscountFeed(vm.parseJsonAddress(vm.readFile(path), ".feed"));
         require(address(feed).code.length != 0, "no code at the config's feed");
         PtLinearDiscountFeed fresh = new PtLinearDiscountFeed(IPPrincipalToken(c.pt), c.rateBps, c.safe); // local only
-        require(keccak256(address(feed).code) == keccak256(address(fresh).code), "deployed bytecode differs from the build");
+        require(
+            keccak256(address(feed).code) == keccak256(address(fresh).code), "deployed bytecode differs from the build"
+        );
         _checkFeed(c, feed);
         console.log("bytecode matches the build, codehash:");
         console.logBytes32(address(feed).codehash);

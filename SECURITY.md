@@ -49,7 +49,12 @@ the affected function and your own severity assessment. We cannot evaluate, prio
 | `src/SeatVaultV4.sol` | the growth seat vault (live since 2026-09-29): V3's seats plus the slash split, protocol seats and their eligibility, and the loan-term cap |
 | `src/SeatSizer.sol` | the owner of each seat vault (one for V3, one for V4): price observations, resizing within bounds, the Safe's `execute` |
 | `src/InviteBond.sol` | the 5 USDG bond behind an automatic treasury invite |
-| `src/StockVault.sol`, `src/StockVaultProxy.sol` | the stock vault (live since 2026-09-28): positions, prices and lending holds, lines and their loan-to-value, seizure, the owner's bounded powers; upgradeable only by the Safe |
+| `src/StockVault.sol`, `src/StockVaultProxy.sol` | the stock vault (live since 2026-09-28): positions, prices and lending holds, lines and their loan-to-value, seizure, the owner's bounded powers; upgradeable only through the 48 h timelock, which owns its ProxyAdmin since 2026-10-07 (the Safe did before) |
+| `src/PoolSteward.sol` | the pool's owner since 2026-10-06: decodes every owner call from the 48 h timelock against its fixed policy (fee split bounds, the reserve's hard floor), the 48 h public handback, and the daily `sweep()` anyone can call |
+| `src/RevenueRouter.sol` | where the steward's sweep and the seat and stock vaults' fees go, and how it splits them |
+| `src/BuyAndBack.sol`, `src/PriorsLiquidity.sol` | the two engines the router funds: buying $PRIORS on its Pons pool, and its liquidity |
+| `src/SwapLimiter.sol`, `src/libraries/PoolDepth.sol`, `src/libraries/EngineMath.sol` | the depth guard on every engine swap, and the math both engines use |
+| `src/KeeperHelper.sol`, `src/GuardianPause.sol` | the keeper's one entry point (SeatSizerV4's price and the limiter's depth snapshot), and the guardian pause the engines share |
 | `sdk/`, `bin/` | the SDK, the x402 float client and the CLIs, including anything that could sign or broadcast wrongly |
 | `packages/x402`, `packages/mcp` | the npm payer (`@priors/x402`) and the local MCP server (`@priors/mcp`), including anything that could pay, borrow or repay wrongly |
 | The live v2 deployment | addresses are in `deployments/4663.v2.json` and the README's *Robinhood Chain* table |
@@ -127,9 +132,12 @@ than trusting this file. It does not read the v2 record: for v2, compare each ad
 zeroed, metadata stripped). The v2 set matched on 2026-09-25; `seatVaultV4` and `seatSizerV4` matched on
 2026-09-29, and so did V3's `seatSizer`. For the stock vault the record holds the proxy (`StockVaultProxy`): what
 matches `forge build` of `src/StockVault.sol` is the implementation behind it (its ERC-1967 implementation slot):
-`0x32F1c32A8bdDCd72B18A4f97dc815F50099ad0A5` since the upgrade of 2026-10-01, which matched that day (before it,
+`0xC16f7230b79Fb7dB3b1761A23e9d56365300B2A4` since the upgrade of 2026-10-04, which matched on 2026-10-07 (before it,
+`0x32F1c32A8bdDCd72B18A4f97dc815F50099ad0A5` from the upgrade of 2026-10-01, matched that day;
 `0x8Be04c08De0158c88F84875DAe181054c30734fA` matched on 2026-09-30 and the first one,
-`0xF781b2634254d7819E9E17BfFc9D18C54C32008b`, on 2026-09-29).
+`0xF781b2634254d7819E9E17BfFc9D18C54C32008b`, on 2026-09-29). The six protocol contracts (`poolSteward`,
+`revenueRouter`, `buyAndBack`, `priorsLiquidity`, `swapLimiter`, `keeperHelper` in the record) matched `forge build`
+of `src/` on 2026-10-07, immutables masked and the metadata hash included.
 
 An independent rediscovery of a fixed issue is still worth telling us about, and we will say so and
 credit the work. It is not a new finding.
@@ -195,8 +203,9 @@ public. Draining the live pool to prove a point is not good-faith research.
 
 **Our own contracts are not upgradeable, except the stock vault.** No proxy, no initialiser, no admin hatch in
 anything under `src/` but `StockVault` (since 2026-09-28), which sits behind a Transparent proxy
-(`StockVaultProxy`) whose ProxyAdmin the 2-of-3 Safe owns: a bug there can be fixed by an upgrade from the Safe,
-and an upgrade could also move what the vault holds ([docs/SECURITY-v2.md](docs/SECURITY-v2.md), "StockVault").
+(`StockVaultProxy`) whose ProxyAdmin the 48 h timelock owns since 2026-10-07 (the 2-of-3 Safe did before): a bug
+there can be fixed by an upgrade the Safe schedules on the timelock, which runs 48 hours later at the earliest, and an
+upgrade could also move what the vault holds ([docs/SECURITY-v2.md](docs/SECURITY-v2.md), "StockVault").
 Everywhere else, fixing a real bug means deploying a new pool and migrating state, which has been done more than
 once (on v1, then from v1 to v2) and is not cheap — so a confirmed finding may take longer to close than a
 proxy-based protocol would need. The delay is the architecture, not us ignoring you.
@@ -219,11 +228,30 @@ The levers we do hold, and how fast they move:
   never pause. The Safe owns treasury v4 (`setRules`, `setInviter`, `freeze`, `retire`) directly, and each seat
   vault, V3 and the growth vault V4, through the SeatSizer that owns it (`execute`: `setParams`, `setGates`,
   `pauseSeats`, `freezeSeat`, `retire`), so those need two signatures and no delay. The same
-  goes for the stock vault (`setAsset`, `setParams`, `pause`, `freezePosition`, `writeOff`, `retire`) and its
-  ProxyAdmin (`upgradeAndCall`).
+  goes for the stock vault's settings (`setAsset`, `setParams`, `pause`, `freezePosition`, `writeOff`, `retire`), but
+  not its code: its ProxyAdmin (`upgradeAndCall`) is the timelock's since 2026-10-07. Treasury v4 caps new lines at $100
+  a week (`rules().epochCap`) and is topped up by hand by the Safe; the token's creator fees are not routed to it.
 - **Slow on purpose:** the pool's owner is the `PoolSteward` (since 2026-10-06), which only a 48-hour
   `TimelockController` can call (the Safe proposes and executes, no admin). `setParams`, `withdrawReserve` and the
   other owner calls are visible on chain for two days before they can run, and the steward refuses a fee split or a
-  reserve withdrawal outside its fixed policy. No owner call reaches lender deposits or a backer's locked shares.
+  reserve withdrawal outside its fixed policy. That policy is not a lock: the Safe can leave it, but only through a
+  48-hour, public handback (`transferOwnership` back to the timelock). No owner call reaches lender deposits or a
+  backer's locked shares. The same timelock now gates a stock vault upgrade.
+- **Rule-bound, no timelock:** once a day anyone can call `PoolSteward.sweep()`. It sends the reserve above its target
+  (the larger of 190 USDG and 10% of principal out; at or under the target, half of what arrived since the last
+  sweep) to the `RevenueRouter`, never below the hard floor (the larger of 190 USDG and 2% of principal out) and
+  nothing under 25 USDG. The destination is fixed; the Safe, as guardian, can pause the sweep. A sweep that moves
+  more than that rule, or anywhere else, is a finding.
+
+### Who holds which key
+
+| Key | Holder | What it can do | What bounds it |
+|---|---|---|---|
+| Safe, 2-of-3 | three signers (`0x20c6816B2419616238772591965E6E9AbE493fD5`) | proposes, executes and cancels everything on the timelock; pauses the pool, the sweep, the router and the engines as guardian; owns treasury v4, the seat sizers and the stock vault's settings | two signatures per transaction; no timelock on the treasury, the seat sizers or the stock vault's settings; every transaction is public |
+| Timelock, 48 h | `TimelockController` (`0x5d984C274035F81BB327d532897a902C5125F87c`); the Safe is its only proposer, executor and canceller | everything the pool's owner can do (through the steward), the router's split, the swap limiter's settings, a stock vault upgrade (it owns the ProxyAdmin `0x5174A18550a295cd25aF59416a56B7e4c38C8Afc`) | each call waits 48 hours after it is scheduled, in public; the Safe can cancel it |
+| PoolSteward | contract (`0x6D9D4135417E0AB2aafc69Fc842525Af279a5Da8`), owner of the pool | the pool's owner calls, decoded against its policy; the daily `sweep()` | not upgradeable and ownerless; its policy holds until a 48-hour, public handback |
+| Keeper | one EOA (`0xDC2A212fA0EB52eB0Eccbbb0fE5C082FCB1F67bf`), the only caller of `KeeperHelper` (`0x3Ba233d2ac1C6233C5fA954C2DaaD83fcCFE5372`) | records the $PRIORS price that sizes the growth vault's seats and the pool depth the swap limiter reads | moves no funds; within the sizer's bounds; the Safe can name a new keeper at once |
+| Inviter | the invite bot's key, named by the Safe with `setInviter` | signs treasury invites: a never-enrolled identity's $5 first line | the treasury's $100 of new lines a week; the bot asks for a 5 USDG bond first, but a leaked key could seat agents without one, up to that cap; the Safe can replace it at once |
+| Attester | one EOA (`0x613854463BB854225306b9b18bdb451A78430a73`) | posts and revokes Priors' score notes on the ERC-8004 reputation registry | no pool role and no funds; every note can be checked against the record (`scripts/verify-attestation.mjs`) |
 
 Expect a pause first and a migration later.

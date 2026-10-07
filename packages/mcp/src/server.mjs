@@ -787,7 +787,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
 
   tool("score_of", {
     title: "Priors score of an agent",
-    description: "Look up any agent's Priors score (0 to 1000) and repayment record on Robinhood Chain: a public, on-chain credit record that cannot be faked, plus the open Priors Score v2 and its trust rung when published. Useful before trusting or paying an agent. Read-only.",
+    description: "Look up any agent's Priors score (0 to 1000) and repayment record on Robinhood Chain: a public record built from on-chain repayments, plus the open Priors Score v2 and its trust rung when published. Useful before trusting or paying an agent. Read-only.",
     inputSchema: { agent_id: z.number().int().nonnegative().describe("Priors (ERC-8004) agent id.") },
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, async ({ agent_id }) => {

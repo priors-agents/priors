@@ -67,7 +67,8 @@ bash scripts/check-public.sh  # fails if any credential reached a tracked file
 
 - Solidity 0.8.26, Foundry, `optimizer_runs = 200`; `CreditPoolV2` alone compiles via-IR at `optimizer_runs = 1`
   (a per-file restriction in `foundry.toml`) to fit 24 KB. Contracts are non-upgradeable, except `StockVault`
-  (behind `StockVaultProxy`, upgraded only by the Safe through its ProxyAdmin): a source change only reaches users
+  (behind `StockVaultProxy`, upgraded only through its ProxyAdmin, which the 48 h timelock owns since 2026-10-07): a
+  source change only reaches users
   through a new deployment or that upgrade. `src/` for deployed contracts must stay byte-identical to what was
   verified on chain (`forge fmt` skips `src/StockVault.sol` for that reason; never format it).
 - `sdk/priors-v2.mjs` (v2) and `sdk/priors.mjs` (v1) are the contract surfaces (ABIs included);

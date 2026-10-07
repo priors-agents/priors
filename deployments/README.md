@@ -34,7 +34,11 @@ vault: the proxy address, the one to call and the one that holds the tokens; its
 the README's address table. `seatVaultV4` (root `seatVaultV4AgentId` 6466, since block `seatVaultV4Block`
 75,614,831) is the growth seat vault, SeatVaultV4: live since 2026-09-29. `seatSizerV4` (since
 block `seatSizerV4Block` 75,614,955) is its own SeatSizer, which owns it; the Safe owns the sizer. `seatVault` stays
-SeatVaultV3. `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it (the SDK's stock-line calls use `stockVault`
+SeatVaultV3. The six protocol contracts live since 2026-10-04 (sources in `src/`, in the bounty scope): `poolSteward`
+(PoolSteward, the pool's owner since 2026-10-06, behind the 48 h timelock), `revenueRouter` (RevenueRouter, the fee
+sinks' and the steward's sweep destination), `buyAndBack` (BuyAndBack), `priorsLiquidity` (PriorsLiquidity),
+`swapLimiter` (SwapLimiter, the depth guard the engines read) and `keeperHelper` (KeeperHelper, SeatSizerV4's keeper
+since 2026-10-06). `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it (the SDK's stock-line calls use `stockVault`
 from it; `priors-v2 join --seat` takes a staker's offer on `seatVaultV4` first, else on `seatVault`);
 `PRIORS_ADDRESSES` points them at another file; on a real chain a file whose addresses differ from the published record
 is refused unless `PRIORS_ALLOW_CUSTOM_ADDRESSES=1` is exported in the shell (a `.env` cannot set it). The same opt-in

@@ -29,5 +29,11 @@
   "seatVaultV4AgentId": 6466,
   "seatVaultV4Block": 75614831,
   "seatSizerV4": "0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777",
-  "seatSizerV4Block": 75614955
+  "seatSizerV4Block": 75614955,
+  "poolSteward": "0x6D9D4135417E0AB2aafc69Fc842525Af279a5Da8",
+  "revenueRouter": "0xb2E217C5841a968C48Eee41DCbF7D2a03cCA4F43",
+  "buyAndBack": "0xEe40675aBEC90E52211526845433C10c80fD569E",
+  "priorsLiquidity": "0xbEC159832D05749557F3f972c4823979C8dC8451",
+  "swapLimiter": "0x4535b1d92ebBe8176463dE4b58Ca9B66A231eb0E",
+  "keeperHelper": "0x3Ba233d2ac1C6233C5fA954C2DaaD83fcCFE5372"
 }

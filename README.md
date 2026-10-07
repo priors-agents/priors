@@ -6,7 +6,9 @@
 [![ci](https://github.com/priors-agents/priors/actions/workflows/ci.yml/badge.svg)](https://github.com/priors-agents/priors/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-**Reputation for AI agents that can't be faked, because it's earned by repaying real money.**
+**Reputation for AI agents that is earned, public and recomputable: every point is real money held at risk for real time, and anyone can rebuild the number from the events.**
+
+Reviews are cheap to fake. Priors keeps a public record built from on-chain repayments, and [Score v2](docs/SCORE-v2.md) counts only debt someone else put at risk. It is not unfakeable: the score's own page lists what each attack costs and what still gets through.
 
 - **What it is:** an on-chain credit pool on Robinhood Chain where [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004)
   AI agents borrow USDG, repay it, and build a public credit record and score anyone can check. This repo has the
@@ -363,8 +365,13 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | SeatSizer of the growth seat vault (owns it; the Safe owns the sizer) | `0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777` |
 | **StockVault** (live since 2026-09-28, root `#6424`; lines against stock tokens; a Transparent proxy, `StockVaultProxy`) | `0xbEcd07EC689988e16b870C121756C4c2C8cb02B6` |
 | StockVault implementation (behind the proxy; since 2026-10-04) | `0xC16f7230b79Fb7dB3b1761A23e9d56365300B2A4` |
-| StockVault ProxyAdmin (owned by the Safe; the only way to upgrade the vault) | `0x5174A18550a295cd25aF59416a56B7e4c38C8Afc` |
-| Safe (2-of-3; proposes to the timelock, owns treasury v4 and both SeatSizers, so every other seat vault power, and the stock vault and its ProxyAdmin) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
+| StockVault ProxyAdmin (the only way to upgrade the vault; owned by the 48 h timelock since 2026-10-07, by the Safe before) | `0x5174A18550a295cd25aF59416a56B7e4c38C8Afc` |
+| Safe (2-of-3; proposes to the timelock, owns treasury v4 and both SeatSizers, so every other seat vault power, and the stock vault's settings) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
+| RevenueRouter (the steward's sweep and the vaults' fees go here) | `0xb2E217C5841a968C48Eee41DCbF7D2a03cCA4F43` |
+| BuyAndBack (engine 1) | `0xEe40675aBEC90E52211526845433C10c80fD569E` |
+| PriorsLiquidity (engine 2) | `0xbEC159832D05749557F3f972c4823979C8dC8451` |
+| SwapLimiter (the engines' depth guard) | `0x4535b1d92ebBe8176463dE4b58Ca9B66A231eb0E` |
+| KeeperHelper (SeatSizerV4's keeper since 2026-10-06; the keeper key's one entry point) | `0x3Ba233d2ac1C6233C5fA954C2DaaD83fcCFE5372` |
 | InviteBond (the bond an automatic invite needs; no admin) | `0x8BE478c754D9124D11e78dB20F5bf4dA45403275` |
 | ERC-8004 Identity Registry | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
 | USDG (Robinhood's 6-decimal dollar, the pool asset) | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
@@ -426,7 +433,14 @@ src/SeatSizer.sol            owns a seat vault: keeps the seat at ~5 lines of $P
 src/SeatVaultV2.sol          the previous seat vault (retired; V3 closes audit V-2)
 src/InviteBond.sol           the bond behind an automatic invite: back after seasoning, to the Safe on default
 src/StockVault.sol           lines against Robinhood stock tokens: per-token LTV, lending holds, seizure on default (live)
-src/StockVaultProxy.sol      the stock vault's Transparent proxy; its ProxyAdmin (the Safe's) alone upgrades it
+src/StockVaultProxy.sol      the stock vault's Transparent proxy; its ProxyAdmin (the timelock's since 2026-10-07) alone upgrades it
+src/PoolSteward.sol          the pool's owner since 2026-10-06: the timelock's calls against a fixed policy, the daily sweep
+src/RevenueRouter.sol        where the sweep and the vaults' fees go, and their split
+src/BuyAndBack.sol           engine 1: buys $PRIORS on its Pons pool
+src/PriorsLiquidity.sol      engine 2: $PRIORS liquidity
+src/SwapLimiter.sol          the engines' depth guard (src/libraries/PoolDepth.sol, EngineMath.sol)
+src/KeeperHelper.sol         the keeper key's one entry point: SeatSizerV4's price and the limiter's depth snapshot
+src/GuardianPause.sol        the guardian pause the engines share
 src/CreditPool.sol           v1 pool (paused; its records were imported into v2)
 src/TreasurySponsor.sol      v1 treasury (v3)
 src/ReserveFunder.sol        v1 creator-fee sweep into the reserve
@@ -479,8 +493,8 @@ bash scripts/check-public.sh   # fails if a credential ever reached a tracked fi
 
 `CreditPoolV2` compiles with via-IR at `optimizer_runs = 1` to fit the 24 KB limit (a per-file restriction in
 `foundry.toml`); everything else compiles as before. Contracts are non-upgradeable, except the stock vault: a
-source change only reaches users through a new deployment, or, for `StockVault`, an upgrade by the Safe through its
-ProxyAdmin. `src/StockVault.sol` stays byte-identical to the source verified on chain, so `forge fmt` skips it.
+source change only reaches users through a new deployment, or, for `StockVault`, an upgrade through its ProxyAdmin,
+which the 48 h timelock owns since 2026-10-07 (the Safe schedules it in public). `src/StockVault.sol` stays byte-identical to the source verified on chain, so `forge fmt` skips it.
 
 ## Honest risks
 
