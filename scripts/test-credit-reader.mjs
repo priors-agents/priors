@@ -544,6 +544,17 @@ await t("located entries instead of a registry scan: each read from its receipt;
   assert.match(probs(r), /entry 4: feedbackHash is not keccak256 of the file/);
 });
 
+await t("a node's error that names its URL (a paid node's URL carries its key) never reaches a reported problem", async () => {
+  const SECRET = "https://node.example/key-0123456789abcdef";
+  const p = new ethers.JsonRpcProvider("http://127.0.0.1:9", 4663, { staticNetwork: true, batchMaxCount: 1 });
+  p.send = async () => { throw new Error(`request to ${SECRET} failed, reason: connect ECONNREFUSED`); }; // not an ethers error: no shortMessage
+  const W = "0x03af41aEb1EEa4DA0572bbb6AB1B4c5331F17aC7";
+  const r = await readCredit(p, 7, { writers: [W], locate: { [W]: [{ txHash: "0x" + "a".repeat(64) }] }, history: p, funds: false });
+  const text = JSON.stringify(r);
+  assert.ok(r.writers[0].problems.length > 0, "the failure is reported");
+  for (const s of ["node.example", "key-0123", "https://"]) assert.ok(!text.includes(s), `the result names ${s}: ${text.slice(0, 300)}`);
+});
+
 srv.close();
 console.log(`\n${passed} passed${failed.length ? `, ${failed.length} failed:\n  ${failed.join("\n  ")}` : ""}`);
 process.exit(failed.length ? 1 : 0);

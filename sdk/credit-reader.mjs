@@ -35,7 +35,10 @@ const nf = new ethers.Interface([NEW_FEEDBACK]);
 const tf = new ethers.Interface([TRANSFER]);
 const lc = (a) => String(a || "").toLowerCase();
 const big = (v) => BigInt(String(v ?? 0));
-const msg = (x) => String(x?.shortMessage || x?.message || x).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, 200);
+// an error's text, without any URL: a paid node's URL carries its key, and an error that is not ethers' own (a fetch
+// failure) quotes it in its message; what is left goes into problems a reader may show anyone
+const URL_RE = /[a-z][a-z0-9+.-]*:\/\/[^\s"'<>),\]]+/gi;
+const msg = (x) => String(x?.shortMessage || x?.message || x).replace(URL_RE, "<url>").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, 200);
 const keyOf = (s) => `${Number(s.chainId)}:${lc(s.contract)}`;
 const zero = () => ({ count: 0, amount: "0" });
 
