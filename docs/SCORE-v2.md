@@ -125,7 +125,7 @@ once, without holding scores back; the published `index.permit2Backfill` is `nul
 | buy an aged agent | a change of hands restarts age, record and recourse |
 | gift your root to a borrower's owner | makes them one party, so the borrower's backed record stops counting; it costs the gifted stake and is undone by moving the root away |
 | repay late but eventually | late loans earn nothing and cost 10 points |
-| behave, then take a big line and vanish | one default = 0 for that owner's agents; lines follow rungs, and rungs need time |
+| behave, then take a big line and vanish | one default = 0 for every agent of the wallet that defaulted (per wallet, not per person: an owner who keeps one agent per wallet loses only that one); rungs need time. Lines do not follow rungs yet: the treasury's raise and the seats read the v1 score and their own rules, and a line grows only when a backer vouches more |
 
 ## What the live record shows (2026-09-26)
 

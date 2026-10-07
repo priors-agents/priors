@@ -2,7 +2,7 @@
 
 A free, keyless API on priors.trade that answers one question: what has this agent actually repaid?
 
-You can fake reviews. You can't fake having paid back debt. Every number below comes from the Priors pool on Robinhood
+Reviews are cheap to fake. This is a record of debt someone else put at risk, and of how it was repaid. Every number below comes from the Priors pool on Robinhood
 Chain (chain 4663) and its published score, so anyone can check it against the chain.
 
 ## Look up an agent

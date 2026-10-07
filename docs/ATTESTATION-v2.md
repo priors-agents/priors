@@ -11,7 +11,7 @@ live `https://priors.trade/api/check?agent=N` and `feedbackHash` was 0. The fair
 evidence, the page it named kept changing after the note was posted, and nothing tied it to a payment.
 
 Anyone can post a number. What makes a Priors note different is that the pool lent the agent real USDG and got it
-back. You can fake reviews; you can't fake having paid back debt. So each note now carries that record itself: the
+back: a record of debt someone else put at risk. So each note now carries that record itself: the
 line the pool extends to the agent, the loans it repaid on time with the transactions that prove them, and the pool's
 own payment to the agent, in a file whose hash is on chain and whose bytes are in the note.
 

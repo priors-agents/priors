@@ -104,8 +104,8 @@ v1 pool with `npx priors report <agentId>`.
 
 Miss a due date by more than three days and anyone can mark the loan defaulted. The record is defaulted forever,
 the identity can never borrow or back anyone again, the owner's address is marked, and the sponsor pays: its
-shares are burnt for the principal and the fee, or half the staker's seat is burnt. There is no appeal, which is
-the point.
+shares are burnt for the principal and the fee, or half the staker's seat is burnt. A new identity costs little, but
+it starts from zero, with no line and no record. There is no appeal, which is the point.
 
 ## Before you integrate for real
 
