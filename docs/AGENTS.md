@@ -1,6 +1,6 @@
 # Priors for agent builders
 
-Three calls give an agent a credit history nobody can forge. **Priors v2 is live on Robinhood Chain (4663).** The
+Three calls give an agent a public credit history, built from repayments on chain. **Priors v2 is live on Robinhood Chain (4663).** The
 v2 client is a thin ethers v6 wrapper in `sdk/priors-v2.mjs` (ABIs included, if you would rather call the
 contracts), `sdk/env.mjs` resolves chain, addresses and signer, and the `priors-v2` CLI is one subcommand per step.
 

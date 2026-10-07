@@ -46,7 +46,7 @@ No key, no account, CORS open, cached for 30 seconds. Send exactly one of `agent
       "links": { "badge": "https://priors.trade/api/badge/437.svg", "page": "https://priors.trade/agent?id=437" }
     }
   ],
-  "attestations": { "chain": "eip155:4663", "registry": "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63", "attester": "0x613854463bb854225306b9b18bdb451a78430a73" }
+  "attestations": { "chain": "eip155:4663", "registry": "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63", "attester": "0x613854463bb854225306b9b18bdb451a78430a73", "creditWriter": "0x03af41aeb1eea4da0572bbb6ab1b4c5331f17ac7" }
 }
 ```
 
@@ -93,3 +93,15 @@ or more, when its line opens, closes or moves by a quarter and at least 1 USDG, 
 the score differs. It revokes
 its previous entry first, so there is one live entry per agent and the summary is that score. No entry means no Priors
 score yet. The entry can lag the API by up to an hour, and by under 25 points.
+
+### Its loans, as credit statements
+
+The score is Priors' opinion. The loans themselves are posted as ERC-8004 credit statements
+([ERC-8004-CREDIT.md](ERC-8004-CREDIT.md)) from a second address that owns no agent and never revokes:
+**`0x03af41aEb1EEa4DA0572bbb6AB1B4c5331F17aC7`** (also in `attestations.creditWriter`). Each statement commits to every
+loan the agent closed in a block window, chained to the one before; anyone can rebuild it from the pools' own logs:
+
+```bash
+node scripts/verify-credit.mjs <agentId> --writer 0x03af41aEb1EEa4DA0572bbb6AB1B4c5331F17aC7 --full \
+  --sources docs/erc-8004-credit/priors-manifest.json
+```

@@ -1,0 +1,40 @@
+{
+  "0x03af41aEb1EEa4DA0572bbb6AB1B4c5331F17aC7": {
+    "sources": [
+      {
+        "chainId": 4663,
+        "contract": "0x0259889e6EBab1a18CeE7e62Bc5B9648FB6C44e5",
+        "blocks": [
+          68593823,
+          71713001
+        ],
+        "events": {
+          "open": "Borrowed(uint256 indexed loanId, uint256 indexed agentId, uint256 principal, uint256 fee, uint64 dueAt, address to)",
+          "repaid": "Repaid(uint256 indexed loanId, uint256 indexed agentId, uint256 principal, uint256 fee, address payer)",
+          "defaulted": "Defaulted(uint256 indexed loanId, uint256 indexed agentId, uint256 principal, uint256 liableSponsor, uint256 badDebt)"
+        },
+        "fields": {
+          "amount": "principal",
+          "dueAt": "dueAt"
+        }
+      },
+      {
+        "chainId": 4663,
+        "contract": "0x281210097f0de7A8FB6F87310AF0f089c9C8DE21",
+        "blocks": [
+          71702460,
+          null
+        ],
+        "events": {
+          "open": "Borrowed(uint256 indexed loanId, uint256 indexed agentId, uint256 indexed sponsorId, uint256 principal, uint256 fee, uint64 dueAt, address to)",
+          "repaid": "Repaid(uint256 indexed loanId, uint256 indexed agentId, uint256 principal, uint256 fee, address payer)",
+          "defaulted": "Defaulted(uint256 indexed loanId, uint256 indexed agentId, uint256 indexed sponsorId, uint256 principal, uint256 sharesBurnt, address owner)"
+        },
+        "fields": {
+          "amount": "principal",
+          "dueAt": "dueAt"
+        }
+      }
+    ]
+  }
+}
