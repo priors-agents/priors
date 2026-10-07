@@ -469,6 +469,12 @@ async function readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, 
   });
 }
 
+/** A read-only JSON-RPC provider for `readCredit` (one request at a time, the chain fixed): for a caller that has a
+ *  node's URL and no ethers of its own, such as a Worker. It holds no key and can sign nothing. */
+export function readProvider(url, chainId = 4663) {
+  return new ethers.JsonRpcProvider(String(url), ethers.Network.from(Number(chainId)), { staticNetwork: true, batchMaxCount: 1 });
+}
+
 /**
  * An agent's credit history, by writer, checked. `writers`: the lenders' writer addresses the reader trusts (null:
  * every writer found is reported, none is trusted). `fromBlock`: required, the block to read the registry from.
