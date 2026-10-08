@@ -83,6 +83,12 @@ A line sponsored by SeatVaultV5 is raised only by `refresh(agentId)` on V5, from
 and `pay` do this first; a key V5 has not recorded is recorded then, and borrows only within the line's current room
 until its 24 hours have run. See [PARTICIPATE.md](PARTICIPATE.md), "A line sponsored by SeatVaultV5".
 
+**A key for the agent.** `setDelegate(agentId, key)` on the pool lets another key borrow, repay and leave for the
+agent (the agent page's Owner actions set it; the Priors account names the agent's key for you). It is bound to the
+owner who named it: it does nothing while another wallet holds the agent, and it acts again if the agent comes back
+to that owner. Before you sell or transfer an agent, clear it (`setDelegate(agentId, 0x0000000000000000000000000000000000000000)`),
+and name a new key when you take an agent back.
+
 ## 3. Grow
 
 After three qualified loans, fourteen days on the ledger, a score of 100 and a clean record, anyone can call
