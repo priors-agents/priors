@@ -24,9 +24,13 @@
 //                 The sources are also scanned past the last statement, to the block read at: what closed and opened
 //                 there is reported (`after`, not counted), and a default there that no default entry of the writer
 //                 reports fails the writer, so a writer that stops posting cannot leave a later default out.
-// Not checked: the class split (the lender's claim), the lender's honesty about whom it lends to, and sources a writer
-// never declares unless the reader gives a `manifest`. A reader chooses which writers it trusts (`writers`), as
-// ERC-8004's getSummary requires; `counted` adds up, by asset, only trusted writers whose chains were rebuilt.
+// Not checked: the class split (the lender's claim), the lender's honesty about whom it lends to, and, unless the reader
+// gives a `manifest` naming the writer, which contracts are the lender's: without one, a source the writer never
+// declares is not seen, and a source it declares is rebuilt as it stands, so a writer key can declare a contract of
+// its own whose logs record loans that never happened (with money moved for the anchors only) and its statements
+// rebuild exactly. A reader chooses which writers it trusts (`writers`), as ERC-8004's getSummary requires; with a
+// manifest, a trusted writer the manifest does not name fails. `counted` adds up, by asset, only trusted writers
+// whose chains were rebuilt against the reader's manifest (each writer's `manifest` says whether one named it).
 import { ethers } from "ethers";
 import * as P from "./credit-profile.mjs";
 import { REPUTATION_REGISTRY, REGISTRY_ABI, NEW_FEEDBACK } from "./attestation.mjs";
@@ -450,12 +454,18 @@ const hours = (s) => (s < 48 * 3600 ? `${(Math.max(0, s) / 3600).toFixed(1)} hou
 
 const sumInto = (t, x) => { for (const k of ["onTime", "late", "defaulted", "recovered"]) { t[k].count += x[k].count; t[k].amount = (big(t[k].amount) + big(x[k].amount)).toString(); } };
 
-/** One writer's entries for one agent, checked. `asOf`: () => the block read at, { block, time }. */
-async function readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, manifest, maxEntries, maxQueries, located = [], asOf }) {
+/** A trusted writer the reader's manifest does not name: read as it declares its sources, it would quietly lose every
+ *  manifest check, so it fails. */
+const notNamed = (writer) => `the reader's manifest does not name writer ${writer}: its sources cannot be checked against the manifest`;
+
+/** One writer's entries for one agent, checked. `asOf`: () => the block read at, { block, time }. `manifest`: the
+ *  reader's manifest entry for this writer, or null; `unnamed`: the reader has a manifest that does not name this
+ *  writer, and trusts it. */
+async function readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, manifest, unnamed = false, maxEntries, maxQueries, located = [], asOf }) {
   const checked = mode === "full" ? "rebuilt" : "sampled";
-  const result = (o) => ({ writer, lender: null, asset: null, decimals: null, token: null, statements: 0, defaults: 0, window: null, after: null, checked, claimed: P.chainTotals([]), anchorsChecked: 0, ...o });
+  const result = (o) => ({ writer, lender: null, asset: null, decimals: null, token: null, statements: 0, defaults: 0, window: null, after: null, checked, manifest: Boolean(manifest), claimed: P.chainTotals([]), anchorsChecked: 0, ...o });
   if (list.length > maxEntries) return result({ status: "failed", ok: false, problems: [`${list.length} credit entries, over the reader's limit of ${maxEntries}: not checked`] });
-  const problems = [...located];
+  const problems = [...(unnamed ? [notNamed(writer)] : []), ...located];
   const opened = list.map((e) => openEntry(e));
   for (const o of opened) {
     const fb = await retry(() => reg.readFeedback(id, o.entry.client, o.entry.index));
@@ -535,8 +545,10 @@ export function readProvider(url, chainId = 4663) {
  * every writer found is reported, none is trusted). `fromBlock`: required, the block to read the registry from.
  * `mode`: "light" samples (anchors and defaults), "full" rebuilds every statement from its sources' logs. `funds`: also
  * check the asset moved for the sampled loans, and the token's decimals. `manifest`: the sources the reader trusts each
- * writer to have ({ "<writer>": { sources } }, see readManifest). `provider` reads the registry; `history` (default:
- * the same) reads the lenders' logs, receipts, block times and the token.
+ * writer to have ({ "<writer>": { sources } }, see readManifest): a writer it names is checked against those sources
+ * (they pin its sources); a trusted writer it does not name fails; any other writer is read as it declares its
+ * sources. `provider` reads the registry; `history` (default: the same) reads the lenders' logs, receipts, block times
+ * and the token.
  * `locate`: for a reader that cannot scan the registry's logs, each writer's entries as the caller located them,
  * { "<writer>": [{ txHash, blockNumber?, logIndex? }] } or async (agentId as a decimal string, writer) => that list.
  * Needs `writers`; `fromBlock` is then unused. Each entry is read from its receipt and the list must be complete
@@ -545,18 +557,22 @@ export function readProvider(url, chainId = 4663) {
  * `toBlock`: the block to read at (default: the latest the endpoints have). `maxRequests`: the RPC requests one read
  * may make, every writer and both endpoints together (LIMITS.requests): a writer checked past it fails, not checked.
  *
- * Returns { agentId (decimal string), mode, asOf, writers: [...], counted, totals }. `asOf`: the block read at,
- * { block, time }, or null when no writer has a statement. Each writer: { writer, lender, asset, decimals, token,
- * statements, defaults, window, after, checked, status, ok, claimed, problems, anchorsChecked }, where
- * `status` is "rebuilt" (full mode, nothing wrong), "sampled" (light mode, nothing wrong in what it checked: the totals
- * are the writer's claims), "failed" (a problem) or "no-data" (no statement; `writers` lists every requested writer,
- * found or not), and `claimed` holds the writer's totals, up to its last statement. `after`: what lies after the last
+ * Returns { agentId (decimal string), mode, funds, manifest (whether the reader gave one), asOf, writers: [...],
+ * counted, totals }. `asOf`: the block read at, { block, time }, or null when no writer has a statement. Each writer:
+ * { writer, lender, asset, decimals, token, statements, defaults, window, after, checked, manifest, status, ok,
+ * claimed, problems, anchorsChecked }, where `manifest` is true when the reader's manifest names this writer (its
+ * sources were the manifest's) and false when its sources are the ones it declares; `status` is "rebuilt" (full mode,
+ * nothing wrong: the statements match the logs of the sources checked, which without a manifest are the writer's
+ * choice), "sampled" (light mode, nothing wrong in what it checked: the totals are the writer's claims), "failed" (a
+ * problem) or "no-data" (no statement; `writers` lists every requested writer, found or not), and `claimed` holds the
+ * writer's totals, up to its last statement. `after`: what lies after the last
  * statement, in no statement and never counted, { fromBlock, toBlock (asOf's), since (the last window's toTime),
  * closed, opened }: `closed` ({ onTime, late, defaulted, recovered }) and `opened` ({ count, amount }) as rebuilt from
  * the sources' logs in full mode, null in light mode (not read); `after` is null without a statement. A default there
  * that no default entry of the writer reports is a problem (full mode). `counted`: { [asset]: totals } over trusted
- * writers whose chains were rebuilt; light mode counts nothing. `totals`: `counted`'s one asset (zeros when nothing is
- * counted), or null when the counted writers lend in different assets.
+ * writers whose chains were rebuilt against the reader's manifest; light mode counts nothing, and neither does a read
+ * without a manifest naming the writer (a writer key can declare a contract of its own). `totals`:
+ * `counted`'s one asset (zeros when nothing is counted), or null when the counted writers lend in different assets.
  */
 export async function readCredit(provider, agentId, { writers = null, fromBlock, toBlock = null, mode = "light", funds = true, span = 100_000, registry = REPUTATION_REGISTRY, history = provider, log = () => {}, manifest = null, maxEntries = LIMITS.entries, maxQueries = LIMITS.queries, maxRequests = LIMITS.requests, locate = null } = {}) {
   if (mode !== "light" && mode !== "full") throw new TypeError(`mode is "light" or "full", not ${mode}`);
@@ -598,19 +614,27 @@ export async function readCredit(provider, agentId, { writers = null, fromBlock,
   }
   const net = Number((await hp.getNetwork()).chainId);
   const reg = new ethers.Contract(registry, REGISTRY_ABI, rp);
+  const trust = new Set((trusted || []).map(lc));
+  // with a manifest, a trusted writer it does not name fails: read as it declares its sources, it would lose every
+  // manifest check without a word
+  const unnamed = (w) => Boolean(man) && trust.has(lc(w)) && !man.has(lc(w));
   const out = [];
   for (const [writer, list] of byWriter) {
     try {
-      out.push(await readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, manifest: man?.get(lc(writer)) || null, maxEntries, maxQueries, located: early.get(writer) || [], asOf }));
+      out.push(await readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, manifest: man?.get(lc(writer)) || null, unnamed: unnamed(writer), maxEntries, maxQueries, located: early.get(writer) || [], asOf }));
     } catch (x) {
-      out.push({ writer, lender: null, asset: null, decimals: null, token: null, statements: 0, defaults: 0, window: null, after: null, checked: mode === "full" ? "rebuilt" : "sampled", status: "failed", ok: false, claimed: P.chainTotals([]), problems: [`could not be checked: ${msg(x)}`], anchorsChecked: 0 });
+      out.push({ writer, lender: null, asset: null, decimals: null, token: null, statements: 0, defaults: 0, window: null, after: null, checked: mode === "full" ? "rebuilt" : "sampled", manifest: Boolean(man?.has(lc(writer))), status: "failed", ok: false, claimed: P.chainTotals([]), problems: [...(unnamed(writer) ? [notNamed(writer)] : []), `could not be checked: ${msg(x)}`], anchorsChecked: 0 });
     }
   }
-  for (const w of trusted || []) if (!byWriter.has(w)) out.push({ writer: w, lender: null, asset: null, decimals: null, token: null, statements: 0, defaults: 0, window: null, after: null, checked: null, status: "no-data", ok: false, claimed: P.chainTotals([]), problems: [], anchorsChecked: 0 });
+  for (const w of trusted || []) {
+    if (byWriter.has(w)) continue;
+    const no = unnamed(w);
+    out.push({ writer: w, lender: null, asset: null, decimals: null, token: null, statements: 0, defaults: 0, window: null, after: null, checked: null, manifest: Boolean(man?.has(lc(w))), status: no ? "failed" : "no-data", ok: false, claimed: P.chainTotals([]), problems: no ? [notNamed(w)] : [], anchorsChecked: 0 });
+  }
   const counted = {};
-  const trust = new Set((trusted || []).map(lc));
   for (const w of out) {
-    if (!trust.has(lc(w.writer)) || w.status !== "rebuilt") continue;
+    // trusted, rebuilt, and against the reader's own sources: a writer's declared sources are its key's word
+    if (!trust.has(lc(w.writer)) || w.status !== "rebuilt" || !w.manifest) continue;
     const t = (counted[w.asset] ||= { asset: w.asset, decimals: w.decimals, symbol: w.token?.symbol ?? null, writers: 0, onTime: zero(), late: zero(), defaulted: zero(), recovered: zero() });
     t.writers++;
     sumInto(t, w.claimed);

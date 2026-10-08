@@ -156,9 +156,10 @@ class Lender {
     ]);
     this.loans.set(String(loan), { loan: String(loan), agent: BigInt(agent), principal: String(principal), dueAt, open: { block, tx: r.hash, log: r.logs[1].index } });
   }
-  close(loan, block, { defaulted = false } = {}) {
+  /** `quiet`: the close log with no transfer behind it (a contract can emit loan events with no money moving). */
+  close(loan, block, { defaulted = false, quiet = false } = {}) {
     const L = this.loans.get(String(loan));
-    const logs = defaulted ? [] : [{ address: this.token, ...ERC20.encodeEventLog("Transfer", [WALLET, this.contract, L.principal]) }];
+    const logs = defaulted || quiet ? [] : [{ address: this.token, ...ERC20.encodeEventLog("Transfer", [WALLET, this.contract, L.principal]) }];
     logs.push({ address: this.contract, ...LI.encodeEventLog(defaulted ? "Defaulted" : "Repaid", [loan, L.agent, L.principal]) });
     const r = this.chain.tx(block, logs);
     const closedAt = time(block);
@@ -199,6 +200,13 @@ const cli = (args) => new Promise((res) => execFile(process.execPath, [CLI, ...a
 }));
 const probs = (r, i = 0) => r.writers[i].problems.join("\n");
 const byWriter = (r, w) => r.writers.find((x) => lc(x.writer) === lc(w));
+/** A reader's manifest, { "<writer>": [source, ...] } -> { "<writer>": { sources } }. */
+const pin = (o) => Object.fromEntries(Object.entries(o).map(([w, sources]) => [w, { sources }]));
+/** `fn(path)` with `manifest` written to a scratch file, for the command's --sources. */
+async function withManifest(manifest, fn) {
+  const dir = mkdtempSync(join(tmpdir(), "credit-reader-"));
+  try { const f = join(dir, "sources.json"); writeFileSync(f, JSON.stringify(manifest)); return await fn(f); } finally { rmSync(dir, { recursive: true }); }
+}
 
 /** The audit's padded statement: five real repayments carried as anchors, the default left out, 1000 loans claimed. */
 function padded() {
@@ -219,19 +227,19 @@ function padded() {
 }
 
 // ---- 1. light mode -------------------------------------------------------------------------------------------------
-await t("1. light mode samples, it does not verify: its claims are never counted; full mode rebuilds, counts, and fails a padded statement", async () => {
+await t("1. light mode samples, it does not verify: its claims are never counted; full mode rebuilds, counts (with the reader's manifest), and fails a padded statement", async () => {
   const { chain, A } = world();
   A.borrow(1, AGENT, 5_000_000, 110); A.close(1, 120);
   A.borrow(2, AGENT, 7_000_000, 130, { dueIn: 10 }); A.close(2, 200); // late
   A.borrow(3, AGENT, 1_000_000, 210); // outstanding at 400
   chain.postEnc(W1, AGENT, 410, P.encodeFile(statement({ sources: [A.source()], from: 100, to: 400, w: A.window(AGENT, 100, 400) })));
-  let r = await read(AGENT, { writers: [W1], mode: "light" });
+  let r = await read(AGENT, { writers: [W1], mode: "light", manifest: pin({ [W1]: [A.source()] }) });
   assert.deepEqual(r.writers[0].problems, []);
   assert.equal(r.writers[0].status, "sampled");
   assert.equal(r.writers[0].ok, true, "nothing light mode checked is wrong");
   assert.equal(r.writers[0].claimed.onTime.count, 1);
   assert.equal(r.totals.onTime.count, 0, "light mode counts no claim");
-  r = await read(AGENT, { writers: [W1], mode: "full" });
+  r = await read(AGENT, { writers: [W1], mode: "full", manifest: pin({ [W1]: [A.source()] }) });
   assert.deepEqual(r.writers[0].problems, []);
   assert.equal(r.writers[0].status, "rebuilt");
   assert.deepEqual([r.totals.onTime.count, r.totals.late.count, r.totals.late.amount], [1, 1, "7000000"]);
@@ -362,14 +370,15 @@ await t("4. one asset per writer and agent; totals are kept by asset and printed
   D.borrow(1, AGENT, 10n ** 18n, 130); D.close(1, 140);
   chain.postEnc(W1, AGENT, 410, P.encodeFile(statement({ sources: [A.source()], from: 100, to: 400, w: A.window(AGENT, 100, 400) })));
   chain.postEnc(W2, AGENT, 420, P.encodeFile(statement({ writer: W2, sources: [D.source()], from: 100, to: 400, w: D.window(AGENT, 100, 400), asset: assetOf(T18), decimals: 18 })));
-  r = await read(AGENT, { writers: [W1, W2], mode: "full" });
+  const both = pin({ [W1]: [A.source()], [W2]: [D.source()] });
+  r = await read(AGENT, { writers: [W1, W2], mode: "full", manifest: both });
   assert.deepEqual(r.writers.map((w) => w.problems), [[], []]);
   assert.ok(r.counted, "totals by asset");
   assert.deepEqual(Object.keys(r.counted).sort(), [assetOf(T18), assetOf(USDG)].sort());
   assert.equal(r.counted[assetOf(USDG)].onTime.amount, "1000000");
   assert.equal(r.counted[assetOf(T18)].onTime.amount, (10n ** 18n).toString());
   assert.equal(r.totals, null, "two assets have no single total");
-  const c = await cli([String(AGENT), "--writer", W1, "--writer", W2, "--full"]);
+  const c = await withManifest(both, (f) => cli([String(AGENT), "--writer", W1, "--writer", W2, "--full", "--sources", f]));
   assert.equal(c.code, 0, c.out);
   assert.match(c.out, /USDG[^\n]*on time 1 \(1\.0\)/);
   assert.match(c.out, /T18[^\n]*on time 1 \(1\.0\)/);
@@ -464,7 +473,7 @@ await t("8. an agent id past 2^53 is read exactly: the file names it as a decima
   try { es = await findEntries(p, { agentId: BIG, fromBlock: 1 }); } finally { p.destroy(); }
   assert.equal(es.length, 1);
   assert.equal(openEntry(es[0]).file.agentId, "9007199254740993");
-  const r = await read(BIG, { writers: [W1], mode: "full" });
+  const r = await read(BIG, { writers: [W1], mode: "full", manifest: pin({ [W1]: [A.source()] }) });
   assert.equal(r.agentId, "9007199254740993");
   assert.deepEqual(r.writers[0].problems, []);
   assert.equal(r.totals.onTime.count, 1);
@@ -522,7 +531,7 @@ await t("located entries instead of a registry scan: each read from its receipt;
   assert.deepEqual(r.writers[0].problems, []);
   assert.equal(r.writers[0].statements, 2);
   assert.equal(chain.getLogs, scans, "a located read scans no log");
-  r = await read(AGENT, { writers: [W1], mode: "full", locate: async (agentId, writer) => { assert.equal(agentId, "7"); assert.equal(writer, W1); return good; } });
+  r = await read(AGENT, { writers: [W1], mode: "full", manifest: pin({ [W1]: [A.source()] }), locate: async (agentId, writer) => { assert.equal(agentId, "7"); assert.equal(writer, W1); return good; } });
   assert.equal(r.writers[0].status, "rebuilt");
   assert.equal(r.totals.onTime.count, 2);
   const p = provider();
@@ -660,6 +669,105 @@ await t("11. a read's RPC requests are bounded, all writers together: statements
   assert.ok(Number.isSafeInteger(was) && was >= 10_000, `LIMITS.requests is ${was}`);
   LIMITS.requests = 300;
   try { ({ n } = await count({ mode: "light" })); assert.ok(n <= 300, `${n} requests under a default budget of 300`); } finally { LIMITS.requests = was; }
+});
+
+// ---- 12. a source the writer adds: its own contract (GHSA-fgg6) ---------------------------------------------------
+/** A writer key (the lender's, or a leaked one) that adds a contract of its own as a source. Seq 1 is honest over the
+ *  pool A (one $5 loan); seq 2 declares [A, X], X the key holder's contract, first block 401 (at its window's start,
+ *  as a new source must be): one more real loan at A ($7), three $100 loans at X with no money behind them, and five
+ *  $1 anchors at X whose USDG moves out and back. Agent 42 gets the same from nothing: one seq 1 declaring only X. */
+function ownSource() {
+  const { chain, A } = world();
+  const X = new Lender(chain, POOL(9), USDG, 401);
+  A.borrow(1, AGENT, 5_000_000, 110); A.close(1, 120);
+  const e1 = P.encodeFile(statement({ sources: [A.source()], from: 100, to: 400, w: A.window(AGENT, 100, 400) }));
+  chain.postEnc(W1, AGENT, 410, e1);
+  A.borrow(2, AGENT, 7_000_000, 430); A.close(2, 440);
+  for (let i = 0; i < 3; i++) { X.borrow(1001 + i, AGENT, 100_000_000, 450 + 20 * i, { dueIn: 1000, paid: 0 }); X.close(1001 + i, 460 + 20 * i, { quiet: true }); }
+  for (let i = 0; i < 5; i++) { X.borrow(2001 + i, AGENT, 1_000_000, 570 + i, { dueIn: 1000 }); X.close(2001 + i, 590 + i); }
+  chain.postEnc(W1, AGENT, 610, P.encodeFile(statement({ sources: [A.source(), X.source()], seq: 2, prev: e1.feedbackHash, from: 401, to: 600, w: merge(A.window(AGENT, 401, 600, 0), X.window(AGENT, 401, 600, 1)) })));
+  const Y = new Lender(chain, POOL(8), USDG, 100);
+  for (let i = 0; i < 3; i++) { Y.borrow(3001 + i, 42n, 250_000_000, 110 + 20 * i, { dueIn: 1000, paid: 0 }); Y.close(3001 + i, 120 + 20 * i, { quiet: true }); }
+  for (let i = 0; i < 5; i++) { Y.borrow(4001 + i, 42n, 1_000_000, 570 + i, { dueIn: 1000 }); Y.close(4001 + i, 590 + i); }
+  chain.postEnc(W1, 42n, 620, P.encodeFile(statement({ agentId: 42n, sources: [Y.source()], from: 100, to: 600, w: Y.window(42n, 100, 600) })));
+  return { chain, A, X, Y };
+}
+
+await t("12. a source the writer adds rebuilds exactly, so a rebuild against the writer's own sources is not counted; the reader's manifest fails it (GHSA-fgg6)", async () => {
+  const { A, X } = ownSource();
+  let r = await read(AGENT, { writers: [W1], mode: "full" });
+  let w = r.writers[0];
+  assert.deepEqual([w.status, w.problems, w.claimed.onTime.count, w.claimed.onTime.amount], ["rebuilt", [], 10, "317000000"], "the statements match the logs of the sources they declare");
+  assert.deepEqual(r.counted, {}, `a rebuild against the sources the writer itself declares is counted as checked: ${JSON.stringify(r.counted)}`);
+  assert.equal(r.totals.onTime.count, 0);
+  assert.equal(w.manifest, false, "no manifest names the writer: its sources are the ones it declares");
+  // an agent with no history anywhere: one statement over the key holder's contract only
+  r = await read(42n, { writers: [W1], mode: "full" });
+  assert.deepEqual([r.writers[0].status, r.writers[0].claimed.onTime.amount, r.counted], ["rebuilt", "755000000", {}]);
+  // the reader's manifest pins the writer's real source: the added one fails the writer, in both modes
+  const real = pin({ [W1]: [A.source()] });
+  for (const mode of ["full", "light"]) {
+    r = await read(AGENT, { writers: [W1], mode, manifest: real });
+    assert.equal(r.writers[0].status, "failed", mode);
+    assert.match(probs(r), new RegExp(`seq 2: source ${X.contract} is not in the reader's manifest`, "i"));
+    assert.deepEqual([r.writers[0].manifest, r.counted], [true, {}]);
+  }
+  r = await read(42n, { writers: [W1], mode: "full", manifest: real });
+  assert.equal(r.writers[0].status, "failed");
+  // the command: without --sources the rebuild says whose sources it used and counts nothing (every check that ran
+  // passed: exit 0); with --sources it fails (exit 1)
+  let c = await cli([String(AGENT), "--writer", W1, "--full"]);
+  assert.equal(c.code, 0, c.out);
+  assert.doesNotMatch(c.out, /\ncounted \(/, `a rebuild against the writer's own sources is printed as counted:\n${c.out}`);
+  assert.match(c.out, /rebuilt from the sources it declares[^\n]*not counted[^\n]*: on time 10 \(317\.0\)/);
+  assert.match(c.out, /counted: nothing \([^\n]*--sources/);
+  c = await withManifest(real, (f) => cli([String(AGENT), "--writer", W1, "--full", "--sources", f]));
+  assert.equal(c.code, 1, c.out);
+  assert.match(c.out, /is not in the reader's manifest/);
+  // the honest chain: with the manifest, rebuilt and counted
+  const h = world();
+  h.A.borrow(1, AGENT, 5_000_000, 110); h.A.close(1, 120);
+  const e1 = P.encodeFile(statement({ sources: [h.A.source()], from: 100, to: 400, w: h.A.window(AGENT, 100, 400) }));
+  h.chain.postEnc(W1, AGENT, 410, e1);
+  h.A.borrow(2, AGENT, 7_000_000, 430); h.A.close(2, 440);
+  h.chain.postEnc(W1, AGENT, 610, P.encodeFile(statement({ sources: [h.A.source()], seq: 2, prev: e1.feedbackHash, from: 401, to: 600, w: h.A.window(AGENT, 401, 600) })));
+  r = await read(AGENT, { writers: [W1], mode: "full", manifest: pin({ [W1]: [h.A.source()] }) });
+  assert.deepEqual([r.writers[0].status, r.writers[0].manifest, r.totals.onTime.count, r.totals.onTime.amount], ["rebuilt", true, 2, "12000000"]);
+  c = await withManifest(pin({ [W1]: [h.A.source()] }), (f) => cli([String(AGENT), "--writer", W1, "--full", "--sources", f]));
+  assert.equal(c.code, 0, c.out);
+  assert.match(c.out, /\ncounted \([^\n]*manifest[^\n]*\n[^\n]*on time 2 \(12\.0\)/);
+});
+
+await t("12. a manifest that does not name a trusted writer fails that writer, never reads as no manifest; each writer says whether the manifest pinned its sources (GHSA-fgg6)", async () => {
+  const { A } = ownSource();
+  const other = pin({ [W2]: [A.source()] }); // Priors' pools filed under another writer, say
+  let r = await read(AGENT, { writers: [W1], mode: "full", manifest: other });
+  let w = r.writers[0];
+  assert.equal(w.status, "failed", `a manifest that does not name ${W1} reads as no manifest: ${w.status} (problems ${JSON.stringify(w.problems)}, counted ${JSON.stringify(r.counted)})`);
+  assert.match(probs(r), new RegExp(`the reader's manifest does not name writer ${W1}`));
+  assert.deepEqual([w.manifest, r.manifest, r.counted], [false, true, {}]);
+  r = await read(AGENT, { writers: [W1], mode: "light", manifest: other }); // the hosted credit_history's mode
+  assert.equal(r.writers[0].status, "failed");
+  r = await read(AGENT, { writers: [W9], mode: "full", manifest: other }); // a trusted writer with no entries
+  assert.deepEqual([r.writers[0].status, r.writers[0].manifest], ["failed", false]);
+  assert.match(probs(r), new RegExp(`the reader's manifest does not name writer ${W9}`));
+  let c = await withManifest(other, (f) => cli([String(AGENT), "--writer", W1, "--full", "--sources", f]));
+  assert.equal(c.code, 1, c.out);
+  assert.match(c.out, /does not name writer/);
+  c = await withManifest(other, (f) => cli([String(AGENT), "--writer", W1, "--full", "--sources", f, "--json"]));
+  const j = JSON.parse(c.out);
+  assert.deepEqual([c.code, j.writers[0].status, j.writers[0].manifest, j.counted], [1, "failed", false, {}]);
+  // two honest writers, the manifest names one: read untrusted, each says whether its sources were pinned; trusted,
+  // the one it does not name fails and the other is counted
+  const { chain, A: A2 } = world();
+  A2.borrow(1, AGENT, 5_000_000, 110); A2.close(1, 120);
+  for (const wr of [W1, W2]) chain.postEnc(wr, AGENT, 410, P.encodeFile(statement({ writer: wr, sources: [A2.source()], from: 100, to: 400, w: A2.window(AGENT, 100, 400) })));
+  const one = pin({ [W1]: [A2.source()] });
+  r = await read(AGENT, { mode: "full", manifest: one });
+  assert.deepEqual([W1, W2].map((x) => [byWriter(r, x).status, byWriter(r, x).manifest]), [["rebuilt", true], ["rebuilt", false]]);
+  assert.deepEqual(r.counted, {}, "no writer is trusted");
+  r = await read(AGENT, { writers: [W1, W2], mode: "full", manifest: one });
+  assert.deepEqual([byWriter(r, W1).status, byWriter(r, W2).status, r.totals.writers, r.totals.onTime.count], ["rebuilt", "failed", 1, 1]);
 });
 
 srv.close();

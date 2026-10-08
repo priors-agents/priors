@@ -288,7 +288,13 @@ A reader:
   reason to skip the check;
 - MUST NOT present the totals of a statement it has not rebuilt as checked, nor add them to totals it reports as
   checked. Without a rebuild they are the writer's claims;
-- SHOULD rebuild statements in full before extending credit on the strength of them;
+- MUST NOT add a writer's rebuilt totals to totals it reports as checked unless it holds a manifest naming that writer
+  (see below), and MUST say, when it reports them without one, that they were rebuilt from the sources the writer
+  declares. A rebuild shows that the statements match the logs of the contracts it read. Without a manifest those
+  contracts are the writer's choice, and a writer key can declare a contract of its own whose logs record loans that
+  moved no money (see Security considerations);
+- SHOULD rebuild statements in full, against a manifest of the lender's contracts, before extending credit on the
+  strength of them;
 - MUST compute totals by adding up the statements' `closed` figures, per asset, never across assets. `getSummary`
   averages the values of the entries it matches; it does not add them up (measured on the deployed registry: two
   entries of 5 and 7 give a summary value of 6);
@@ -306,20 +312,27 @@ There are two levels of check:
   wrong. It does not show that the root covers every loan of a window, nor that the totals are right: a statement
   whose anchors are real and whose totals are invented passes every light check. It does not read the sources past
   the last window either: it says where the chain ends.
-- **Full** rebuilds each statement from the logs of every source the chain declares: its leaves, `leaves`, `root`,
-  the four totals, `opened`, `outstanding`, and that the anchors are the window's latest leaves. It scans each source
-  over the whole chain, whatever its `blocks` say, and on past the last window to the block it reads at. It needs the
-  sources' logs for the agent and one block time per closed loan. Checking the money that moved for every loan costs
-  one receipt per loan; the reference reader checks it on the anchors and default leaves only, and says so.
+- **Full** rebuilds each statement from the logs of every source the chain declares (and every source of the reader's
+  manifest): its leaves, `leaves`, `root`, the four totals, `opened`, `outstanding`, and that the anchors are the
+  window's latest leaves. It scans each source over the whole chain, whatever its `blocks` say, and on past the last
+  window to the block it reads at. It needs the sources' logs for the agent and one block time per closed loan.
+  Checking the money that moved for every loan costs one receipt per loan; the reference reader checks it on the
+  anchors and default leaves only, and says so. Without a manifest naming the writer, a full rebuild shows that the
+  statements match the logs of the sources the writer declares, not that those sources are the lender's.
 
 **Which sources a lender has is the reader's trust decision.** Omission is visible within the sources a writer
 declares: a full rebuild finds any loan the statements leave out at those sources, from the start of seq 1. No reader
-can find a loan at a contract the writer never names. A reader that knows a lender's contracts (from the lender's
-documentation, an audit, or a registry it trusts) MAY hold a manifest: those sources, with their first blocks,
-events and fields. With a manifest, the reader MUST also fail a writer when seq 1 starts after a manifest source's
-first block, when a statement leaves out a manifest source whose blocks reach its window, or when a file declares a
-source the manifest does not list or with other events or fields. It MAY then scan each source over its manifest
-range only.
+can find a loan at a contract the writer never names. Nor, without a manifest, can it tell the lender's contracts
+from one the writer adds: a source declared for the first time only needs its first block at or after its
+statement's `fromBlock`, so a writer can declare a contract of its own, and its statements then rebuild exactly from
+that contract's logs. A reader that knows a lender's contracts (from the lender's documentation, an audit, or a
+registry it trusts) MAY hold a manifest: those sources, with their first blocks, events and fields, for each writer
+it names. With a manifest, the reader MUST also fail a writer when seq 1 starts after a manifest source's first
+block, when a statement leaves out a manifest source whose blocks reach its window, or when a file declares a source
+the manifest does not list or with other events or fields. A reader with a manifest MUST fail a writer it trusts
+that the manifest does not name (reading that writer's sources as it declares them would drop every manifest check
+without a word), and MUST say of each writer whether the manifest named it. It MAY then scan each source over its
+manifest range only.
 
 ## Rationale
 
@@ -374,12 +387,12 @@ In this repository (github.com/priors-agents/priors):
 | | |
 | --- | --- |
 | `sdk/credit-profile.mjs` | leaves, Merkle root and proofs, statement and default files, canonical encoding, the schema, the reader's shape and chain checks (pure) |
-| `sdk/credit-reader.mjs` | find an agent's credit entries (a registry log scan, or entries located by the caller and checked against `getLastIndex`), check them light (`sampled`) or full (`rebuilt`, the sources also scanned past the last statement) against the chain, with an optional manifest and a budget of requests per read; say where each chain ends; add up rebuilt totals of trusted writers, by asset (lender-neutral) |
-| `scripts/verify-credit.mjs` | the reader as a command: `node scripts/verify-credit.mjs <agentId> [--writer 0x…] [--full] [--sources manifest.json] [--no-funds]`. It prints where each writer's statements end against the block it reads at. Exit 0: every check it ran passed; 1: a problem; 2: no data (a `--writer` with no statement, or no credit entry) |
+| `sdk/credit-reader.mjs` | find an agent's credit entries (a registry log scan, or entries located by the caller and checked against `getLastIndex`), check them light (`sampled`) or full (`rebuilt`, the sources also scanned past the last statement) against the chain, with an optional manifest (a trusted writer it does not name fails; each writer says whether it was named) and a budget of requests per read; say where each chain ends; add up the rebuilt totals of trusted writers the manifest names, by asset (lender-neutral) |
+| `scripts/verify-credit.mjs` | the reader as a command: `node scripts/verify-credit.mjs <agentId> [--writer 0x…] [--full] [--sources manifest.json] [--no-funds]`. It prints where each writer's statements end against the block it reads at, and counts only `--full` results of `--writer` writers named in `--sources`. Exit 0: every check it ran passed; 1: a problem; 2: no data (a `--writer` with no statement, or no credit entry) |
 | `docs/erc-8004-credit/priors-manifest.json` | Priors' writer and its two pools as a reader manifest (`--sources`) |
 | `scripts/credit-vectors.mjs`, `docs/erc-8004-credit/vectors.json`, `test/CreditProfileVectors.t.sol` | the test vectors, and the same leaves and proofs checked by OpenZeppelin's `MerkleProof` in Solidity |
 | `scripts/test-credit-profile.mjs` | unit tests of the format (18) |
-| `scripts/test-credit-reader.mjs` | the reader and the command against an in-memory chain served over JSON-RPC (20) |
+| `scripts/test-credit-reader.mjs` | the reader and the command against an in-memory chain served over JSON-RPC (22) |
 
 In Priors' own deployment (not in this repository):
 
@@ -417,13 +430,18 @@ The fork test uses the real registry and three real agents.
 - **A lying writer.** A writer key can post a false statement, but it cannot remove an earlier one. A false root
   fails a full rebuild. A skipped window or a dropped default at a declared source leaves a gap or a mismatch. A
   writer that stops posting leaves its record at its last window: readers say where that is, and a full rebuild
-  finds a default after it that no default entry reports within 24 hours. A source the writer never declares is invisible to a
-  reader without a manifest.
+  finds a default after it that no default entry reports within 24 hours. A source the writer never declares is
+  invisible to a reader without a manifest. To that reader, a source the writer does declare is the lender's. The
+  writer key, the lender's or a leaked one, can deploy a contract that emits `Borrowed` and `Repaid` for any agent,
+  declare it as a new source, and post statements that rebuild exactly from its logs. Money moves for the anchors
+  only, out and back. Only a manifest, taken from somewhere other than the writer's files, binds a writer to its
+  lender's contracts; with one, such a source fails the writer. Readers therefore count rebuilt totals only against a
+  manifest (see Readers), and a lender that wants its statements counted publishes one for its writer.
 - **Light checks are samples.** A statement with real anchors and invented totals passes them. A light result is the
   writer's claim, and readers MUST NOT count it as checked.
 - **A lying source contract.** Logs prove what a contract emitted, not that it is honest. The funds check ties the
   sampled loans to actual transfers of the asset; a contract can still emit loan events with no money behind the
-  others. Readers relying on a source should know its code (verified source, audits).
+  others. Readers relying on a source should know its code (verified source, audits), and hold it in a manifest.
 - **Reorgs.** A statement over unfinalised blocks can name logs that later disappear. Windows SHOULD end at final
   blocks.
 - **Late versus on time** follows block timestamps, so a loan repaid within a few seconds of `dueAt` can fall either

@@ -105,3 +105,6 @@ loan the agent closed in a block window, chained to the one before; anyone can r
 node scripts/verify-credit.mjs <agentId> --writer 0x03af41aEb1EEa4DA0572bbb6AB1B4c5331F17aC7 --full \
   --sources docs/erc-8004-credit/priors-manifest.json
 ```
+
+The manifest is what ties the writer to the two pools: without `--sources`, the command rebuilds against whatever
+sources the statements declare and counts nothing.

@@ -9,12 +9,17 @@
 // leaf against the lender's logs, with the asset's movement for those loans. It does not check that a root covers every
 // loan of its window, nor the totals: it prints them as the writer's claims and counts nothing.
 // --full rebuilds every statement from the lender's logs (leaves, root, totals, opened, outstanding); fund movement
-// stays sampled (anchors and default entries). Only --full results of --writer writers are counted, by asset.
+// stays sampled (anchors and default entries). Only --full results of --writer writers that the --sources manifest
+// names are counted, by asset.
 // Each writer's statements end at a block: the command prints that block and its date against the block it reads at.
 // --full also scans the sources past it and prints what closed and opened there (in no statement, not counted); a
 // default there that no default entry of the writer reports is a problem. Light mode does not read past it.
 // --sources: a manifest of the sources the reader trusts each writer to have, { "<writer>": { "sources": [ … ] } },
-// sources as the files write them. Without it a source a writer never declares is not seen.
+// sources as the files write them; Priors' writer's is docs/erc-8004-credit/priors-manifest.json. A writer it names
+// is checked against those sources (a file that declares another one fails); a --writer it does not name fails.
+// Without it the sources are as each writer declares them: one it never declares is not seen, and one it declares is
+// rebuilt as it stands, so a writer key could declare a contract of its own that logs loans that never happened. A
+// rebuild against them is printed as such and not counted.
 // Without --writer it reports every writer found and trusts none.
 //
 // Exit: 0 every check that ran passed and every --writer has statements (in light mode: nothing it checked is wrong);
@@ -78,13 +83,16 @@ if (full) {
   say("  not checked: that each root covers every loan of its window, the totals, opened and outstanding figures, and the loans after the last statement. The figures are printed as the writer's claims and are not counted. Run with --full to rebuild them.");
   if (noFunds) say("  funds: not checked (--no-funds)");
 }
-say(`  sources: ${sourcesFile ? `checked against the manifest ${sourcesFile}` : "as each writer declares them; a source a writer never declares is not seen (--sources <file> requires a set)"}`);
+say(`  sources: ${sourcesFile
+  ? `the manifest ${sourcesFile}, for each writer it names (a file that declares another source fails it; a --writer it does not name fails)`
+  : `as each writer declares them, no manifest: a source a writer never declares is not seen, and one it declares is taken as the lender's${full ? ", so a rebuild is not counted" : ""} (--sources <manifest> pins them; Priors' writer's: docs/erc-8004-credit/priors-manifest.json)`}`);
 const LABEL = { rebuilt: "rebuilt", sampled: "sampled", failed: "FAIL", "no-data": "no data" };
 for (const w of r.writers) {
-  say(`\n${LABEL[w.status].padEnd(8)} writer ${w.writer}${w.lender?.name ? ` (says: ${w.lender.name})` : ""}${requested.has(w.writer.toLowerCase()) ? "" : ", not trusted"}`);
+  say(`\n${LABEL[w.status].padEnd(8)} writer ${w.writer}${w.lender?.name ? ` (says: ${w.lender.name})` : ""}${requested.has(w.writer.toLowerCase()) ? "" : ", not trusted"}${sourcesFile && !w.manifest ? ", not in the manifest" : ""}`);
   if (w.statements || w.defaults || w.problems.length) say(`         ${w.statements} statements, blocks ${w.window ? w.window.join("-") : "-"}, ${w.defaults} default entries, ${w.anchorsChecked} anchors and default leaves checked`);
   if (w.asset) say(`         asset ${named(w.asset, w.token?.symbol)}, ${w.decimals} decimals`);
-  if (w.statements) say(`         ${w.status === "rebuilt" ? "rebuilt" : w.status === "sampled" ? "claimed, not rebuilt" : "claimed"}: ${line(w.claimed, w.decimals)}, outstanding ${w.claimed.outstanding.count} (${fmt(w.claimed.outstanding.amount, w.decimals)})`);
+  const how = w.status === "rebuilt" ? (w.manifest ? "rebuilt" : "rebuilt from the sources it declares (no manifest names it), not counted") : w.status === "sampled" ? "claimed, not rebuilt" : "claimed";
+  if (w.statements) say(`         ${how}: ${line(w.claimed, w.decimals)}, outstanding ${w.claimed.outstanding.count} (${fmt(w.claimed.outstanding.amount, w.decimals)})`);
   const a = w.after;
   if (a && r.asOf) {
     say(`         statements end at block ${w.window[1]} (${iso(a.since)}); read at block ${r.asOf.block} (${iso(r.asOf.time)}), ${later(r.asOf.time - a.since)} later`);
@@ -99,9 +107,9 @@ for (const w of r.writers) {
 const assets = Object.values(r.counted);
 if (!writers.length) say("\ncounted: nothing (no --writer: no writer is trusted)");
 else if (!full) say("\ncounted: nothing (light mode counts no claims; run with --full)");
-else if (!assets.length) say("\ncounted: nothing (no trusted writer was rebuilt)");
+else if (!assets.length) say(`\ncounted: nothing (${r.writers.some((w) => w.status === "rebuilt" && !w.manifest && requested.has(w.writer.toLowerCase())) ? "no manifest names a trusted writer, so its sources are its own word: run with --sources <manifest>" : "no trusted writer was rebuilt"})`);
 else {
-  say("\ncounted (trusted writers, rebuilt, to each one's last statement), by asset:");
+  say("\ncounted (trusted writers, rebuilt against the manifest's sources, to each one's last statement), by asset:");
   for (const a of assets) say(`  ${named(a.asset, a.symbol)}: ${line(a, a.decimals)}`);
 }
 process.exit(code);
