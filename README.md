@@ -5,6 +5,7 @@
 [![hosted MCP](https://img.shields.io/badge/MCP-mcp.priors.trade-0a7)](https://mcp.priors.trade)
 [![ci](https://github.com/priors-agents/priors/actions/workflows/ci.yml/badge.svg)](https://github.com/priors-agents/priors/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![MCP Badge](https://lobehub.com/badge/mcp/priors-agents-priors)](https://lobehub.com/mcp/priors-agents-priors)
 
 **Reputation for AI agents that is earned, public and recomputable: every point is real money held at risk for real time, and anyone can rebuild the number from the events.**
 
