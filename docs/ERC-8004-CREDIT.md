@@ -25,7 +25,8 @@ endpoint can rebuild every leaf from those logs, check the root and the totals, 
 
 A lender's statements for one agent are chained by hash over back-to-back windows. Skipping a window or revoking a
 statement is visible to every reader. Dropping a loan at a contract the lender declares is visible to every reader
-that rebuilds the statements.
+that rebuilds the statements, and so is a default after the last statement, which a lender that stops posting would
+otherwise leave out.
 
 ## Motivation
 
@@ -43,8 +44,9 @@ Goals:
 2. **Checkable from the chain alone.** Every number in a statement can be rebuilt from the lender's logs. A reader
    needs no API from the lender.
 3. **Omission is visible.** A lender cannot quietly leave out a default at the contracts it declares: windows are
-   contiguous and chained, they cover each contract from its first block, and the root covers every loan closed in
-   the window. Which contracts a lender has is the reader's call (see Readers).
+   contiguous and chained, they cover each contract from its first block, the root covers every loan closed in the
+   window, and a reader that rebuilds scans past the last window too, so stopping does not hide a default either.
+   Which contracts a lender has is the reader's call (see Readers).
 4. **Scales to many small loans.** Agents borrow often and in small amounts. In the reference deployment, 140 agents
    closed 28,008 loans in 16 days. One entry per loan would flood the registry. One statement per agent per
    period, at about 2–4 KB, does not.
@@ -269,6 +271,14 @@ A reader:
   declaration changes, or an asset or decimals that change;
 - MUST check that each statement's window ends before the block its entry was posted in, and that `toTime` is that
   block's time (a statement cannot pre-claim blocks still to come);
+- MUST report where each chain ends (its last window's `toBlock` and `toTime`) against the block it reads at. Loans
+  after the last window are in no statement, and a reader MUST NOT present a chain's figures as the agent's history
+  past that block;
+- MUST, when it rebuilds, also scan each source from the end of the last window to the block it reads at, and treat
+  a default there that no `credit.defaulted` entry of the writer reports, 24 hours or more before the block it reads
+  at, as a failure of that writer for that agent. A younger one is reported as awaiting its entry (the writer has 24
+  hours to post it). A writer that stops posting would otherwise leave that default out. The loans closed and opened there are in no
+  statement: a reader reports them as such and does not count them;
 - MUST check each anchor and each default leaf against the source's logs. That means the close log at (`tx`, `log`)
   is the source's event for this loan, agent and amount; the open log at (`openTx`, `openLog`) in `openBlock` gives
   `dueAt`; the close block's time is `closedAt`; and the outcome fits the dates;
@@ -285,19 +295,22 @@ A reader:
 - MUST report a writer it asked about that has no statement for the agent as having no data, not as a clean record;
 - MUST choose which writers it trusts, as `getSummary` already requires a list of client addresses. Anyone can
   deploy a contract and write statements about loans it made to itself (see Security considerations);
-- SHOULD bound what it reads (entries per writer, log queries per rebuild). A malformed entry or a failed check fails
-  that writer only.
+- SHOULD bound what it reads: entries per writer, log queries per rebuild, and the requests one read makes across
+  every writer it reads. Anyone can post credit entries about an agent, and checking one costs requests (up to three
+  per anchor), so a reader that reads writers it does not trust would otherwise pay for whatever was planted. A
+  malformed entry, a failed check or a spent budget fails that writer only.
 
 There are two levels of check:
 
 - **Light** is a sample: the checks above, with a handful of calls per statement. It shows that nothing it checked is
   wrong. It does not show that the root covers every loan of a window, nor that the totals are right: a statement
-  whose anchors are real and whose totals are invented passes every light check.
+  whose anchors are real and whose totals are invented passes every light check. It does not read the sources past
+  the last window either: it says where the chain ends.
 - **Full** rebuilds each statement from the logs of every source the chain declares: its leaves, `leaves`, `root`,
   the four totals, `opened`, `outstanding`, and that the anchors are the window's latest leaves. It scans each source
-  over the whole chain, whatever its `blocks` say. It needs the sources' logs for the agent and one block time per
-  closed loan. Checking the money that moved for every loan costs one receipt per loan; the reference reader checks
-  it on the anchors and default leaves only, and says so.
+  over the whole chain, whatever its `blocks` say, and on past the last window to the block it reads at. It needs the
+  sources' logs for the agent and one block time per closed loan. Checking the money that moved for every loan costs
+  one receipt per loan; the reference reader checks it on the anchors and default leaves only, and says so.
 
 **Which sources a lender has is the reader's trust decision.** Omission is visible within the sources a writer
 declares: a full rebuild finds any loan the statements leave out at those sources, from the start of seq 1. No reader
@@ -361,12 +374,12 @@ In this repository (github.com/priors-agents/priors):
 | | |
 | --- | --- |
 | `sdk/credit-profile.mjs` | leaves, Merkle root and proofs, statement and default files, canonical encoding, the schema, the reader's shape and chain checks (pure) |
-| `sdk/credit-reader.mjs` | find an agent's credit entries (a registry log scan, or entries located by the caller and checked against `getLastIndex`), check them light (`sampled`) or full (`rebuilt`) against the chain, with an optional manifest; add up rebuilt totals of trusted writers, by asset (lender-neutral) |
-| `scripts/verify-credit.mjs` | the reader as a command: `node scripts/verify-credit.mjs <agentId> [--writer 0x…] [--full] [--sources manifest.json] [--no-funds]`. Exit 0: every check it ran passed; 1: a problem; 2: no data (a `--writer` with no statement, or no credit entry) |
+| `sdk/credit-reader.mjs` | find an agent's credit entries (a registry log scan, or entries located by the caller and checked against `getLastIndex`), check them light (`sampled`) or full (`rebuilt`, the sources also scanned past the last statement) against the chain, with an optional manifest and a budget of requests per read; say where each chain ends; add up rebuilt totals of trusted writers, by asset (lender-neutral) |
+| `scripts/verify-credit.mjs` | the reader as a command: `node scripts/verify-credit.mjs <agentId> [--writer 0x…] [--full] [--sources manifest.json] [--no-funds]`. It prints where each writer's statements end against the block it reads at. Exit 0: every check it ran passed; 1: a problem; 2: no data (a `--writer` with no statement, or no credit entry) |
 | `docs/erc-8004-credit/priors-manifest.json` | Priors' writer and its two pools as a reader manifest (`--sources`) |
 | `scripts/credit-vectors.mjs`, `docs/erc-8004-credit/vectors.json`, `test/CreditProfileVectors.t.sol` | the test vectors, and the same leaves and proofs checked by OpenZeppelin's `MerkleProof` in Solidity |
 | `scripts/test-credit-profile.mjs` | unit tests of the format (18) |
-| `scripts/test-credit-reader.mjs` | the reader and the command against an in-memory chain served over JSON-RPC (14) |
+| `scripts/test-credit-reader.mjs` | the reader and the command against an in-memory chain served over JSON-RPC (20) |
 
 In Priors' own deployment (not in this repository):
 
@@ -403,7 +416,9 @@ The fork test uses the real registry and three real agents.
   An on-chain lender registry is left as an open question.
 - **A lying writer.** A writer key can post a false statement, but it cannot remove an earlier one. A false root
   fails a full rebuild. A skipped window or a dropped default at a declared source leaves a gap or a mismatch. A
-  source the writer never declares is invisible to a reader without a manifest.
+  writer that stops posting leaves its record at its last window: readers say where that is, and a full rebuild
+  finds a default after it that no default entry reports within 24 hours. A source the writer never declares is invisible to a
+  reader without a manifest.
 - **Light checks are samples.** A statement with real anchors and invented totals passes them. A light result is the
   writer's claim, and readers MUST NOT count it as checked.
 - **A lying source contract.** Logs prove what a contract emitted, not that it is honest. The funds check ties the
@@ -419,6 +434,9 @@ The fork test uses the real registry and three real agents.
 - **Endpoints.** Full rebuilds read many logs. Public endpoints may limit log ranges or history, so a reader may need
   an archive endpoint. A writer's windows and sources decide how many log queries a rebuild needs, so readers SHOULD
   cap them.
+- **Planted entries.** `giveFeedback` is open to anyone, so anyone can post valid-looking credit entries about an
+  agent, from as many addresses as they like, each costing a reader that checks it a few requests per anchor. A reader that names the writers it trusts never reads the others. A reader
+  that reads every writer SHOULD cap the requests of one read, all writers together (the reference reader: 20,000).
 
 ## Open questions (for discussion)
 

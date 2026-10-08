@@ -42,7 +42,9 @@ repaying.
 | `pt_redeem(amount_pt \| "all", slippage_bps?, dry_run?)` | redeem the wallet's PT-USDG for USDG 1:1, from maturity (2027-03-25) on; needs ETH for gas | yes |
 
 Tools that move money state the amounts in their answer, are marked destructive for MCP clients, and their
-descriptions tell the assistant to confirm with you first. Merchant text (response bodies, listings, redirect targets)
+descriptions tell the assistant to confirm with you first. They run one at a time and each answers within 45 s, under an
+MCP client's usual 60 s timeout: one whose transactions have not confirmed by then says so and goes on, and a money
+call made meanwhile does nothing and says so. Merchant text (response bodies, listings, redirect targets)
 comes back between random `<<merchant-data …>>` markers, as data. They act on Robinhood Chain mainnet.
 
 ## Savings
@@ -132,7 +134,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.6.1"],
+      "args": ["-y", "@priors/mcp@0.6.2"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -154,7 +156,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.6.1"],
+      "args": ["-y", "@priors/mcp@0.6.2"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -164,7 +166,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 }
 ```
 
-or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.6.1`
+or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.6.2`
 (the key is expanded by your shell from the environment; do not paste it on the command line).
 
 ## Try it

@@ -10,6 +10,9 @@
 // loan of its window, nor the totals: it prints them as the writer's claims and counts nothing.
 // --full rebuilds every statement from the lender's logs (leaves, root, totals, opened, outstanding); fund movement
 // stays sampled (anchors and default entries). Only --full results of --writer writers are counted, by asset.
+// Each writer's statements end at a block: the command prints that block and its date against the block it reads at.
+// --full also scans the sources past it and prints what closed and opened there (in no statement, not counted); a
+// default there that no default entry of the writer reports is a problem. Light mode does not read past it.
 // --sources: a manifest of the sources the reader trusts each writer to have, { "<writer>": { "sources": [ … ] } },
 // sources as the files write them. Without it a source a writer never declares is not seen.
 // Without --writer it reports every writer found and trusts none.
@@ -64,13 +67,15 @@ const say = (m) => console.log(String(m).replace(/[\u0000-\u0009\u000b-\u001f\u0
 const fmt = (a, decimals) => (decimals == null ? String(a) : ethers.formatUnits(BigInt(a), decimals));
 const named = (asset, symbol) => (symbol ? `${symbol} ${asset}` : asset);
 const line = (T, d) => `on time ${T.onTime.count} (${fmt(T.onTime.amount, d)}), late ${T.late.count} (${fmt(T.late.amount, d)}), defaulted ${T.defaulted.count} (${fmt(T.defaulted.amount, d)})`;
-say(`\nagent #${r.agentId}: ${full ? "full check, every statement rebuilt from its sources' logs (leaves, root, totals, opened, outstanding)" : "light check, a sample (not a rebuild)"}`);
+const iso = (t) => new Date(Number(t) * 1000).toISOString().replace(/\.000Z$/, "Z");
+const later = (s) => (s < 48 * 3600 ? `${(Math.max(0, s) / 3600).toFixed(1)} hours` : `${(s / 86400).toFixed(1)} days`);
+say(`\nagent #${r.agentId}: ${full ? "full check, every statement rebuilt from its sources' logs (leaves, root, totals, opened, outstanding), and the sources scanned past the last statement" : "light check, a sample (not a rebuild)"}`);
 if (full) {
   say(`  fund movement is sampled: ${noFunds ? "not checked (--no-funds)" : "checked on the anchors and default entries, not on every loan"}`);
   say("  not checked: the class split (the lender's claim)");
 } else {
   say(`  checked: each entry's bytes, hash and shape; each chain (seq, prev, back-to-back windows, sources from their first block, one asset, nothing revoked); each statement's anchors and each default entry against the sources' logs${noFunds ? "" : ", with the asset's movement"}`);
-  say("  not checked: that each root covers every loan of its window, and the totals, opened and outstanding figures. They are printed as the writer's claims and are not counted. Run with --full to rebuild them.");
+  say("  not checked: that each root covers every loan of its window, the totals, opened and outstanding figures, and the loans after the last statement. The figures are printed as the writer's claims and are not counted. Run with --full to rebuild them.");
   if (noFunds) say("  funds: not checked (--no-funds)");
 }
 say(`  sources: ${sourcesFile ? `checked against the manifest ${sourcesFile}` : "as each writer declares them; a source a writer never declares is not seen (--sources <file> requires a set)"}`);
@@ -80,6 +85,14 @@ for (const w of r.writers) {
   if (w.statements || w.defaults || w.problems.length) say(`         ${w.statements} statements, blocks ${w.window ? w.window.join("-") : "-"}, ${w.defaults} default entries, ${w.anchorsChecked} anchors and default leaves checked`);
   if (w.asset) say(`         asset ${named(w.asset, w.token?.symbol)}, ${w.decimals} decimals`);
   if (w.statements) say(`         ${w.status === "rebuilt" ? "rebuilt" : w.status === "sampled" ? "claimed, not rebuilt" : "claimed"}: ${line(w.claimed, w.decimals)}, outstanding ${w.claimed.outstanding.count} (${fmt(w.claimed.outstanding.amount, w.decimals)})`);
+  const a = w.after;
+  if (a && r.asOf) {
+    say(`         statements end at block ${w.window[1]} (${iso(a.since)}); read at block ${r.asOf.block} (${iso(r.asOf.time)}), ${later(r.asOf.time - a.since)} later`);
+    if (a.fromBlock > a.toBlock) { /* nothing after them yet */ }
+    else if (!a.closed) say(`         after them, blocks ${a.fromBlock}-${a.toBlock}: in no statement, and not read in light mode (a default there is not seen; --full scans them)`);
+    else say(`         after them, blocks ${a.fromBlock}-${a.toBlock}, in no statement and not counted: ${line(a.closed, w.decimals)}; opened ${a.opened.count} (${fmt(a.opened.amount, w.decimals)})`);
+    for (const x of a.awaiting || []) say(`         loan ${x.loan} at source ${x.source} defaulted in block ${x.block}, ${later(r.asOf.time - x.closedAt)} before the block read at: no default entry yet (the profile gives the writer 24 hours)`);
+  }
   if (!w.statements) say(`         no statements for agent #${r.agentId}`);
   for (const p of w.problems) say(`         - ${p}`);
 }
@@ -88,7 +101,7 @@ if (!writers.length) say("\ncounted: nothing (no --writer: no writer is trusted)
 else if (!full) say("\ncounted: nothing (light mode counts no claims; run with --full)");
 else if (!assets.length) say("\ncounted: nothing (no trusted writer was rebuilt)");
 else {
-  say("\ncounted (trusted writers, rebuilt), by asset:");
+  say("\ncounted (trusted writers, rebuilt, to each one's last statement), by asset:");
   for (const a of assets) say(`  ${named(a.asset, a.symbol)}: ${line(a, a.decimals)}`);
 }
 process.exit(code);

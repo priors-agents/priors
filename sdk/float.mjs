@@ -290,14 +290,18 @@ function requestInit(init, timeoutMs) {
 }
 const isAbort = (e) => e?.name === "AbortError" || e?.name === "TimeoutError";
 
+/** Does this answer say "your payment was broadcast, not confirmed yet: send the same one again"? In x402 that is a 402
+ *  whose PAYMENT-RESPONSE (or X-PAYMENT-RESPONSE) header carries errorReason "settlement_pending" (as @x402/core's server
+ *  writes it, body {}); a body {pending: true} or {errorReason: "settlement_pending"} too. As @priors/x402 reads it (GHSA-wvxm). */
 const isPending = async (response) => {
   if (response.status !== 402) return false;
-  try { const b = JSON.parse((await readCapped(response.clone(), 64 * 1024)).text); return b?.pending === true; } catch (_) { return false; }
+  for (const name of ["PAYMENT-RESPONSE", "X-PAYMENT-RESPONSE"]) if (decodePaymentHeader(response.headers.get(name))?.errorReason === "settlement_pending") return true;
+  try { const b = JSON.parse((await readCapped(response.clone(), 64 * 1024)).text); return b?.pending === true || b?.errorReason === "settlement_pending"; } catch (_) { return false; }
 };
 
 /**
- * Send an already-signed X-PAYMENT, and keep resending the SAME one while the merchant answers 402 `pending`
- * (its settlement was broadcast but not confirmed yet; see docs/FLOAT.md). Never signs anything:
+ * Send an already-signed X-PAYMENT, and keep resending the SAME one while the merchant answers 402 pending (`isPending`:
+ * its settlement was broadcast but not confirmed yet; see docs/FLOAT.md). Never signs anything:
  * a new signature while the first payment can still land is how a call gets paid twice. Once the payment may be out,
  * no error is thrown: a timeout or an abort is reported as pending (`timedOut: true`, a synthetic 504), any other
  * transport error as pending too (`transportError: true`, a synthetic 502, the error in `error`), with the header.

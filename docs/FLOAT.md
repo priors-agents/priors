@@ -46,9 +46,10 @@ The functional form is `pay(url, { signer, pool, agentId, ... })`, `resend(url, 
    "A line sponsored by SeatVaultV5").
 5. Signs an EIP-3009 `TransferWithAuthorization` on USDG's `Global Dollar` v1 domain, valid for at most 600 s
    whatever the merchant asks, and retries with it in `X-PAYMENT`.
-6. If the merchant answers 402 `{pending: true}` (the settlement was broadcast but not yet confirmed), it resends
-   the **same** header, honouring `Retry-After`, up to 6 times. Still pending: it returns
-   `{pending: true, paymentHeader}` for `resend(url, paymentHeader)` later. A dropped connection or a timeout
+6. If the merchant answers 402 pending (`{pending: true}`, or x402's `settlement_pending` in the `PAYMENT-RESPONSE`
+   header or the body; the settlement was broadcast but not yet confirmed), it resends the **same** header, honouring
+   `Retry-After`, up to 6 times. Still pending: it returns `{pending: true, paymentHeader}` for
+   `resend(url, paymentHeader)` later. A dropped connection or a timeout
    (`timeoutMs`, 60 s by default) once the payment is out is pending too (`transportError` or `timedOut`), never an
    error.
 7. Once signed, every result carries `paymentHeader` and `validBefore`, whatever the merchant answered (a 500 too),

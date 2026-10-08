@@ -52,8 +52,9 @@ function parseArgs(argv) {
   return { cmd: pos[0], pos: pos.slice(1), flags };
 }
 
-// A private key on the command line lands in shell history and `ps`: refuse it outright.
-const looksLikeKey = (s) => /^(0x)?[0-9a-fA-F]{64}$/.test(String(s).trim());
+// A private key on the command line lands in shell history and `ps`: refuse it outright, glued to other text too
+// (PRIORS_KEY=0x…, key:0x…, a URL; GHSA-w247): 64 hex digits not part of a longer run, as @priors/mcp's looksLikeKey.
+const looksLikeKey = (s) => /(^|[^0-9a-fA-F])(0x)?[0-9a-fA-F]{64}($|[^0-9a-fA-F])/.test(String(s));
 
 async function config() {
   const key = process.env.PRIORS_KEY || process.env.PRIVATE_KEY;

@@ -246,10 +246,26 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       if (hold) {
         const h = hold;
         await Promise.race([h, new Promise((ok) => setTimeout(ok, Math.max(0, deadline - margin - Date.now())).unref?.())]);
-        if (hold === h) throw new ToolError("a savings withdrawal from an earlier call is still in flight. Nothing was done: check the savings tool and try again in a minute.");
+        if (hold === h) throw new ToolError(h.busy || "a savings withdrawal from an earlier call is still in flight. Nothing was done: check the savings tool and try again in a minute.");
+        // a call queued behind one that ran out of time (most likely its retry) never goes ahead on its own (GHSA-rg79)
+        if (h.busy) throw new ToolError(h.busy);
       }
       if (Date.now() >= deadline - margin) throw new ToolError("another payment call was still running and this one ran out of time before it could start. Nothing was signed or paid: try again.");
-      return fn(args, deadline);
+      // Every money call answers by its deadline, whatever it waits for (GHSA-rg79: pt_buy waited for its receipts past the
+      // client's timeout, the model saw nothing, and its retry bought again). One still running then goes on, and holds
+      // every later money call, as a savings withdrawal in flight does: what it sent may still land.
+      const p = fn(args, deadline);
+      let timer;
+      const late = new Promise((_, no) => {
+        timer = setTimeout(() => {
+          const h = Object.assign(Promise.race([p.then(() => {}, () => {}), new Promise((ok) => setTimeout(ok, HOLD_MAX_MS).unref?.())]).then(() => { if (hold === h) hold = null; }),
+            { busy: "Nothing was done by this call: an earlier money call ran out of time while still running, and what it sent may still land. Check the wallet (wallet_balance, credit_status, savings or pt_position) before calling again." });
+          hold = h;
+          no(new ToolError(`this call did not finish within ${Math.round(callBudgetMs / 1000)} s and is still running: a transaction it sent may still land, and it may still send the rest of what it was asked to do. Do NOT call it again for the same thing; check the wallet (wallet_balance, credit_status, savings or pt_position) in a minute. Money calls made meanwhile do nothing.`));
+        }, Math.max(0, deadline + margin - Date.now()));
+        timer.unref?.();
+      });
+      try { return await Promise.race([p, late]); } finally { clearTimeout(timer); }
     });
     moneyQueue = run.catch(() => {});
     return run;

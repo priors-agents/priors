@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ethers } from "ethers";
 import * as P from "../sdk/credit-profile.mjs";
-import { readCredit, findEntries, openEntry } from "../sdk/credit-reader.mjs";
+import { readCredit, findEntries, openEntry, LIMITS } from "../sdk/credit-reader.mjs";
 import { REPUTATION_REGISTRY, REGISTRY_ABI, NEW_FEEDBACK } from "../sdk/attestation.mjs";
 
 let passed = 0;
@@ -33,6 +33,8 @@ const ERC20 = new ethers.Interface(["event Transfer(address indexed from, addres
 class Chain {
   constructor() { this.logs = []; this.receipts = new Map(); this.head = 1; this.n = 0; this.perBlock = new Map(); this.feedback = new Map(); this.last = new Map(); this.tokens = new Map(); this.getLogs = 0; }
   token(address, decimals, symbol) { this.tokens.set(lc(address), { decimals, symbol }); }
+  /** The chain moves on to `block` with nothing in it. */
+  mine(block) { this.head = Math.max(this.head, block); }
   /** One transaction in `block` holding `logs` ([{ address, topics, data }]). */
   tx(block, logs) {
     const hash = ethers.zeroPadValue(ethers.toBeHex(++this.n), 32);
@@ -106,11 +108,12 @@ function handle(c, method, params) {
     default: throw new Error(`unsupported ${method}`);
   }
 }
-const server = { chain: new Chain() };
+const server = { chain: new Chain(), requests: 0 }; // requests: every JSON-RPC request answered
 const srv = http.createServer(async (req, res) => {
   let body = "";
   for await (const ch of req) body += ch;
   const msg = JSON.parse(body);
+  server.requests += Array.isArray(msg) ? msg.length : 1;
   const one = (m) => { try { return { jsonrpc: "2.0", id: m.id, result: handle(server.chain, m.method, m.params) }; } catch (e) { return { jsonrpc: "2.0", id: m.id, error: { code: 3, message: e.message, data: "0x" } }; } };
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify(Array.isArray(msg) ? msg.map(one) : one(msg)));
@@ -553,6 +556,110 @@ await t("a node's error that names its URL (a paid node's URL carries its key) n
   const text = JSON.stringify(r);
   assert.ok(r.writers[0].problems.length > 0, "the failure is reported");
   for (const s of ["node.example", "key-0123", "https://"]) assert.ok(!text.includes(s), `the result names ${s}: ${text.slice(0, 300)}`);
+});
+
+// ---- 10. where a chain ends: a writer that stops posting (GHSA-m5xx) -----------------------------------------------
+/** One honest statement over blocks 100-400; then loan 2, opened at 450 and defaulted at 500, which the writer never
+ *  posts (with `entry`: posts as a default entry only); the chain is read at block `readAt` (10,000: 5.3 hours after
+ *  the default, inside the 24 hours the profile gives a writer to post its default entry; 60,000: 33 hours after). */
+function stopped({ entry = false, readAt = 10_000 } = {}) {
+  const { chain, A } = world();
+  A.borrow(1, AGENT, 1_000_000, 110); A.close(1, 200);
+  chain.postEnc(W1, AGENT, 410, P.encodeFile(statement({ sources: [A.source()], from: 100, to: 400, w: A.window(AGENT, 100, 400) })));
+  A.borrow(2, AGENT, 5_000_000, 450);
+  const leaf = A.close(2, 500, { defaulted: true });
+  if (entry) chain.postEnc(W1, AGENT, 510, P.encodeFile(P.defaultFile({ chainId: CHAIN, identityRegistry: IDR, writer: W1, agentId: AGENT, asset: assetOf(USDG), decimals: 6, source: A.source(), leaf: { ...leaf, src: 0 }, createdAt: time(510) })));
+  chain.mine(readAt);
+  return { chain, A };
+}
+
+await t("10. a writer that stops posting cannot hide a later default: a full read scans past the last statement and fails a default no entry reports after 24 hours", async () => {
+  stopped({ readAt: 60_000 });
+  let r = await read(AGENT, { writers: [W1], mode: "full" });
+  let w = r.writers[0];
+  assert.equal(w.status, "failed", `a default at block 500, after the last statement (to 400), reads as ${w.status} (ok ${w.ok}, problems ${JSON.stringify(w.problems)}, counted ${JSON.stringify(r.counted)})`);
+  assert.match(probs(r), new RegExp(`loan 2 at source ${POOL(1)} defaulted in block 500, after the last statement \\(to block 400\\), and no default entry of this writer reports it, 33\\.1 hours before the block read at`));
+  assert.deepEqual(r.asOf, { block: 60000, time: time(60000) });
+  assert.deepEqual(w.after, { fromBlock: 401, toBlock: 60000, since: time(400), closed: { onTime: zero(), late: zero(), defaulted: { count: 1, amount: "5000000" }, recovered: zero() }, opened: { count: 1, amount: "5000000" }, awaiting: [] });
+  assert.deepEqual(r.counted, {}, "a failed writer is not counted");
+  const c = await cli([String(AGENT), "--writer", W1, "--full"]);
+  assert.equal(c.code, 1, c.out);
+  assert.match(c.out, /statements end at block 400 \(2023-11-14T22:26:40Z\); read at block 60000 \(2023-11-16T07:33:20Z\), 33\.1 hours later/);
+  assert.match(c.out, /after them, blocks 401-60000, in no statement and not counted: on time 0 \(0\.0\), late 0 \(0\.0\), defaulted 1 \(5\.0\); opened 1 \(5\.0\)/);
+  // as of block 450, before the default: loan 2 is open, nothing after the statement has closed
+  r = await read(AGENT, { writers: [W1], mode: "full", toBlock: 450 });
+  w = r.writers[0];
+  assert.deepEqual([w.status, w.after.toBlock, w.after.closed.defaulted.count, w.after.opened.count], ["rebuilt", 450, 0, 1]);
+});
+
+await t("10. a default after the last statement, inside the 24 hours the profile gives the writer, is shown as awaiting its entry, not a failure", async () => {
+  stopped(); // read 5.3 hours after the default
+  const r = await read(AGENT, { writers: [W1], mode: "full" });
+  const w = r.writers[0];
+  assert.deepEqual([w.status, w.problems], ["rebuilt", []], JSON.stringify(w.problems));
+  assert.deepEqual(w.after.awaiting, [{ source: POOL(1), loan: "2", block: 500, closedAt: time(500) }]);
+  const c = await cli([String(AGENT), "--writer", W1, "--full"]);
+  assert.equal(c.code, 0, c.out);
+  assert.match(c.out, new RegExp(`loan 2 at source ${POOL(1)} defaulted in block 500, 5\\.3 hours before the block read at: no default entry yet \\(the profile gives the writer 24 hours\\)`));
+});
+
+await t("10. a default the writer did post as a default entry after its last statement is shown after the statements, not counted, not a failure", async () => {
+  stopped({ entry: true });
+  const r = await read(AGENT, { writers: [W1], mode: "full" });
+  const w = r.writers[0];
+  assert.deepEqual(w.problems, []);
+  assert.deepEqual([w.status, w.defaults, w.after.closed.defaulted.count], ["rebuilt", 1, 1]);
+  assert.equal(r.totals.defaulted.count, 0, "counted: the statements' figures only");
+  const c = await cli([String(AGENT), "--writer", W1, "--full"]);
+  assert.equal(c.code, 0, c.out);
+  assert.match(c.out, /after them, blocks 401-10000, in no statement and not counted: [^\n]*defaulted 1 \(5\.0\)/);
+});
+
+await t("10. light mode does not read past the last statement, and says where the statements end", async () => {
+  stopped();
+  const r = await read(AGENT, { writers: [W1], mode: "light" });
+  const w = r.writers[0];
+  assert.equal(w.status, "sampled");
+  assert.deepEqual(w.after, { fromBlock: 401, toBlock: 10000, since: time(400), closed: null, opened: null });
+  const c = await cli([String(AGENT), "--writer", W1]);
+  assert.equal(c.code, 0, c.out);
+  assert.match(c.out, /statements end at block 400 \(2023-11-14T22:26:40Z\); read at block 10000 \(2023-11-15T03:46:40Z\), 5\.3 hours later/);
+  assert.match(c.out, /after them, blocks 401-10000: in no statement, and not read in light mode/);
+});
+
+// ---- 11. a read's budget: entries anyone can plant (GHSA-rc33) ------------------------------------------------------
+await t("11. a read's RPC requests are bounded, all writers together: statements planted by many writers cost a reader at most its budget", async () => {
+  const { chain, A, B } = world();
+  A.borrow(1, AGENT, 1_000_000, 110); A.close(1, 120);
+  const honest = chain.postEnc(W1, AGENT, 410, P.encodeFile(statement({ sources: [A.source()], from: 100, to: 400, w: A.window(AGENT, 100, 400) })));
+  // 5 writers x 20 statements, each with 16 anchors citing transactions that do not exist: each anchor costs a receipt
+  for (let k = 0; k < 5; k++) for (let n = 0; n < 20; n++) {
+    const wr = W(0x100 + k);
+    const leaves = Array.from({ length: P.MAX_ANCHORS }, (_, i) => ({ cls: "unsecured", loan: String(1000 + 100 * n + i), amount: "1000000", dueAt: time(300), closedAt: time(150 + i), outcome: P.ON_TIME, block: 150 + i, tx: ethers.id(`spam ${k} ${n} ${i}`), log: 0, openBlock: 120, openTx: ethers.id(`spam open ${k} ${n} ${i}`), openLog: 0, src: 0 }));
+    const f = P.statementFile({ chainId: CHAIN, identityRegistry: IDR, writer: wr, agentId: AGENT, asset: assetOf(USDG), decimals: 6, sources: [B.source()], seq: 1, prev: null, window: { fromBlock: 100, toBlock: 400, toTime: time(400) }, leaves, opened: { count: leaves.length, amount: String(leaves.length * 1_000_000) }, outstanding: zero(), createdAt: time(400) + 10, anchors: P.MAX_ANCHORS });
+    const enc = P.encodeFile(f, { max: P.FILE_LIMIT });
+    assert.equal(enc.file.credit.anchors.length, P.MAX_ANCHORS);
+    chain.postEnc(wr, AGENT, 500 + n, enc);
+  }
+  const count = async (o) => { server.requests = 0; const r = await read(AGENT, o); return { r, n: server.requests }; };
+  // a reader that names the writers it trusts never reads the others' entries, scanning or located (credit_history)
+  let { r, n } = await count({ writers: [W1], mode: "light" });
+  assert.equal(byWriter(r, W1).status, "sampled");
+  assert.ok(n <= 15, `${n} requests`);
+  ({ r, n } = await count({ writers: [W1], mode: "light", fromBlock: undefined, locate: { [W1]: [{ txHash: honest.txHash, blockNumber: honest.blockNumber }] } }));
+  assert.ok(n <= 15, `${n} requests`);
+  // a reader that reads every writer spends at most its budget, whatever was planted
+  ({ r, n } = await count({ mode: "light", maxRequests: 300 }));
+  assert.ok(n <= 300, `${n} requests for one read, over its budget of 300`);
+  assert.equal(byWriter(r, W1).status, "sampled", "the writer read before the budget ran out");
+  const spent = r.writers.filter((w) => /budget of 300 RPC requests for one read is spent/.test(w.problems.join("\n")));
+  assert.equal(spent.length, 5, JSON.stringify(r.writers.map((w) => [w.writer, w.status, w.problems.slice(0, 2)])));
+  for (const w of spent) assert.deepEqual([w.status, w.ok], ["failed", false]);
+  // the default budget is LIMITS.requests
+  const was = LIMITS.requests;
+  assert.ok(Number.isSafeInteger(was) && was >= 10_000, `LIMITS.requests is ${was}`);
+  LIMITS.requests = 300;
+  try { ({ n } = await count({ mode: "light" })); assert.ok(n <= 300, `${n} requests under a default budget of 300`); } finally { LIMITS.requests = was; }
 });
 
 srv.close();

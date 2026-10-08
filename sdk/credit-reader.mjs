@@ -17,9 +17,13 @@
 //   light         a sample: each statement's anchors and each default entry's leaf against the source's logs (the
 //                 closing log, the opening log's dueAt, the close block's time, the outcome) and, with `funds`, the
 //                 asset that moved for those loans. It does not check that a root covers every loan of its window or
-//                 the totals: a light result is the writer's claim ("sampled") and is never counted;
+//                 the totals: a light result is the writer's claim ("sampled") and is never counted. It does not read
+//                 the sources past the last statement: it reports where the statements end (`after`);
 //   full          every statement rebuilt from the sources' logs: its leaves, root, leaf count, totals, what was opened
 //                 in the window and what was outstanding at its end. Fund movement stays sampled (anchors, defaults).
+//                 The sources are also scanned past the last statement, to the block read at: what closed and opened
+//                 there is reported (`after`, not counted), and a default there that no default entry of the writer
+//                 reports fails the writer, so a writer that stops posting cannot leave a later default out.
 // Not checked: the class split (the lender's claim), the lender's honesty about whom it lends to, and sources a writer
 // never declares unless the reader gives a `manifest`. A reader chooses which writers it trusts (`writers`), as
 // ERC-8004's getSummary requires; `counted` adds up, by asset, only trusted writers whose chains were rebuilt.
@@ -29,8 +33,11 @@ import { REPUTATION_REGISTRY, REGISTRY_ABI, NEW_FEEDBACK } from "./attestation.m
 
 export const TRANSFER = "event Transfer(address indexed from, address indexed to, uint256 value)";
 const ERC20 = ["function decimals() view returns (uint8)", "function symbol() view returns (string)"];
-/** The reader's budgets: entries read per writer, log queries per full rebuild of one writer's chain. */
-export const LIMITS = { entries: 1000, queries: 5000 };
+/** The reader's budgets: entries read per writer, log queries per full rebuild of one writer's chain, and RPC requests
+ *  per read (readCredit), every writer and both endpoints together. Anyone can post credit entries about an agent, and
+ *  checking a statement costs up to 2 requests plus 3 per anchor (16 at most): the last budget bounds what a read that
+ *  names no writers pays, whatever was planted. */
+export const LIMITS = { entries: 1000, queries: 5000, requests: 20_000 };
 const nf = new ethers.Interface([NEW_FEEDBACK]);
 const tf = new ethers.Interface([TRANSFER]);
 const lc = (a) => String(a || "").toLowerCase();
@@ -50,8 +57,21 @@ async function pool(items, n, fn) {
   return out;
 }
 
-/** An answer, not a busy endpoint: a revert or data that does not decode is not worth a second try. */
-const settled = (e) => ["CALL_EXCEPTION", "BAD_DATA", "INVALID_ARGUMENT", "NUMERIC_FAULT"].includes(e?.code);
+/** An answer, not a busy endpoint: a revert, data that does not decode or a spent budget is not worth a second try. */
+const settled = (e) => ["CALL_EXCEPTION", "BAD_DATA", "INVALID_ARGUMENT", "NUMERIC_FAULT", "BUDGET"].includes(e?.code);
+const spent = (e) => e?.code === "BUDGET";
+
+/** `provider` for one read, its requests counted in `budget` ({ max, used }, shared by every endpoint of the read):
+ *  each call the reader makes is one request, and a call past `max` throws instead of reaching the endpoint. */
+function metered(provider, budget) {
+  const go = (f) => async (...a) => {
+    if (++budget.used > budget.max) throw Object.assign(new Error(`the reader's budget of ${budget.max} RPC requests for one read is spent`), { code: "BUDGET" });
+    return provider[f](...a);
+  };
+  const m = { getNetwork: go("getNetwork"), getBlockNumber: go("getBlockNumber"), getBlock: go("getBlock"), getTransactionReceipt: go("getTransactionReceipt"), getLogs: go("getLogs"), call: go("call") };
+  m.provider = m;
+  return m;
+}
 /** Public endpoints answer "busy" under load: back off (0.5 s, 1, 2, 4, 8) before giving up. */
 async function retry(fn, tries = 6) {
   let e;
@@ -230,8 +250,8 @@ export function context(provider) {
       if (!tokens.has(address)) tokens.set(address, (async () => {
         const t = new ethers.Contract(address, ERC20, provider);
         let decimals = null, symbol = null;
-        try { decimals = Number(await retry(() => t.decimals())); } catch (_) { /* reported by the caller */ }
-        try { const s = await retry(() => t.symbol()); if (/^[\x21-\x7e]{1,16}$/.test(s)) symbol = s; } catch (_) { /* display only */ }
+        try { decimals = Number(await retry(() => t.decimals())); } catch (x) { if (spent(x)) throw x; /* else reported by the caller */ }
+        try { const s = await retry(() => t.symbol()); if (/^[\x21-\x7e]{1,16}$/.test(s)) symbol = s; } catch (x) { if (spent(x)) throw x; /* else display only */ }
         return { address, decimals, symbol };
       })());
       return tokens.get(address);
@@ -357,23 +377,27 @@ export async function rebuild(ctx, src, agentId, { from, to, openFrom = from, sp
 /**
  * Full check of one chain against rebuilt leaves: root, leaf count, totals, opened, outstanding and the anchors, per
  * statement. Every source the chain declares is scanned over the whole chain (its declared blocks are the writer's
- * claim); a manifest's sources are scanned over their trusted range, with the manifest's events.
+ * claim); a manifest's sources are scanned over their trusted range, with the manifest's events. The scan runs on past
+ * the last window, to `asOf` (the block read at): what closed and opened there is returned as `after`, and a default
+ * there that none of the writer's default entries (`defaults`) reports is a problem, so a writer that stops posting
+ * cannot leave a later default out. Returns { problems, after: { closed, opened } | null }.
  */
-async function fullCheck(ctx, chain, agentId, { span, manifest = null, maxQueries = LIMITS.queries }) {
+async function fullCheck(ctx, chain, agentId, { span, manifest = null, maxQueries = LIMITS.queries, asOf = null, defaults = [] }) {
   const problems = [];
   const first = chain[0].file.credit, last = chain.at(-1).file.credit;
   const from = Number(first.window.fromBlock), to = Number(last.window.toBlock);
+  const end = Math.max(to, asOf?.block ?? to);
   const srcs = new Map();
   for (const s of chain) for (const x of s.file.credit.sources) srcs.set(keyOf(x), { src: x, lo: 0, hi: Infinity });
   for (const m of manifest || []) srcs.set(keyOf(m), { src: m, lo: Number(m.blocks[0]), hi: m.blocks[1] == null ? Infinity : Number(m.blocks[1]) });
   const net = Number((await ctx.provider.getNetwork()).chainId);
   let queries = 0;
-  for (const { src, lo, hi } of srcs.values()) if (Number(src.chainId) === net) queries += queriesOf(ctx, src, Math.max(from, lo), Math.min(to, hi), span);
-  if (queries > maxQueries) return [`a full rebuild needs ${queries} log queries, over the reader's limit of ${maxQueries}: not rebuilt`];
+  for (const { src, lo, hi } of srcs.values()) if (Number(src.chainId) === net) queries += queriesOf(ctx, src, Math.max(from, lo), Math.min(end, hi), span);
+  if (queries > maxQueries) return { problems: [`a full rebuild needs ${queries} log queries, over the reader's limit of ${maxQueries}: not rebuilt`], after: null };
   const built = [];
   for (const [k, { src, lo, hi }] of srcs) {
     if (Number(src.chainId) !== net) { problems.push(`source ${k}: on another chain, not rebuilt`); continue; }
-    const r = await rebuild(ctx, src, agentId, { from, to, openFrom: from, span, lo, hi });
+    const r = await rebuild(ctx, src, agentId, { from, to: end, openFrom: from, span, lo, hi });
     problems.push(...r.problems);
     built.push({ src, ...r });
   }
@@ -403,15 +427,33 @@ async function fullCheck(ctx, chain, agentId, { span, manifest = null, maxQuerie
     const anchors = c.anchors.map((x) => P.leafHash(x, c.sources[x.src], agentId));
     if (anchors.join() !== hashes.slice(hashes.length - anchors.length).join()) problems.push(`${tag}: the anchors are not the window's latest loans`);
   }
-  return problems;
+  // after the last window: in no statement yet, so not counted; an unreported default there is the writer's omission
+  const later = [], opened = { count: 0, amount: 0n };
+  for (const r of built) {
+    for (const l of r.leaves) if (l.block > to) later.push({ ...l, srcObj: r.src });
+    for (const o of r.opens) if (o.block > to) { opened.count++; opened.amount += big(o.amount); }
+  }
+  const reported = new Set(defaults.map((d) => `${keyOf(d.file.credit.sources[0])}:${d.file.credit.leaf.loan}`));
+  const awaiting = [];
+  for (const l of P.sortLeaves(later)) {
+    if (l.outcome !== P.DEFAULTED || reported.has(`${keyOf(l.srcObj)}:${l.loan}`)) continue;
+    const age = asOf ? asOf.time - l.closedAt : null;
+    // the writer has DEFAULT_ENTRY_S to post a default entry: a younger default with none yet is awaited, not a failure
+    if (age != null && age < DEFAULT_ENTRY_S) { awaiting.push({ source: ethers.getAddress(l.srcObj.contract), loan: String(l.loan), block: l.block, closedAt: l.closedAt }); continue; }
+    const ago = asOf ? `, ${hours(age)} before the block read at; the profile asks for a default entry within 24 hours` : "";
+    problems.push(`loan ${l.loan} at source ${ethers.getAddress(l.srcObj.contract)} defaulted in block ${l.block}, after the last statement (to block ${to}), and no default entry of this writer reports it${ago}`);
+  }
+  return { problems, after: { closed: P.totalsOf(later), opened: { count: opened.count, amount: opened.amount.toString() }, awaiting } };
 }
+const DEFAULT_ENTRY_S = 24 * 3600; // docs/ERC-8004-CREDIT.md: a writer SHOULD post a default entry within 24 hours of the default
+const hours = (s) => (s < 48 * 3600 ? `${(Math.max(0, s) / 3600).toFixed(1)} hours` : `${(s / 86400).toFixed(1)} days`);
 
 const sumInto = (t, x) => { for (const k of ["onTime", "late", "defaulted", "recovered"]) { t[k].count += x[k].count; t[k].amount = (big(t[k].amount) + big(x[k].amount)).toString(); } };
 
-/** One writer's entries for one agent, checked. */
-async function readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, manifest, maxEntries, maxQueries, located = [] }) {
+/** One writer's entries for one agent, checked. `asOf`: () => the block read at, { block, time }. */
+async function readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, manifest, maxEntries, maxQueries, located = [], asOf }) {
   const checked = mode === "full" ? "rebuilt" : "sampled";
-  const result = (o) => ({ writer, lender: null, asset: null, decimals: null, token: null, statements: 0, defaults: 0, window: null, checked, claimed: P.chainTotals([]), anchorsChecked: 0, ...o });
+  const result = (o) => ({ writer, lender: null, asset: null, decimals: null, token: null, statements: 0, defaults: 0, window: null, after: null, checked, claimed: P.chainTotals([]), anchorsChecked: 0, ...o });
   if (list.length > maxEntries) return result({ status: "failed", ok: false, problems: [`${list.length} credit entries, over the reader's limit of ${maxEntries}: not checked`] });
   const problems = [...located];
   const opened = list.map((e) => openEntry(e));
@@ -462,12 +504,22 @@ async function readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, 
     const s = chain.find((x) => b >= x.file.credit.window.fromBlock && b <= x.file.credit.window.toBlock);
     if (s && s.file.credit.closed.defaulted.count < 1) problems.push(`default of loan ${d.file.credit.leaf.loan}: statement seq ${s.file.credit.seq} covers it and counts no default`);
   }
-  if (mode === "full" && chain.length) problems.push(...await fullCheck(ctx, chain, id, { span, manifest: manifest?.sources || null, maxQueries }));
+  // where the statements end: what lies after them, to the block read at, is in no statement (full mode reads it)
+  let after = null;
+  if (chain.length) {
+    const end = chain.at(-1).file.credit.window, at = await asOf();
+    after = { fromBlock: end.toBlock + 1, toBlock: at.block, since: end.toTime, closed: null, opened: null };
+    if (mode === "full") {
+      const f = await fullCheck(ctx, chain, id, { span, manifest: manifest?.sources || null, maxQueries, asOf: at, defaults });
+      problems.push(...f.problems);
+      if (f.after) Object.assign(after, f.after);
+    }
+  }
   const claimed = P.chainTotals(chain);
   const status = problems.length ? "failed" : !chain.length ? "no-data" : checked;
   return result({
     lender: ref?.lender || null, asset: ref?.asset ?? null, decimals: ref?.decimals ?? null, token,
-    statements: chain.length, defaults: defaults.length, window: chain.length ? [chain[0].file.credit.window.fromBlock, claimed.toBlock] : null,
+    statements: chain.length, defaults: defaults.length, window: chain.length ? [chain[0].file.credit.window.fromBlock, claimed.toBlock] : null, after,
     status, ok: status === "rebuilt" || status === "sampled", claimed, problems, anchorsChecked: checks.length,
   });
 }
@@ -490,27 +542,44 @@ export function readProvider(url, chainId = 4663) {
  * Needs `writers`; `fromBlock` is then unused. Each entry is read from its receipt and the list must be complete
  * against getLastIndex (locatedEntries); a wrong or missing one is a problem of that writer. Every other check is
  * the same.
+ * `toBlock`: the block to read at (default: the latest the endpoints have). `maxRequests`: the RPC requests one read
+ * may make, every writer and both endpoints together (LIMITS.requests): a writer checked past it fails, not checked.
  *
- * Returns { agentId (decimal string), mode, writers: [...], counted, totals }. Each writer: { writer, lender, asset,
- * decimals, token, statements, defaults, window, checked, status, ok, claimed, problems, anchorsChecked }, where
+ * Returns { agentId (decimal string), mode, asOf, writers: [...], counted, totals }. `asOf`: the block read at,
+ * { block, time }, or null when no writer has a statement. Each writer: { writer, lender, asset, decimals, token,
+ * statements, defaults, window, after, checked, status, ok, claimed, problems, anchorsChecked }, where
  * `status` is "rebuilt" (full mode, nothing wrong), "sampled" (light mode, nothing wrong in what it checked: the totals
  * are the writer's claims), "failed" (a problem) or "no-data" (no statement; `writers` lists every requested writer,
- * found or not), and `claimed` holds the writer's totals. `counted`: { [asset]: totals } over trusted writers whose
- * chains were rebuilt; light mode counts nothing. `totals`: `counted`'s one asset (zeros when nothing is counted), or
- * null when the counted writers lend in different assets.
+ * found or not), and `claimed` holds the writer's totals, up to its last statement. `after`: what lies after the last
+ * statement, in no statement and never counted, { fromBlock, toBlock (asOf's), since (the last window's toTime),
+ * closed, opened }: `closed` ({ onTime, late, defaulted, recovered }) and `opened` ({ count, amount }) as rebuilt from
+ * the sources' logs in full mode, null in light mode (not read); `after` is null without a statement. A default there
+ * that no default entry of the writer reports is a problem (full mode). `counted`: { [asset]: totals } over trusted
+ * writers whose chains were rebuilt; light mode counts nothing. `totals`: `counted`'s one asset (zeros when nothing is
+ * counted), or null when the counted writers lend in different assets.
  */
-export async function readCredit(provider, agentId, { writers = null, fromBlock, toBlock = null, mode = "light", funds = true, span = 100_000, registry = REPUTATION_REGISTRY, history = provider, log = () => {}, manifest = null, maxEntries = LIMITS.entries, maxQueries = LIMITS.queries, locate = null } = {}) {
+export async function readCredit(provider, agentId, { writers = null, fromBlock, toBlock = null, mode = "light", funds = true, span = 100_000, registry = REPUTATION_REGISTRY, history = provider, log = () => {}, manifest = null, maxEntries = LIMITS.entries, maxQueries = LIMITS.queries, maxRequests = LIMITS.requests, locate = null } = {}) {
   if (mode !== "light" && mode !== "full") throw new TypeError(`mode is "light" or "full", not ${mode}`);
+  if (!Number.isSafeInteger(maxRequests) || maxRequests < 1) throw new TypeError(`maxRequests must be a positive integer, not ${maxRequests}`);
   const id = P.toId(agentId, "agentId");
   const trusted = writers ? [...new Set(writers.map((w) => ethers.getAddress(w)))] : null;
   if (locate != null && !trusted?.length) throw new TypeError("locate needs writers: entries are located writer by writer");
   if (locate != null && typeof locate !== "function" && (typeof locate !== "object" || Array.isArray(locate))) throw new TypeError('locate is { "<writer>": [{ txHash, blockNumber?, logIndex? }] } or async (agentId, writer) => that list');
   const from = locate == null ? blockArg(fromBlock, "fromBlock") : null;
+  let head = toBlock == null ? null : blockArg(toBlock, "toBlock");
   const man = readManifest(manifest);
-  const ctx = context(history);
+  // every request of this read, on either endpoint, counts against one budget
+  const budget = { max: maxRequests, used: 0 };
+  const rp = metered(provider, budget), hp = history === provider ? rp : metered(history, budget);
+  const ctx = context(hp);
+  // the block read at: the latest both endpoints have, unless `toBlock` names one
+  const latest = async () => { const a = await retry(() => rp.getBlockNumber()); return hp === rp ? a : Math.min(a, await retry(() => hp.getBlockNumber())); };
+  let at = null;
+  const asOf = () => (at ??= (async () => { const block = head ?? (head = await latest()); return { block, time: await ctx.time(block) }; })());
   const byWriter = new Map(), early = new Map();
   if (locate == null) {
-    const entries = await findEntries(provider, { agentId: id, writers: trusted, fromBlock: from, toBlock, span, registry });
+    head ??= await latest();
+    const entries = await findEntries(rp, { agentId: id, writers: trusted, fromBlock: from, toBlock: head, span, registry });
     log(`${entries.length} credit entries for agent #${id}`);
     for (const e of entries) { if (!byWriter.has(e.client)) byWriter.set(e.client, []); byWriter.get(e.client).push(e); }
   } else {
@@ -518,7 +587,7 @@ export async function readCredit(provider, agentId, { writers = null, fromBlock,
     for (const w of trusted) {
       try {
         const list = given ? given.get(lc(w)) ?? [] : await locate(id.toString(), w);
-        const r = await locatedEntries(provider, { agentId: id, writer: w, located: list, registry, max: maxEntries });
+        const r = await locatedEntries(rp, { agentId: id, writer: w, located: list, registry, max: maxEntries });
         if (r.entries.length || r.problems.length) { byWriter.set(w, r.entries); early.set(w, r.problems); }
       } catch (x) {
         byWriter.set(w, []);
@@ -527,17 +596,17 @@ export async function readCredit(provider, agentId, { writers = null, fromBlock,
     }
     log(`${[...byWriter.values()].flat().length} located credit entries for agent #${id}`);
   }
-  const net = Number((await history.getNetwork()).chainId);
-  const reg = new ethers.Contract(registry, REGISTRY_ABI, provider);
+  const net = Number((await hp.getNetwork()).chainId);
+  const reg = new ethers.Contract(registry, REGISTRY_ABI, rp);
   const out = [];
   for (const [writer, list] of byWriter) {
     try {
-      out.push(await readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, manifest: man?.get(lc(writer)) || null, maxEntries, maxQueries, located: early.get(writer) || [] }));
+      out.push(await readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, manifest: man?.get(lc(writer)) || null, maxEntries, maxQueries, located: early.get(writer) || [], asOf }));
     } catch (x) {
-      out.push({ writer, lender: null, asset: null, decimals: null, token: null, statements: 0, defaults: 0, window: null, checked: mode === "full" ? "rebuilt" : "sampled", status: "failed", ok: false, claimed: P.chainTotals([]), problems: [`could not be checked: ${msg(x)}`], anchorsChecked: 0 });
+      out.push({ writer, lender: null, asset: null, decimals: null, token: null, statements: 0, defaults: 0, window: null, after: null, checked: mode === "full" ? "rebuilt" : "sampled", status: "failed", ok: false, claimed: P.chainTotals([]), problems: [`could not be checked: ${msg(x)}`], anchorsChecked: 0 });
     }
   }
-  for (const w of trusted || []) if (!byWriter.has(w)) out.push({ writer: w, lender: null, asset: null, decimals: null, token: null, statements: 0, defaults: 0, window: null, checked: null, status: "no-data", ok: false, claimed: P.chainTotals([]), problems: [], anchorsChecked: 0 });
+  for (const w of trusted || []) if (!byWriter.has(w)) out.push({ writer: w, lender: null, asset: null, decimals: null, token: null, statements: 0, defaults: 0, window: null, after: null, checked: null, status: "no-data", ok: false, claimed: P.chainTotals([]), problems: [], anchorsChecked: 0 });
   const counted = {};
   const trust = new Set((trusted || []).map(lc));
   for (const w of out) {
@@ -548,5 +617,5 @@ export async function readCredit(provider, agentId, { writers = null, fromBlock,
   }
   const assets = Object.values(counted);
   const totals = assets.length > 1 ? null : assets[0] || { asset: null, decimals: null, symbol: null, writers: 0, onTime: zero(), late: zero(), defaulted: zero(), recovered: zero() };
-  return { agentId: id.toString(), mode, funds: Boolean(funds), manifest: Boolean(man), writers: out, counted, totals };
+  return { agentId: id.toString(), mode, funds: Boolean(funds), manifest: Boolean(man), asOf: at ? await at.catch(() => null) : null, writers: out, counted, totals };
 }
