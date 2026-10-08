@@ -1112,14 +1112,26 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
         try { b = await pt.trade(kind, o); } catch (e) { throw asked(e); }
         return [termsLine(b.quote), `Nothing was sent. From ${b.account}, ${b.calls.length} call${b.calls.length > 1 ? "s" : ""} in order:`, callsText(b), minLine(b), ...b.warnings.map((w) => `Note: ${w}.`)].join("\n");
       }
-      // what left the wallet is counted even when the answer is lost: a send that started may have landed
+      // what left the wallet is counted even when the answer is lost: a send that started may have landed. A send that
+      // failed is `lost` unless it was refused before it left (a reverting estimate, no ETH for gas), as for a borrow
+      // (GHSA-v9xj): the node may have taken it and its answer been lost, so it stays counted and is said (GHSA-549m: it
+      // was given back as "nothing sent" and answered with the bare transport error)
       const sent = [];
-      const counting = { getAddress: async () => signer.address, sendTransaction: async (tx) => { const r = await signer.sendTransaction(tx); sent.push(r.hash); return r; } };
+      let lost = false;
+      const counting = { getAddress: async () => signer.address, sendTransaction: async (tx) => {
+        let r;
+        try { r = await signer.sendTransaction(tx); } catch (e) { lost = e?.code !== "CALL_EXCEPTION" && e?.code !== "INSUFFICIENT_FUNDS"; throw e; }
+        sent.push(r.hash);
+        return r;
+      } };
       if (units !== null) session.ptBought += units;
       let r;
       try { r = await pt.trade(kind, { ...o, wallet: counting }); } catch (e) {
+        const why = clean(e?.shortMessage || e?.message || String(e), 300);
+        const was = `${sent.length} transaction${sent.length > 1 ? "s were" : " was"} sent (${sent.join(", ")})`;
+        if (lost) throw new ToolError(`${sent.length ? `${was}, then another` : "A transaction"} may have been sent: its answer was lost (${why}).${units !== null ? ` Its ${usd(units)} stays counted against PRIORS_MAX_PT_TOTAL_USD.` : ""} Check pt_position and wallet_balance before trying again.`);
         if (sent.length === 0 && units !== null) session.ptBought -= units;
-        if (sent.length) throw new ToolError(`${sent.length} transaction${sent.length > 1 ? "s were" : " was"} sent (${sent.join(", ")}), then: ${clean(e?.shortMessage || e?.message || String(e), 300)}. Check pt_position and wallet_balance before trying again.`);
+        if (sent.length) throw new ToolError(`${was}, then: ${why}. Check pt_position and wallet_balance before trying again.`);
         throw asked(e);
       }
       const done = kind === "buy" ? `Bought about ${nf(r.quote.expectedOutText)} PT-USDG (at least ${nf(r.quote.minOutText)}) with ${usd(units)}`

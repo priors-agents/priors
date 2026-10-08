@@ -7,6 +7,8 @@
 // Then (GHSA-cq9v) the session caps once that call's hold has ended while it still runs: what it may still borrow, sign
 // or save stays counted, so a call made then cannot pass PRIORS_MAX_BORROW_TOTAL_USD, PRIORS_MAX_SPEND_USD or
 // PRIORS_MAX_SAVE_TOTAL_USD on a total that leaves it out.
+// Then (GHSA-549m) a PT trade whose broadcast was taken by the node but whose answer was lost: what pt_buy may have
+// spent stays counted against PRIORS_MAX_PT_TOTAL_USD, and the answer says a transaction may have been sent.
 // PRIORS_MCP_SERVER=/path/to/server.mjs runs the same tests against another copy of the server (before/after a fix).
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -309,6 +311,79 @@ await test("GHSA-cq9v: save too: a save still running once its hold has ended ke
   await sleep(100);
   const rest = await call("save", { amount_usd: 10 });
   assert.ok(!rest.error && /Saved 10\.00 USDG/.test(rest.text), `once the first has landed, its 50 counts once (50 + 10 = 60): ${rest.text}`);
+});
+
+// ---- GHSA-549m: a broadcast the node took whose answer was lost may have landed. pt_buy recorded a send only once its
+// answer came back, so such a buy was given back as "nothing sent": the USDG left, the session total did not count it,
+// and the answer was the bare transport error.
+/** As SlowPtChain, mined at once, but the chain keeps the router's allowance (`st.allowance`, for whichever token) and what
+ *  the swaps took from the wallet (`st.out`). A broadcast whose kind ("approve" or "swap") is in `st.drop` is taken and
+ *  mined, then its answer is lost. `st.refuse` refuses the next transaction before it is sent: "estimate" (its estimate
+ *  reverts) or "gas" (the node refuses the broadcast: no ETH for gas). */
+const PT_UNITS = 50_000_000n;
+class LossyPtChain extends SlowPtChain {
+  constructor(st) { super(st, 0); st.allowance ??= 0n; st.out = 0n; st.drop ??= []; }
+  answer(method, params) {
+    const st = this.st;
+    if (method === "eth_estimateGas" && st.refuse === "estimate") { st.refuse = null; throw new Error("execution reverted"); }
+    if (method === "eth_sendRawTransaction" && st.refuse === "gas") { st.refuse = null; throw new Error("insufficient funds for gas * price + value"); }
+    if (method === "eth_call" && String(params[0].data).startsWith("0xdd62ed3e")) return encodeFunctionResult({ abi: PT_ABI, functionName: "allowance", result: st.allowance });
+    const r = super.answer(method, params);
+    if (method === "eth_sendRawTransaction") {
+      const tx = ethers.Transaction.from(params[0]);
+      if (st.sent.at(-1) === "approve") st.allowance = decodeFunctionData({ abi: PT_ABI, data: tx.data }).args[1];
+      else { st.allowance -= PT_UNITS; st.out += PT_UNITS; } // each swap here takes 50
+    }
+    return r;
+  }
+  async _send(payload) {
+    const out = await super._send(payload);
+    [payload].flat().forEach((p, i) => {
+      const k = p.method === "eth_sendRawTransaction" && !out[i].error ? this.st.drop.indexOf(this.st.sent.at(-1)) : -1;
+      if (k >= 0) { this.st.drop.splice(k, 1); throw new Error("fetch failed: socket hang up (the node took the transaction; its answer was lost)"); }
+    });
+    return out;
+  }
+}
+const ptCapped = (st) => connect({ PRIORS_MAX_PT_USD: "50", PRIORS_MAX_PT_TOTAL_USD: "50" }, { provider: new LossyPtChain(st) }, 5_000);
+
+await test("GHSA-549m: a pt_buy whose swap was taken but whose answer was lost (the allowance already live) stays counted, says it may have been sent, and the next buy is refused by PRIORS_MAX_PT_TOTAL_USD", async () => {
+  const st = { ...ptState(), allowance: PT_UNITS, drop: ["swap"] }, call = await ptCapped(st);
+  const first = await call("pt_buy", { amount_usdg: 50 });
+  assert.ok(first.error && /may have been sent: its answer was lost/.test(first.text) && /Check pt_position and wallet_balance before trying again/.test(first.text), first.text);
+  const second = await call("pt_buy", { amount_usdg: 50 });
+  assert.equal(st.out, PT_UNITS, `USDG that left the wallet (session cap 50.00): ${Number(st.out) / 1e6}; the second answered: ${second.text.slice(0, 120)}`);
+  assert.ok(second.error && /100\.00 USDG, above 50\.00 USDG \(PRIORS_MAX_PT_TOTAL_USD\)/.test(second.text), second.text);
+});
+
+await test("GHSA-549m: one whose approval was taken but whose answer was lost stays counted too: no swap follows it past the cap", async () => {
+  const st = { ...ptState(), drop: ["approve", "swap"] }, call = await ptCapped(st);
+  const first = await call("pt_buy", { amount_usdg: 50 });
+  assert.ok(first.error && /may have been sent: its answer was lost/.test(first.text), first.text);
+  const second = await call("pt_buy", { amount_usdg: 50 }); // the allowance is live now: this one would send only the swap
+  const third = await call("pt_buy", { amount_usdg: 50 });
+  assert.deepEqual(st.sent, ["approve"], `one approval and no swap (session cap 50.00): ${st.sent.join(", ")}; the second answered: ${second.text.slice(0, 120)}`);
+  assert.ok(second.error && /PRIORS_MAX_PT_TOTAL_USD/.test(second.text) && third.error && /PRIORS_MAX_PT_TOTAL_USD/.test(third.text), `${second.text} | ${third.text}`);
+});
+
+await test("GHSA-549m: a buy refused before anything was sent (its estimate reverts; the node refuses it for gas) counts nothing: the whole cap is still there", async () => {
+  const st = { ...ptState(), allowance: PT_UNITS }, call = await ptCapped(st);
+  st.refuse = "estimate";
+  const a = await call("pt_buy", { amount_usdg: 50 });
+  assert.ok(a.error && !/may have been sent/.test(a.text), a.text);
+  st.refuse = "gas";
+  const b = await call("pt_buy", { amount_usdg: 50 });
+  assert.ok(b.error && /insufficient funds/i.test(b.text) && !/may have been sent/.test(b.text), b.text);
+  const c = await call("pt_buy", { amount_usdg: 50 });
+  assert.ok(!c.error && /Bought about/.test(c.text), c.text);
+  assert.equal(st.out, PT_UNITS);
+});
+
+await test("GHSA-549m: pt_sell (pt_redeem shares the path) whose transaction was taken but whose answer was lost says it may have been sent, not the bare error", async () => {
+  const st = { ...ptState(), allowance: PT_UNITS, drop: ["swap"] }, call = await ptCapped(st);
+  const r = await call("pt_sell", { amount_pt: 50 });
+  assert.deepEqual(st.sent, ["swap"]);
+  assert.ok(r.error && /may have been sent: its answer was lost/.test(r.text) && /Check pt_position and wallet_balance before trying again/.test(r.text), r.text);
 });
 
 console.log(`\nmcp call budget: ${passed} passed, ${failed} failed`);
