@@ -1,0 +1,15 @@
+{
+  "name": "priors",
+  "displayName": "Priors",
+  "version": "0.6.2",
+  "description": "Give an ERC-8004 agent a credit history on Priors (Robinhood Chain), and check any agent's record and score: the Priors skill, plus the hosted read-only Priors MCP server (no key, no transaction)",
+  "author": {
+    "name": "priors-agents",
+    "url": "https://github.com/priors-agents"
+  },
+  "homepage": "https://priors.trade",
+  "repository": "https://github.com/priors-agents/priors",
+  "license": "MIT",
+  "keywords": ["erc-8004", "credit", "reputation", "x402", "usdg", "robinhood-chain", "mcp"],
+  "skills": "./"
+}

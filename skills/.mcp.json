@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "priors-read": {
+      "type": "http",
+      "url": "https://mcp.priors.trade/mcp"
+    }
+  }
+}

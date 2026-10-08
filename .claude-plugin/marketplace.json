@@ -1,0 +1,14 @@
+{
+  "name": "priors-agents",
+  "description": "Priors for Claude Code: the agent skill and the hosted read-only MCP server for ERC-8004 agent credit records on Robinhood Chain",
+  "owner": {
+    "name": "priors-agents",
+    "url": "https://github.com/priors-agents"
+  },
+  "plugins": [
+    {
+      "name": "priors",
+      "source": "./skills"
+    }
+  ]
+}

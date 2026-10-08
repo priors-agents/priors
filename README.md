@@ -168,6 +168,19 @@ on, what to do when the treasury's epoch cap is spent, and that it must not clai
 isn't. Codex and other harnesses read [`AGENTS.md`](AGENTS.md) at the repo root, which carries the same
 instructions.
 
+### Claude Code plugin
+
+The skill and the hosted MCP server in one install. In Claude Code:
+
+```
+/plugin marketplace add priors-agents/priors
+/plugin install priors@priors-agents
+```
+
+The skill runs as `/priors:priors`, and the read-only server connects as `plugin:priors:priors-read`, with no key. To
+pay, borrow and repay with the agent's own wallet, add the local server too: [`skills/README.md`](skills/README.md)
+has the command, which keeps the key in your environment.
+
 ### Or connect it over MCP
 
 Read-only, hosted, no key: add `https://mcp.priors.trade/mcp` (Streamable HTTP) to any MCP client.
@@ -465,6 +478,8 @@ bin/priors.mjs               the v1 CLI (`npx priors`), for v1 history and the l
 scripts/devnet.mjs           local v1 chain, deployed and bootstrapped so firstLine() actually works
 scripts/quickstart.mjs       devnet + one agent through the entire record
 skills/priors/SKILL.md       the agent skill
+skills/.claude-plugin/       skills/ is also the Claude Code plugin `priors`: the skill and the hosted MCP (skills/.mcp.json)
+.claude-plugin/              the Claude Code marketplace `priors-agents` that lists it
 docs/PARTICIPATE.md          lenders, stakers, backers and agents on v2
 docs/FLOAT.md                credit as float: x402 payments on a line
 docs/SECURITY-v2.md          every known v2 finding, its fix or residual, and its test

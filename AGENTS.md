@@ -1,7 +1,8 @@
 # AGENTS.md
 
 Instructions for any coding agent working in this repo — Codex, Claude Code, or anything else that reads this
-file. Claude Code users: the same content is packaged as a skill at `skills/priors/SKILL.md`.
+file. Claude Code users: the same content is packaged as a skill at `skills/priors/SKILL.md`, and as the Claude Code
+plugin `priors` (`/plugin marketplace add priors-agents/priors`, then `/plugin install priors@priors-agents`).
 
 ## What this repo is
 
@@ -81,3 +82,6 @@ bash scripts/check-public.sh  # fails if any credential reached a tracked file
   number or decimal string is whole dollars (`toUnits` in `sdk/priors-v2.mjs`); the amounts it returns are raw
   6-decimal bigints. Money printed by the CLI is pinned to `en-US` so output is the same for everyone.
 - Never commit a private key, a `.env`, or a deployment record for a chain you did not deploy to.
+- `skills/` is also the Claude Code plugin `priors` (`skills/.claude-plugin/plugin.json`, `skills/.mcp.json`), listed
+  by `.claude-plugin/marketplace.json`. Installed copies stay on plugin.json's `version` until it changes, so bump it
+  with every change under `skills/`, and run `claude plugin validate .` and `claude plugin validate skills`.
