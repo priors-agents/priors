@@ -156,7 +156,10 @@ The RPC is `--rpc`, else `RPC_URL`, else Robinhood Chain's public endpoint; an e
 - the file's `agentRegistry`, `agentId`, `clientAddress`, `value`, `valueDecimals`, `tag1`, `tag2` are the entry's, and
   `getSummary(agentId, [attester], "priors-score", "")` is the file's score;
 - `blockTime` is the timestamp of `block`, and the note was posted at or after it;
-- each cited repayment: the transaction succeeded before `block` and carries the pool's `Repaid` log for that loan and
+- `pool`, and `v1Pool` when the file names one, are the pools of `deployments/4663.v2.json`. The repayments and the
+  payment below are read from those two pools, whatever the file names, so a citation of another contract fails
+  (GHSA-m5wj-mgcg-x3fv);
+- each cited repayment: the transaction succeeded before `block` and carries the pool's `Repaid` log (the v1 pool's for a v1 loan) for that loan and
   agent; `getLoan` shows the loan is the agent's, repaid, and closed by its due date;
 - `proofOfPayment`: the borrow transaction carries the pool's `Borrowed` log for `paid.loan`, to `toAddress`, for
   `paid.usdg`;
@@ -167,7 +170,8 @@ The RPC is `--rpc`, else `RPC_URL`, else Robinhood Chain's public endpoint; an e
 Not verified by the script: the score's arithmetic (it needs the x402 income index and every agent's loans; the inputs
 are public and the engine is `sdk/score-v2.mjs`, see [SCORE-v2.md](SCORE-v2.md)), and the totals (`repaid.onTime`,
 `repaid.usdg`, `late`, `defaults`, counted over the agent's whole history, v1 included; the script prints the lens'
-figures beside them).
+figures beside them). So the score and the totals are the attester's word: a note with a false score or false totals
+that cites nothing passes the script, while every repayment or payment a note does cite must be on the record.
 
 ## Schema versioning
 

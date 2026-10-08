@@ -254,7 +254,14 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       // Every money call answers by its deadline, whatever it waits for (GHSA-rg79: pt_buy waited for its receipts past the
       // client's timeout, the model saw nothing, and its retry bought again). One still running then goes on, and holds
       // every later money call, as a savings withdrawal in flight does: what it sent may still land.
-      const p = fn(args, deadline);
+      // What a call may still borrow, sign or save counts against the session caps from the moment its check passes
+      // (`count`, with no await between the two) until it ends; then only what it did, counted as before. The hold ends
+      // after HOLD_MAX_MS even while the call runs, and a call made then runs beside it: its check read a total that left
+      // the first one out, and a second borrow passed PRIORS_MAX_BORROW_TOTAL_USD (GHSA-cq9v). One that never ends stays
+      // counted, the safe direction (as a borrow whose answer was lost, GHSA-v9xj).
+      const kept = {};
+      const count = (k, amount) => { session[k] += amount; kept[k] = (kept[k] ?? 0n) + amount; };
+      const p = fn(args, deadline, count).finally(() => { for (const k of Object.keys(kept)) session[k] -= kept[k]; });
       let timer;
       const late = new Promise((_, no) => {
         timer = setTimeout(() => {
@@ -606,7 +613,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       use_savings: z.boolean().optional().describe("Default true: once the price is known, if the wallet holds less, first take the difference out of the agent's savings, before any borrowing."),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  }, serial(async ({ url, method = "GET", body, max_price_usd, max_borrow_usd, use_savings = true }, deadline) => {
+  }, serial(async ({ url, method = "GET", body, max_price_usd, max_borrow_usd, use_savings = true }, deadline, count) => {
     const signer = needWallet("pay_url");
     const u = await checkTarget(url);
     if (method === "GET" && body !== undefined) throw new ToolError("A GET request cannot carry a body: use POST (or another method) with body.");
@@ -655,6 +662,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     } else {
       if (session.spent + maxPrice > spendCap) throw new ToolError(`this would bring what pay_url may sign in this session to ${usd(session.spent + maxPrice)}, above ${usd(spendCap)} (PRIORS_MAX_SPEND_USD). ${usd(session.spent)} was signed so far; the user can raise the limit and restart the server.`);
       if (maxBorrow > 0n && session.borrowed + maxBorrow > borrowTotalCap) throw new ToolError(`this could bring what is borrowed in this session to ${usd(session.borrowed + maxBorrow)}, above ${usd(borrowTotalCap)} (PRIORS_MAX_BORROW_TOTAL_USD).`);
+      count("spent", maxPrice); count("borrowed", maxBorrow); // the most it may sign and borrow, until it ends (GHSA-cq9v)
       let agentId;
       if (maxBorrow > 0n) { agentId = await resolveAgent(); await needController(agentId); }
       // The agent's own savings before a loan: once the 402 names the price, only what the wallet is short of.
@@ -829,12 +837,13 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       dry_run: z.boolean().optional().describe("true: only quote the fee and due amount, borrow nothing."),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  }, serial(async ({ amount_usd, days, dry_run }) => {
+  }, serial(async ({ amount_usd, days, dry_run }, _deadline, count) => {
     needWallet("borrow");
     const amount = dollars(amount_usd, "amount_usd");
     if (amount === 0n) throw new ToolError("amount_usd must be above zero");
     if (amount > maxBorrowCeiling) throw new ToolError(`amount_usd ${X.formatUsdg(amount)} is above this server's ceiling of ${usd(maxBorrowCeiling)} (PRIORS_MAX_BORROW_USD).`);
     if (!dry_run && session.borrowed + amount > borrowTotalCap) throw new ToolError(`this would bring what is borrowed in this session to ${usd(session.borrowed + amount)}, above ${usd(borrowTotalCap)} (PRIORS_MAX_BORROW_TOTAL_USD).`);
+    if (!dry_run) count("borrowed", amount); // until this call ends (GHSA-cq9v)
     const term = BigInt(Math.round(days * 86400));
     const id = await resolveAgent();
     await needController(id);
@@ -984,7 +993,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     description: "Move USDG from the configured wallet into the savings vault (Steakhouse USDG on Morpho by default), where it earns the vault's rate (which moves with its markets) until the agent needs it; pay_url and repay take it back out automatically when the wallet is short. Moves real money into a third-party vault, whose risk the agent carries: state the amount to the user and get their go-ahead first. Keep enough in the wallet for loans coming due and payments expected soon. Needs ETH for gas.",
     inputSchema: { amount_usd: z.number().positive().describe("How much to save, in US dollars of USDG.") },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  }, serial(async ({ amount_usd }) => {
+  }, serial(async ({ amount_usd }, _deadline, count) => {
     needSavings();
     if (savingsOff) throw new ToolError("Savings are off on this server (PRIORS_SAVINGS_VAULT=off): save is disabled. The savings and unsave tools still work.");
     needWallet("save");
@@ -992,6 +1001,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     if (amount === 0n) throw new ToolError("amount_usd must be above zero");
     if (amount > maxSaveCeiling) throw new ToolError(`amount_usd ${X.formatUsdg(amount)} is above this server's ceiling of ${usd(maxSaveCeiling)} per save (PRIORS_MAX_SAVE_USD).`);
     if (session.saved + amount > saveTotalCap) throw new ToolError(`this would bring what save moved in this session to ${usd(session.saved + amount)}, above ${usd(saveTotalCap)} (PRIORS_MAX_SAVE_TOTAL_USD).`);
+    count("saved", amount); // until this call ends (GHSA-cq9v)
     // Payments signed and not yet settled still need their USDG in the wallet: never save it away from under them.
     const nowS = Math.floor(Date.now() / 1000);
     refresh(); // another session's pending payments need their USDG too

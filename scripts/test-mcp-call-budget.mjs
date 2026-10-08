@@ -4,6 +4,9 @@
 // saw nothing, and its retry signed a second buy). Network-free: the real server and MCP client over an in-memory
 // transport, a throwaway key, a mock chain that mines each transaction a fixed time after its broadcast.
 //   node scripts/test-mcp-call-budget.mjs
+// Then (GHSA-cq9v) the session caps once that call's hold has ended while it still runs: what it may still borrow, sign
+// or save stays counted, so a call made then cannot pass PRIORS_MAX_BORROW_TOTAL_USD, PRIORS_MAX_SPEND_USD or
+// PRIORS_MAX_SAVE_TOTAL_USD on a total that leaves it out.
 // PRIORS_MCP_SERVER=/path/to/server.mjs runs the same tests against another copy of the server (before/after a fix).
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -16,6 +19,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { PT_USDG } from "../sdk/pt-usdg.mjs";
 import { ORACLE_ABI, PT_ABI } from "../sdk/pendle-pt.mjs";
+import { robinhood } from "../packages/x402/index.mjs";
+import { POOL_ABI } from "../packages/x402/src/credit.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const { createPriorsMcpServer } = await import(pathToFileURL(process.env.PRIORS_MCP_SERVER || join(ROOT, "packages/mcp/src/server.mjs")).href);
@@ -64,8 +69,8 @@ class SlowPtChain extends ethers.JsonRpcProvider {
 }
 
 /** A server and a client whose requests time out after `clientTimeoutMs` (an MCP client's 60 s, scaled like the budget). */
-async function connect(env, deps, clientTimeoutMs) {
-  const server = await createPriorsMcpServer({ env: { PRIORS_KEY: KEY, PRIORS_STATE_DIR: mkdtempSync(join(tmpdir(), "priors-mcp-budget-")), ...env }, deps });
+async function connect(env, deps, clientTimeoutMs, fetchImpl) {
+  const server = await createPriorsMcpServer({ env: { PRIORS_KEY: KEY, PRIORS_STATE_DIR: mkdtempSync(join(tmpdir(), "priors-mcp-budget-")), ...env }, deps, ...(fetchImpl ? { fetchImpl } : {}) });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await server.connect(a);
   const client = new Client({ name: "test", version: "1" });
@@ -135,6 +140,175 @@ await test("borrow too: a borrow outlasting its budget answers in time; one made
   assert.equal(rec.length, 1, "one borrow sent");
   const later = await call("borrow", { amount_usd: 5, days: 7 });
   assert.ok(!later.error && /Borrowed 5\.00 USDG/.test(later.text), later.text);
+});
+
+// ---- GHSA-cq9v: the hold above ends after HOLD_MAX_MS (scaled to HOLD here) whatever the first call does; a call made
+// then runs beside it, and its cap check must count what the first may still borrow, sign or save.
+const HOLD = 500;
+const until = async (ok, ms = 3_000) => { for (const end = Date.now() + ms; !ok() && Date.now() < end;) await sleep(20); };
+/** A credit facade whose first `kind` call ("borrow" or "save") waits until `land()`, as one in tx.wait() on a stalled
+ *  node does (no timeout, no signal); every call is kept in `rec`. `at: "quote"` stalls the first quote instead (a read
+ *  before anything is sent); `refuse` makes the first one refused before sending. */
+function stalling(kind, { refuse = false, at = kind } = {}) {
+  const rec = [];
+  let land, quotes = 0;
+  const landed = new Promise((ok) => { land = ok; });
+  const now = Math.floor(Date.now() / 1000);
+  const credit = {
+    isController: async () => true,
+    quote: async (id, amount, term) => { if (at === "quote" && ++quotes === 1) await landed; return { amount, term, fee: 50_000n, due: amount + 50_000n }; },
+    savingsOf: async () => ({ saved: 0n, wallet: 0n }),
+    [kind]: async (...a) => {
+      const amount = kind === "borrow" ? a[1] : a[0];
+      rec.push(amount);
+      if (rec.length === 1 && refuse) throw Object.assign(new Error("execution reverted: InsufficientCapacity()"), { code: "CALL_EXCEPTION" });
+      if (rec.length === 1 && at === kind) await landed;
+      return kind === "borrow" ? { hash: "0x" + "11".repeat(32), loanId: 40n + BigInt(rec.length), principal: amount, fee: 50_000n, dueAt: now + Number(a[2]) } : { hash: "0x" + "22".repeat(32), amount };
+    },
+  };
+  return { credit, rec, land: () => land() };
+}
+
+await test("GHSA-cq9v: a borrow still running once its hold has ended keeps its amount counted: the next borrow is refused by PRIORS_MAX_BORROW_TOTAL_USD; once it lands, what it borrowed counts, once", async () => {
+  const s = stalling("borrow");
+  const call = await connect({ PRIORS_AGENT_ID: "7", PRIORS_MAX_BORROW_USD: "25", PRIORS_MAX_BORROW_TOTAL_USD: "30" }, { credit: s.credit, callBudgetMs: 1_000, holdMaxMs: HOLD }, 1_500);
+  const first = await call("borrow", { amount_usd: 25, days: 7 });
+  assert.ok(!first.timedOut && /did not finish within 1 s and is still running/.test(first.text), first.text);
+  await sleep(HOLD + 300); // the hold has ended; the first borrow still waits for its receipt
+  const second = await call("borrow", { amount_usd: 25, days: 7 });
+  assert.equal(s.rec.length, 1, `one borrow sent while the first runs (session cap 30): ${s.rec.length}; the second answered: ${second.text.slice(0, 120)}`);
+  assert.ok(second.error && /50\.00 USDG, above 30\.00 USDG \(PRIORS_MAX_BORROW_TOTAL_USD\)/.test(second.text), second.text);
+  s.land();
+  await sleep(100);
+  const rest = await call("borrow", { amount_usd: 5, days: 7 });
+  assert.ok(!rest.error && /Borrowed 5\.00 USDG/.test(rest.text), `once the first has landed, its 25 counts once (25 + 5 = 30): ${rest.text}`);
+  const over = await call("borrow", { amount_usd: 1, days: 7 });
+  assert.ok(over.error && /PRIORS_MAX_BORROW_TOTAL_USD/.test(over.text), over.text);
+});
+
+await test("GHSA-cq9v: counted from its check, not from its send: a borrow still reading its quote once its hold has ended counts too", async () => {
+  const s = stalling("borrow", { at: "quote" });
+  const call = await connect({ PRIORS_AGENT_ID: "7", PRIORS_MAX_BORROW_USD: "25", PRIORS_MAX_BORROW_TOTAL_USD: "25" }, { credit: s.credit, callBudgetMs: 1_000, holdMaxMs: HOLD }, 1_500);
+  const first = await call("borrow", { amount_usd: 25, days: 7 });
+  assert.ok(!first.timedOut && /did not finish within 1 s and is still running/.test(first.text), first.text);
+  await sleep(HOLD + 300);
+  const second = await call("borrow", { amount_usd: 25, days: 7 });
+  s.land(); // the first one's quote answers: it goes on and borrows, as the user asked
+  await until(() => s.rec.length > 0);
+  await sleep(100);
+  assert.equal(s.rec.length, 1, `one borrow in all (session cap 25): ${s.rec.length}; the second answered: ${second.text.slice(0, 120)}`);
+  assert.ok(second.error && /PRIORS_MAX_BORROW_TOTAL_USD/.test(second.text), second.text);
+});
+
+await test("GHSA-cq9v: a borrow refused before it was sent counts nothing: the whole session cap is still there", async () => {
+  const s = stalling("borrow", { refuse: true });
+  const call = await connect({ PRIORS_AGENT_ID: "7", PRIORS_MAX_BORROW_USD: "25", PRIORS_MAX_BORROW_TOTAL_USD: "25" }, { credit: s.credit }, 5_000);
+  const refused = await call("borrow", { amount_usd: 25, days: 7 });
+  assert.ok(refused.error && /InsufficientCapacity/.test(refused.text), refused.text);
+  const again = await call("borrow", { amount_usd: 25, days: 7 });
+  assert.ok(!again.error && /Borrowed 25\.00 USDG/.test(again.text), again.text);
+});
+
+/** CreditPoolV2 and USDG behind an ethers provider, for pay_url's own borrow (the payer's borrowGap): the wallet holds
+ *  `st.balance` USDG, every transaction sent is kept in `st.loans`, and the receipt of the first is answered only once
+ *  `st.land()` is called, as a stalled node would (the borrow's tx.wait() has no timeout and no signal). */
+const POOL_I = new ethers.Interface(POOL_ABI);
+class StallingPool extends ethers.JsonRpcProvider {
+  constructor(st) { super("http://127.0.0.1:1", ethers.Network.from(4663), { staticNetwork: true, cacheTimeout: -1, batchMaxCount: 1 }); this.st = st; st.loans = []; const landed = new Promise((ok) => { st.land = ok; }); this.landed = landed; }
+  async answer(method, params) {
+    const st = this.st, H = (n, w) => ethers.toBeHex(n, w);
+    if (method === "eth_chainId") return "0x1237";
+    if (method === "eth_blockNumber") return "0x100";
+    if (method === "eth_getBlockByNumber") return { number: "0x100", hash: "0x" + "ab".repeat(32), parentHash: "0x" + "cd".repeat(32), timestamp: H(Math.floor(Date.now() / 1000)), nonce: "0x0000000000000000", difficulty: "0x0", gasLimit: "0x1c9c380", gasUsed: "0x0", miner: ethers.ZeroAddress, extraData: "0x", baseFeePerGas: "0x5f5e100", transactions: [] };
+    if (method === "eth_getTransactionCount") return H(st.loans.length);
+    if (method === "eth_estimateGas") return "0x40000";
+    if (method === "eth_gasPrice") return "0x5f5e100";
+    if (method === "eth_maxPriorityFeePerGas") return "0x1";
+    if (method === "eth_sendRawTransaction") { const tx = ethers.Transaction.from(params[0]); st.loans.push({ hash: tx.hash, from: tx.from, to: tx.to }); return tx.hash; }
+    if (method === "eth_getTransactionReceipt") {
+      const i = st.loans.findIndex((l) => l.hash === params[0]);
+      if (i < 0) return null;
+      if (i === 0) await this.landed;
+      const l = st.loans[i];
+      return { transactionHash: l.hash, blockHash: "0x" + "ab".repeat(32), blockNumber: "0x100", transactionIndex: "0x0", from: l.from, to: l.to, contractAddress: null, cumulativeGasUsed: "0x30000", gasUsed: "0x30000", effectiveGasPrice: "0x5f5e100", status: "0x1", type: "0x2", logsBloom: "0x" + "00".repeat(256), logs: [] };
+    }
+    if (method !== "eth_call") throw new Error("mock: " + method);
+    const data = params[0].data || params[0].input;
+    if (data.startsWith("0x70a08231")) return H(st.balance, 32); // USDG balanceOf
+    const f = POOL_I.parseTransaction({ data });
+    if (f.name === "usdg") return POOL_I.encodeFunctionResult("usdg", [robinhood.usdg]);
+    if (f.name === "getParams") return POOL_I.encodeFunctionResult("getParams", [[100_000n, 50_000_000n, 86400n, 30n * 86400n, 3n * 86400n, 7n * 86400n, 100n, 0n, 0n, 0n, 9000n, 0n]]);
+    if (f.name === "quoteFee") return POOL_I.encodeFunctionResult("quoteFee", [1_000n, 0n, 0n, 0n]);
+    if (f.name === "borrow") return POOL_I.encodeFunctionResult("borrow", [BigInt(st.loans.length + 1)]);
+    throw new Error("mock: unexpected call " + f.name);
+  }
+  async _send(payload) {
+    return Promise.all((Array.isArray(payload) ? payload : [payload]).map(async (p) => { try { return { id: p.id, result: await this.answer(p.method, p.params) }; } catch (e) { return { id: p.id, error: { code: -32000, message: e.message } }; } }));
+  }
+}
+/** A legacy x402 v1 merchant at https://merchant.example/<path>, as a fetch function: a 402 at `prices[path]` (atomic
+ *  USDG), then 200 for a payment. A payment sent is kept in `sent`, one answered in `paid`; an aborted request fails,
+ *  as a real fetch would. */
+function merchant(prices) {
+  const m = { sent: [], paid: [] };
+  m.fetchImpl = async (input, init) => {
+    const r = input instanceof Request ? input : new Request(input, init);
+    const path = new URL(r.url).pathname;
+    const req = { scheme: "exact", network: "robinhood", maxAmountRequired: String(prices[path]), payTo: "0x000000000000000000000000000000000000dEaD", asset: robinhood.usdg, maxTimeoutSeconds: 3600, resource: r.url };
+    if (!r.headers.get("X-PAYMENT")) return new Response(JSON.stringify({ x402Version: 1, accepts: [req] }), { status: 402, headers: { "content-type": "application/json" } });
+    m.sent.push(path);
+    if (r.signal?.aborted) throw r.signal.reason;
+    m.paid.push(path);
+    return new Response("{\"ok\":true}", { status: 200 });
+  };
+  return m;
+}
+const payUrlServer = (st, m, env) => connect({ PRIORS_AGENT_ID: "7", PRIORS_SAVINGS_VAULT: "off", PRIORS_AUTOPAY_RESERVE: "off", ...env },
+  { provider: new StallingPool(st), credit: { isController: async () => true }, autopay: null, lookup: async () => [{ address: "93.184.216.34", family: 4 }], callBudgetMs: 1_000, holdMaxMs: HOLD }, 1_500, m.fetchImpl);
+
+await test("GHSA-cq9v: pay_url too: one whose borrow still waits for its receipt once its hold has ended keeps max_borrow_usd counted, so the same purchase again does not borrow past PRIORS_MAX_BORROW_TOTAL_USD", async () => {
+  const st = { balance: 400_000n }, m = merchant({ "/a": 1_000_000n });
+  const call = await payUrlServer(st, m, { PRIORS_MAX_SPEND_USD: "10", PRIORS_MAX_BORROW_TOTAL_USD: "1" });
+  const buy = { url: "https://merchant.example/a", max_price_usd: 1, max_borrow_usd: 1 };
+  const first = await call("pay_url", buy);
+  assert.ok(!first.timedOut && /did not finish within 1 s and is still running/.test(first.text), first.text);
+  assert.equal(st.loans.length, 1, "the first pay_url sent its borrow");
+  await sleep(HOLD + 300);
+  const again = await call("pay_url", buy);
+  st.land();
+  assert.equal(st.loans.length, 1, `one loan (session cap 1.00): ${st.loans.length} sent; the second answered: ${again.text.slice(0, 120)}`);
+  assert.ok(again.error && /PRIORS_MAX_BORROW_TOTAL_USD/.test(again.text), again.text);
+});
+
+await test("GHSA-cq9v: pay_url too: one still borrowing once its hold has ended keeps max_price_usd counted, so another purchase is not signed past PRIORS_MAX_SPEND_USD; once it ends, what it signed counts, once", async () => {
+  const st = { balance: 400_000n }, m = merchant({ "/a": 1_000_000n, "/b": 400_000n, "/c": 200_000n });
+  const call = await payUrlServer(st, m, { PRIORS_MAX_SPEND_USD: "1.2", PRIORS_MAX_BORROW_TOTAL_USD: "25" });
+  const first = await call("pay_url", { url: "https://merchant.example/a", max_price_usd: 1, max_borrow_usd: 1 }); // short by 0.60: borrows
+  assert.ok(!first.timedOut && /did not finish within 1 s and is still running/.test(first.text), first.text);
+  await sleep(HOLD + 300);
+  const other = await call("pay_url", { url: "https://merchant.example/b", max_price_usd: 0.4 }); // the wallet's 0.40: no borrow
+  assert.deepEqual(m.sent, [], `nothing signed and sent while the first may still sign 1.00 of a 1.20 cap; the second answered: ${other.text.slice(0, 120)}`);
+  assert.ok(other.error && /PRIORS_MAX_SPEND_USD/.test(other.text), other.text);
+  st.land();
+  await until(() => m.sent.includes("/a")); // it signs once its borrow lands (sent after its deadline: refused as aborted)
+  await sleep(100);
+  const rest = await call("pay_url", { url: "https://merchant.example/c", max_price_usd: 0.2 });
+  assert.ok(!rest.error && /Paid 0\.20 USDG/.test(rest.text), `once the first has ended, its 1.00 counts once (1.00 + 0.20 = 1.20): ${rest.text.slice(0, 160)}`);
+});
+
+await test("GHSA-cq9v: save too: a save still running once its hold has ended keeps its amount counted against PRIORS_MAX_SAVE_TOTAL_USD", async () => {
+  const s = stalling("save");
+  const call = await connect({ PRIORS_MAX_SAVE_USD: "50", PRIORS_MAX_SAVE_TOTAL_USD: "60" }, { credit: s.credit, callBudgetMs: 1_000, holdMaxMs: HOLD }, 1_500);
+  const first = await call("save", { amount_usd: 50 });
+  assert.ok(!first.timedOut && /did not finish within 1 s and is still running/.test(first.text), first.text);
+  await sleep(HOLD + 300);
+  const second = await call("save", { amount_usd: 50 });
+  assert.equal(s.rec.length, 1, `one save sent while the first runs (session cap 60): ${s.rec.length}; the second answered: ${second.text.slice(0, 120)}`);
+  assert.ok(second.error && /PRIORS_MAX_SAVE_TOTAL_USD/.test(second.text), second.text);
+  s.land();
+  await sleep(100);
+  const rest = await call("save", { amount_usd: 10 });
+  assert.ok(!rest.error && /Saved 10\.00 USDG/.test(rest.text), `once the first has landed, its 50 counts once (50 + 10 = 60): ${rest.text}`);
 });
 
 console.log(`\nmcp call budget: ${passed} passed, ${failed} failed`);

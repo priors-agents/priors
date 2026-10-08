@@ -9,9 +9,11 @@
 //     valueDecimals, tag1, tag2) match the entry on chain; getSummary(agentId, [attester], "priors-score", "") is the
 //     file's score;
 //   - priors.blockTime is the timestamp of priors.block;
+//   - priors.pool and priors.v1Pool are the pools of deployments/4663.v2.json; whatever the file names, every
+//     repayment and the payment below are read from those two, never from an address in the file;
 //   - each cited repayment (priors.repaid.last): the transaction succeeded before priors.block and carries the pool's
-//     Repaid log for that loan and agent; the loan (getLoan, today's state, which cannot change once repaid) is the
-//     agent's, repaid, and closed by its due date;
+//     Repaid log (the v1 pool's for an "era": "v1" loan) for that loan and agent; the loan (getLoan, today's state, which
+//     cannot change once repaid) is the agent's, repaid, and closed by its due date;
 //   - proofOfPayment: the borrow transaction carries the pool's Borrowed log for priors.paid.loan, from the pool to
 //     toAddress, for priors.paid.usdg;
 //   - the line and backing at priors.block (lens creditReport with blockTag = that block: capacity = line.limit,
@@ -107,9 +109,12 @@ const blk = await provider.getBlock(Number(P.block));
 ok(blk && Number(blk.timestamp) === Number(P.blockTime), "priors.blockTime is priors.block's timestamp", blk ? `${blk.timestamp}` : "block not found");
 ok(ev.log.blockNumber >= Number(P.block), "the note was posted at or after the block it describes");
 
-const pool = new ethers.Contract(P.pool, POOL_ABI, provider);
+// The cited repayments and the payment are read from the pools of the deployment record, never from an address the file
+// names: a contract the file's author chose can answer anything (GHSA-m5wj-mgcg-x3fv). The file must name the same ones.
+const pool = new ethers.Contract(DEP.pool, POOL_ABI, provider);
 ok(same(P.pool, DEP.pool), "priors.pool is the credit pool of deployments/4663.v2.json", P.pool);
-const v1 = P.v1Pool ? new ethers.Contract(P.v1Pool, V1_POOL_ABI, provider) : null;
+if (P.v1Pool) ok(same(P.v1Pool, DEP.v1Pool), "priors.v1Pool is the v1 pool of deployments/4663.v2.json", P.v1Pool);
+const v1 = P.v1Pool ? new ethers.Contract(DEP.v1Pool, V1_POOL_ABI, provider) : null;
 
 // each cited repayment
 for (const c of P.repaid?.last || []) {
@@ -118,10 +123,11 @@ for (const c of P.repaid?.last || []) {
   if (!c_) { say("FAIL", `loan v1:${c.loan}`, "no priors.v1Pool to read it from"); continue; }
   const rc = await provider.getTransactionReceipt(c.tx);
   const rep = rc && rc.status === 1 ? rc.logs.find((l) => same(l.address, c_.target) && l.topics[0] === c_.interface.getEvent("Repaid").topicHash && BigInt(l.topics[1]) === BigInt(c.loan)) : null;
-  const l = await c_.getLoan(c.loan);
-  const good = !!rep && BigInt(rep.topics[2]) === BigInt(agentId) && rc.blockNumber <= Number(P.block)
+  // the v1 pool keeps its loans in an array: getLoan of an id it never issued reverts, which fails the citation
+  const l = await c_.getLoan(c.loan).catch((e) => { if (e?.code === "CALL_EXCEPTION") return null; throw e; });
+  const good = !!rep && !!l && BigInt(rep.topics[2]) === BigInt(agentId) && rc.blockNumber <= Number(P.block)
     && Number(l.agentId) === agentId && Number(l.status) === REPAID && Number(l.closedAt) <= Number(l.dueAt);
-  ok(good, `${isV1 ? "v1 " : ""}loan ${c.loan} repaid on time by this agent before the note's block`, rep ? `tx block ${rc.blockNumber}, closed ${l.closedAt} <= due ${l.dueAt}, ${usdg(l.principal)} USDG` : `no Repaid log for it in ${c.tx}`);
+  ok(good, `${isV1 ? "v1 " : ""}loan ${c.loan} repaid on time by this agent before the note's block`, !rep ? `no Repaid log for it in ${c.tx}` : !l ? `the pool has no loan ${c.loan} (getLoan reverted)` : `tx block ${rc.blockNumber}, closed ${l.closedAt} <= due ${l.dueAt}, ${usdg(l.principal)} USDG`);
 }
 say("info", "totals (from the snapshot, not re-derived)", `on time ${P.repaid?.onTime} (${P.repaid?.usdg} USDG), late ${P.late}, defaults ${P.defaults}`);
 
@@ -130,9 +136,9 @@ if (F.proofOfPayment) {
   const pp = F.proofOfPayment;
   const rc = await provider.getTransactionReceipt(pp.txHash);
   const topic = pool.interface.getEvent("Borrowed").topicHash;
-  const lg = rc && rc.status === 1 ? rc.logs.find((l) => same(l.address, pp.fromAddress) && l.topics[0] === topic && BigInt(l.topics[1]) === BigInt(P.paid?.loan ?? -1)) : null;
+  const lg = rc && rc.status === 1 ? rc.logs.find((l) => same(l.address, DEP.pool) && l.topics[0] === topic && BigInt(l.topics[1]) === BigInt(P.paid?.loan ?? -1)) : null;
   const b = lg ? pool.interface.parseLog(lg).args : null;
-  ok(!!b && same(pp.fromAddress, P.pool) && Number(b.agentId) === agentId && same(b.to, pp.toAddress) && usdg(b.principal) === String(P.paid?.usdg) && Number(pp.chainId) === CHAIN_ID,
+  ok(!!b && same(pp.fromAddress, DEP.pool) && Number(b.agentId) === agentId && same(b.to, pp.toAddress) && usdg(b.principal) === String(P.paid?.usdg) && Number(pp.chainId) === CHAIN_ID,
     "proofOfPayment: the pool paid this agent's loan to toAddress", b ? `loan ${b.loanId}, ${usdg(b.principal)} USDG to ${b.to}` : `no Borrowed log for loan ${P.paid?.loan} in ${pp.txHash}`);
 } else say("info", "no proofOfPayment", "the agent had no loan repaid on time when the note was posted");
 
