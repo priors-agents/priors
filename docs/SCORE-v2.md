@@ -21,7 +21,7 @@ for real time. An audit (2026-09-26) found what it can't see:
 
 | layer | what | changes how | used by |
 |---|---|---|---|
-| **v1, on chain** | `ScoreLib`: simple, conservative | a new pool version, behind the 48 h timelock | contracts: treasury rules (a raise needs a score of 100); seat gates count repaid loans, not the score |
+| **v1, on chain** | `ScoreLib`: simple, conservative | a new pool version, behind the timelock (48 h; no delay from 2026-10-11 19:49 UTC) | contracts: treasury rules (a raise needs a score of 100); seat gates count repaid loans, not the score |
 | **v2, open and deterministic** | `scoreV2()`: a pure function of public data, with published weights | a new weights file and version, announced first (below) | people and apps: site, API, MCP; later attested on chain |
 
 v2 moves fast and in the open; v1 stays the hard floor the contracts rely on. When a v2 component has proven itself

@@ -29,8 +29,10 @@ Other v2 changes:
 - **Consent.** A line needs the agent owner's EIP-712 signature (domain `Priors Credit`, version `2`). Nobody can
   vouch for your agent against your will, which closes v1's squat.
 - **Handoff.** An agent can move to another sponsor whenever no loan is open, so no sponsor is stuck forever.
-- **Timelock.** Since 2026-10-06 the pool's owner is the `PoolSteward`, which only the 48 h `TimelockController` can
+- **Timelock.** Since 2026-10-06 the pool's owner is the `PoolSteward`, which only the `TimelockController` can
   call (the Safe proposes and executes, no admin), and only within a fixed policy on the fee split and the reserve. The
+  timelock's delay is 48 hours until 2026-10-11 19:49 UTC and none from then (the owner's decision of 2026-10-09): from
+  then an owner call is still public on chain, but it can run in the block the Safe schedules it. The
   Safe is the guardian: it can pause new risk for at most 14 days at a time, and exits never pause.
 - **History carried.** Every v1 record was imported (`importFromV1`), so repayments, volume and enrolment date
   survive; lines do not, as with every migration.
@@ -176,7 +178,7 @@ sponsor share. A default burns your shares worth the principal and the fee. `unl
 ## Deploying your own copy
 
 `script/DeployV2.s.sol` deploys the original v2 set in order: a 48 h `TimelockController` (Safe as proposer and
-executor, no admin) as the pool's owner, `CreditPoolV2` with the v1 pool's params plus `maxUtilizationBps` 10000 and
+executor, no admin; the live one's delay is 0 from 2026-10-11 19:49 UTC) as the pool's owner, `CreditPoolV2` with the v1 pool's params plus `maxUtilizationBps` 10000 and
 `keeperBounty` 0 (`PoolV2Lib` is linked by forge), `CreditLensV2`, treasury v4 and `SeatVaultV2` (the seat vault
 retired since 2026-09-25). It refuses an EOA as `SAFE` and writes `deployments/<chainId>.v2.json`. `SeatVaultV3`,
 `SeatVaultV4`, the SeatSizers and the stock vault were deployed by separate maintainer scripts that are not in this

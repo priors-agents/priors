@@ -66,7 +66,7 @@ The v2 contracts on Robinhood Chain (chain 4663), live since block 71,702,460, a
 | `SeatSizer` of `SeatVaultV3` (owns it; the Safe owns the sizer) | [`0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61`](https://robinhoodchain.blockscout.com/address/0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61) |
 | `SeatVaultV4`, the growth seat vault (root `#6466`; live since 2026-09-29) | [`0xb1c3a04496238D62E3c93118C297163855e22192`](https://robinhoodchain.blockscout.com/address/0xb1c3a04496238D62E3c93118C297163855e22192) |
 | `SeatSizer` of the growth seat vault (owns it; the Safe owns the sizer) | [`0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777`](https://robinhoodchain.blockscout.com/address/0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777) |
-| `TimelockController` (48 h; drives the steward, and owns the stock vault's ProxyAdmin since 2026-10-07) | [`0x5d984C274035F81BB327d532897a902C5125F87c`](https://robinhoodchain.blockscout.com/address/0x5d984C274035F81BB327d532897a902C5125F87c) |
+| `TimelockController` (48 h delay, none from 2026-10-11 19:49 UTC; drives the steward, and owns the stock vault's ProxyAdmin since 2026-10-07) | [`0x5d984C274035F81BB327d532897a902C5125F87c`](https://robinhoodchain.blockscout.com/address/0x5d984C274035F81BB327d532897a902C5125F87c) |
 | `PoolSteward` (`src/PoolSteward.sol`), the pool's owner since 2026-10-06, and its daily `sweep()` | [`0x6D9D4135417E0AB2aafc69Fc842525Af279a5Da8`](https://robinhoodchain.blockscout.com/address/0x6D9D4135417E0AB2aafc69Fc842525Af279a5Da8) |
 | `RevenueRouter` (`src/RevenueRouter.sol`), the sweep's and the vaults' fees' destination | [`0xb2E217C5841a968C48Eee41DCbF7D2a03cCA4F43`](https://robinhoodchain.blockscout.com/address/0xb2E217C5841a968C48Eee41DCbF7D2a03cCA4F43) |
 | `BuyAndBack` (`src/BuyAndBack.sol`), engine 1 | [`0xEe40675aBEC90E52211526845433C10c80fD569E`](https://robinhoodchain.blockscout.com/address/0xEe40675aBEC90E52211526845433C10c80fD569E) |
@@ -106,14 +106,18 @@ meant to hold.
 ## Out of scope
 
 - **Anything needing the owner's Safe or the timelock.** The Safe is a 2-of-3 and it can change rules, through
-  the 48 h timelock for the pool; that is the design, not a finding. "The owner could set a bad parameter" is not
-  a bug. That includes upgrading the stock vault: its ProxyAdmin
-  (`0x5174A18550a295cd25aF59416a56B7e4c38C8Afc`) is owned by the 48 h timelock since 2026-10-07 (by the Safe before),
-  so an upgrade is scheduled in public and runs 48 hours later at the earliest, and an upgrade can move what the vault
-  holds; depositors trust the Safe for that, with two days to see it coming. It also includes the steward's 48-hour,
-  public handback of the pool to the timelock, which leaves its policy by design. The steward's daily `sweep()`, which
-  anyone can call with no timelock, is in scope the other way round: a sweep that moves more than its rule (the reserve
-  above its target, never below the hard floor, only to the `RevenueRouter`) is a finding.
+  the timelock for the pool; that is the design, not a finding. The timelock's delay is 48 hours until 2026-10-11
+  19:49 UTC and none from then: the owner decided it on 2026-10-09, and the Safe scheduled `updateDelay(0)` (tx
+  `0x2095a36a5c0897dac7e21c780216318386fed8d8bbea35aad80b29eeb369bf1b`). "The owner could set a bad parameter" is not
+  a bug, and neither is "the owner could act with no delay" (`docs/SECURITY-v2.md`, X1). That includes upgrading the
+  stock vault: its ProxyAdmin (`0x5174A18550a295cd25aF59416a56B7e4c38C8Afc`) is owned by the timelock since
+  2026-10-07 (by the Safe before), so an upgrade is scheduled in public, and an upgrade can move what the vault holds;
+  depositors trust the Safe for that. Until 2026-10-11 19:49 UTC an upgrade runs 48 hours after it is scheduled at the
+  earliest, so depositors have two days to see it coming; from then it can run the moment the Safe sends it, with no
+  time to react. It also includes the steward's public handback of the pool to the timelock (48 hours after it is
+  scheduled until 2026-10-11 19:49 UTC, in one block from then), which leaves its policy by design. The steward's
+  daily `sweep()`, which anyone can call with no timelock, is in scope the other way round: a sweep that moves more
+  than its rule (the reserve above its target, never below the hard floor, only to the `RevenueRouter`) is a finding.
 - **The Robinhood stock tokens, their issuer's powers** (pause, block, burn, upgrade) **and Chainlink's price feeds.**
   Not ours. How the stock vault copes with them (its price and pause holds, a burn shared pro rata) is in scope.
 - **USDG, the $PRIORS token and the ERC-8004 identity registry.** Not ours; how our contracts handle them is in scope.

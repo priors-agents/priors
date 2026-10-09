@@ -35,7 +35,8 @@ the README's address table. `seatVaultV4` (root `seatVaultV4AgentId` 6466, since
 75,614,831) is the growth seat vault, SeatVaultV4: live since 2026-09-29. `seatSizerV4` (since
 block `seatSizerV4Block` 75,614,955) is its own SeatSizer, which owns it; the Safe owns the sizer. `seatVault` stays
 SeatVaultV3. The six protocol contracts live since 2026-10-04 (sources in `src/`, in the bounty scope): `poolSteward`
-(PoolSteward, the pool's owner since 2026-10-06, behind the 48 h timelock), `revenueRouter` (RevenueRouter, the fee
+(PoolSteward, the pool's owner since 2026-10-06, behind the timelock: a 48 h delay, none from 2026-10-11
+19:49 UTC), `revenueRouter` (RevenueRouter, the fee
 sinks' and the steward's sweep destination), `buyAndBack` (BuyAndBack), `priorsLiquidity` (PriorsLiquidity),
 `swapLimiter` (SwapLimiter, the depth guard the engines read) and `keeperHelper` (KeeperHelper, SeatSizerV4's keeper
 since 2026-10-06). `seatVaultV5` (root `seatVaultV5AgentId` 8641, `seatVaultV5Block` 84,306,464) is SeatVaultV5, live

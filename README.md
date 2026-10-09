@@ -48,7 +48,14 @@ Reviews are cheap to fake. Repaid debt isn't.
 > **What v2 changes.** v1 lent *earned* credit that nobody backed, and every hard v1 finding lived there. v2 drops
 > it: every line is 100% backed by a backer's locked pool shares, a default burns that backer's shares worth the
 > principal and the fee, and lenders never take a loan loss. Lines need the agent owner's signed consent, agents
-> can change sponsor between loans, and the pool's owner is the PoolSteward, which only a 48-hour timelock can drive.
+> can change sponsor between loans, and the pool's owner is the PoolSteward, which only the timelock can drive.
+>
+> **The timelock's delay goes from 48 hours to none.** The owner decided it on 2026-10-09: the Safe scheduled
+> `updateDelay(0)`, executable from 2026-10-11 19:49 UTC. Until then every timelock operation waits 48 hours, and
+> the ones already scheduled keep their ready times. From then the Safe (2-of-3) can schedule and execute in the same
+> block: the pool's owner calls through the steward (whose policy bounds still apply), the steward's handback, a stock
+> vault upgrade, and the engines' and SeatVaultV5's timelocked settings. Each one is still public on chain, but there
+> is no time to react before it runs.
 >
 > **Four ways onto the ledger.** A treasury invite (a $5 line from treasury v4, which is funded by $PRIORS creator
 > fees), a **seat** (someone puts about five lines' worth of $PRIORS behind your agent and the growth seat vault
@@ -361,7 +368,7 @@ v2 findings.
 | Growth seats (`SeatVaultV4`, root #6466; live since 2026-09-29) | seat ≈ 5 lines of $PRIORS (120,000 at deployment, resized by its own SeatSizer within [110,000, 20,000,000]) · line $50 · 50% burnt on default · agent needs 10 repaid loans · loans of at most 7 days · 20 open seats · seat expires after 30 idle days · $1,000 of new lines per 7-day epoch · protocol seats closed |
 | Stock lines (`StockVault`, root #6424) | 35 stock tokens · line 25-50% of the deposit's value by token, plus up to 15 points for a record of repaid treasury credit, never above 70% · at most $250 a line · $1,000 of new lines per 7-day epoch · $1,000 of open lines per token ($500 on CRCL, CRWV, NBIS, RGTI, SNDK, USAR) · whole deposit seized on default · idle after 30 days (7 if never drawn) |
 | Minimum root stake | $10 |
-| Pool owner | `PoolSteward` since 2026-10-06 (no owner, not upgradeable), which only the 48 h `TimelockController` can call (the Safe proposes and executes, no admin), within a fixed policy: sponsor ≤ 25%, reserve ≤ 40%, lenders ≥ 35%, fee ≤ 2% per 30 days; the Safe is guardian (pause ≤ 14 days, exits never pause) |
+| Pool owner | `PoolSteward` since 2026-10-06 (no owner, not upgradeable), which only the `TimelockController` can call (the Safe proposes and executes, no admin; a 48 h delay, none from 2026-10-11 19:49 UTC), within a fixed policy: sponsor ≤ 25%, reserve ≤ 40%, lenders ≥ 35%, fee ≤ 2% per 30 days; the Safe is guardian (pause ≤ 14 days, exits never pause) |
 
 ## Robinhood Chain
 
@@ -375,7 +382,7 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | **SeatVaultV3** (live since 2026-09-25, root `#6234`) | `0x59D155C42A9263fA7596867b992bB3e84dF680a9` |
 | SeatVaultV2 (retired and paused, root `#6229`; replaced by V3 for audit V-2) | `0x6D934C07a33E7285cE691A9B258cdB53F18e6B5F` |
 | PoolSteward (owns the pool since 2026-10-06; only the timelock can call it) | `0x6D9D4135417E0AB2aafc69Fc842525Af279a5Da8` |
-| TimelockController (drives the PoolSteward, 48 h) | `0x5d984C274035F81BB327d532897a902C5125F87c` |
+| TimelockController (drives the PoolSteward; 48 h delay, none from 2026-10-11 19:49 UTC) | `0x5d984C274035F81BB327d532897a902C5125F87c` |
 | **SeatSizer** (owns the seat vault since 2026-09-26; resizes the seat from the $PRIORS price, within bounds) | `0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61` |
 | **SeatVaultV4**, the growth seat vault (live since 2026-09-29, root `#6466`) | `0xb1c3a04496238D62E3c93118C297163855e22192` |
 | SeatSizer of the growth seat vault (owns it; the Safe owns the sizer) | `0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777` |
@@ -383,7 +390,7 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | SeatVaultV5's linked libraries (`src/v5/`; V5 calls them by DELEGATECALL) | `V5Pos` `0xD43711128f49187b6396F8Bb365e2D00D228840c`, `V5Steps` `0xa0729ed369afbff4e3E3241d8d1ae077b2661be0`, `V5Book` `0x8D9D168EC419460d20026002c8c732f5f7Be6B20`, `V5Records` `0x4c8f394222909a0044e0Fb90d0de18FE2A89629a`, `V5Exit` `0xCA6Dfe1b85ff8c29AB91E7A3736fd16E59AC4C56`, `V5Auto` `0x0896833364b96F42b60e8947b2bb61C3C8277D14`, `V5Sync` `0x9EDb8C831f559638bBbECD43f913eC9E96FA2916`, `V5View` `0x5d130640f8cE621aa96E0c2702e262e448E476Ea`, `V5Lens` `0x2623ec71Ea24E3257bf47738EB9f28BD9716B356` |
 | **StockVault** (live since 2026-09-28, root `#6424`; lines against stock tokens; a Transparent proxy, `StockVaultProxy`) | `0xbEcd07EC689988e16b870C121756C4c2C8cb02B6` |
 | StockVault implementation (behind the proxy; since 2026-10-04) | `0xC16f7230b79Fb7dB3b1761A23e9d56365300B2A4` |
-| StockVault ProxyAdmin (the only way to upgrade the vault; owned by the 48 h timelock since 2026-10-07, by the Safe before) | `0x5174A18550a295cd25aF59416a56B7e4c38C8Afc` |
+| StockVault ProxyAdmin (the only way to upgrade the vault; owned by the timelock since 2026-10-07, by the Safe before; with no delay from 2026-10-11 19:49 UTC) | `0x5174A18550a295cd25aF59416a56B7e4c38C8Afc` |
 | Safe (2-of-3; proposes to the timelock, owns treasury v4 and both SeatSizers, so every other seat vault power, and the stock vault's settings) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
 | RevenueRouter (the steward's sweep and the vaults' fees go here) | `0xb2E217C5841a968C48Eee41DCbF7D2a03cCA4F43` |
 | BuyAndBack (engine 1) | `0xEe40675aBEC90E52211526845433C10c80fD569E` |
@@ -469,7 +476,8 @@ src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPo
 test/                        1,066 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
                              review-v2/, audit-v4/, audit-r2/, audit-sizer/), the stock vault's (StockVault*), the growth seat
                              vault's (SeatVaultV4*), SeatVaultV5's (v5/), and the v1 suite
-script/DeployV2.s.sol        deploys the v2 set under a 48 h timelock, writes deployments/<chainId>.v2.json
+script/DeployV2.s.sol        deploys the v2 set under a 48 h timelock (the live one's delay is 0 from 2026-10-11 19:49 UTC),
+                             writes deployments/<chainId>.v2.json
 script/Deploy.s.sol          v1 deploy (mocks on dev chains), writes deployments/<chainId>.json
 sdk/priors-v2.mjs            the v2 client on ethers v6, ABIs included
 sdk/stock-vault.mjs          stock-vault reads: accepted tokens, prices, holds, a line's collateral
@@ -516,7 +524,8 @@ bash scripts/check-public.sh   # fails if a credential ever reached a tracked fi
 `CreditPoolV2` compiles with via-IR at `optimizer_runs = 1` to fit the 24 KB limit (a per-file restriction in
 `foundry.toml`); everything else compiles as before. Contracts are non-upgradeable, except the stock vault: a
 source change only reaches users through a new deployment, or, for `StockVault`, an upgrade through its ProxyAdmin,
-which the 48 h timelock owns since 2026-10-07 (the Safe schedules it in public). `src/StockVault.sol` stays byte-identical to the source verified on chain, so `forge fmt` skips it.
+which the timelock owns since 2026-10-07 (the Safe schedules it in public; it runs 48 hours later at the earliest
+until 2026-10-11 19:49 UTC, and from then in the block it is scheduled). `src/StockVault.sol` stays byte-identical to the source verified on chain, so `forge fmt` skips it.
 
 ## Honest risks
 
