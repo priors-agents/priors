@@ -1,6 +1,6 @@
 {
   "name": "@priors/x402",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": false,
   "description": "x402 v2 on Robinhood Chain (eip155:4663) in USDG: a money parser for ExactEvmScheme, the Priors facilitator config, and a payer that borrows the gap from a Priors credit line.",
   "type": "module",
@@ -23,6 +23,10 @@
       "types": "./autopay.d.ts",
       "import": "./src/autopay.mjs"
     },
+    "./bridge": {
+      "types": "./bridge.d.ts",
+      "import": "./src/bridge.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -31,6 +35,7 @@
     "credit.d.ts",
     "savings.d.ts",
     "autopay.d.ts",
+    "bridge.d.ts",
     "src",
     "README.md"
   ],

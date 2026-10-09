@@ -118,7 +118,8 @@ payment arrives, the gate reads the record of the address that actually signed i
 payer's own price, so claiming someone else's record gets nothing.
 
 ```js
-const gate = recordGate({ basePrice: "$0.02", tiers: [{ minRepaid: 3, price: "$0.01" }] }).attach(server);
+const gate = recordGate({ basePrice: "$0.02", tiers: [{ minRepaid: 3, price: "$0.01" }] });
+gate.attach(server); // attach returns the server; tierPrice is on the gate
 // routes: { "GET /report": { accepts: { scheme: "exact", price: gate.tierPrice(), network: "eip155:4663", payTo } } }
 ```
 
@@ -190,10 +191,15 @@ default), `asset` (a USDG address for a fork or test token; default the pool's `
   `validBefore` the merchant can still cash it, so a retry of the same purchase must `resend` these headers.
 
 Refusals throw a `PayError` with a `code`: `PRICE_ABOVE_MAX_PRICE`, `PRICE_ABOVE_MAX_BORROW`,
-`MIN_LOAN_ABOVE_MAX_BORROW`, `ABOVE_MAX_LOAN`, `TERM_OUT_OF_RANGE`, `FEE_TOO_HIGH`, `NO_POOL`, `NO_USDG_REQUIREMENT`,
-`BAD_402`, `BORROW_WOULD_REVERT`, `BORROW_UNCONFIRMED` (not a refusal: the borrow was sent, and may have opened a
-loan), `NO_SIGNER`, `NO_PROVIDER`, `NO_FETCH`, `UNSUPPORTED_TRANSFER_METHOD` (a requirement that is not EIP-3009),
-`NOT_CONTROLLER` (`repayLoan`, `settleLoans`). The credit helpers add
+`MIN_LOAN_ABOVE_MAX_BORROW`, `ABOVE_MAX_LOAN`, `TERM_OUT_OF_RANGE`, `FEE_TOO_HIGH`, `NO_POOL`, `NO_USDG_REQUIREMENT`
+(no requirement this payer signs: USDG on Robinhood Chain, or USDC on Base when enabled), `BAD_402`,
+`BORROW_WOULD_REVERT`, `BORROW_UNCONFIRMED` (not a refusal: the borrow was sent, and may have opened a loan),
+`NO_SIGNER`, `NO_PROVIDER` (also: `networks` names Base and no `baseProvider` was given), `NO_FETCH`,
+`UNSUPPORTED_TRANSFER_METHOD` (a requirement that is not EIP-3009), `BAD_NETWORK` (a `networks` entry not in the
+allowlist), `BASE_FLOAT_SHORT` (a Base requirement, and the wallet's USDC on Base, less what `baseReserve()` keeps
+back, is short of the price: nothing was signed; `price`, `balance`, `reserve`, `network` and `asset` on the error),
+`NOT_CONTROLLER` (`repayLoan`, `settleLoans`). The
+bridge (below) adds its own codes. The credit helpers add
 `LOAN_SIZE_OUT_OF_RANGE` (`quoteBorrow`, `borrowLine`), `LOAN_NOT_ACTIVE`, `INSUFFICIENT_USDG`, `REPAY_WOULD_REVERT`
 (`repayLoan`) and `NO_STOCK_VAULT` (`stockPosition`, `stockAssets`).
 
@@ -295,7 +301,56 @@ V5 recorded a day ago, refreshes the line; a key V5 has not recorded is recorded
 borrow goes ahead only within the line's room, else it stops with `V5_DELEGATE_WAIT`, saying when it can borrow (the
 owner can borrow from Go mode meanwhile, which refreshes first).
 
+## Paying USDC sellers on Base (`networks`, `@priors/x402/bridge`)
+
+From 0.6.0, and off unless you ask for it. Many x402 sellers take USDC on Base only. A payer can pay them from a small USDC balance the
+agent keeps on Base, its Base float, while the loan and its repayment stay in USDG on Robinhood Chain.
+
+```js
+import { ethers } from "ethers";
+import { createPayer, BASE_USDC } from "@priors/x402";
+import { fundBase, returnToRobinhood } from "@priors/x402/bridge";
+const base = new ethers.JsonRpcProvider(BASE_USDC.rpcUrl);
+const payer = createPayer({ signer, networks: ["eip155:4663", "eip155:8453"], baseProvider: base, maxPrice: "$0.10" });
+await fundBase({ signer, amount: 5_000_000n });          // 5 USDG on Robinhood Chain -> about 4.99 USDC on Base (Across)
+await payer.pay("https://pro-api.coingecko.com/api/v3/x402/onchain/search/pools"); // a seller paid in USDC on Base
+await returnToRobinhood({ signer, amount: 1_000_000n, baseProvider: base }); // USDC back to USDG (Relay, no gas on Base)
+```
+
+- **The allowlist** (`NETWORKS`, frozen): USDG on `eip155:4663` ("Global Dollar"/"1") and USDC on `eip155:8453`
+  (`0x833589fC…2913`, "USD Coin"/"2"), matched by full address only. `pickV2Requirement(accepts, asset, { networks })`
+  refuses any other token, a lookalike (two "USDG" tokens on Robinhood Chain copy USDG's address prefix and suffix),
+  and any EIP-712 domain but the token's own; a seller that takes both is paid on Robinhood Chain. Legacy v1 bodies stay
+  Robinhood Chain only. `createUsdgClient({ networks })` registers Base only when it is named.
+- **Paying on Base** reads the wallet's USDC through `baseProvider` and never borrows, tops up from savings or reads the
+  Autopay reserve (those are Robinhood Chain's): a float short of the price is `BASE_FLOAT_SHORT`, before anything is
+  signed. `baseReserve: () => bigint` names what the float keeps back (read before the balance; `@priors/mcp` keeps
+  back a `returnToRobinhood` whose authorization can still be used): the price must fit in the rest. `onSigned` and
+  the result carry `network` and `asset`.
+- **`fundBase({ signer, amount, maxFeeBps?, timeoutMs?, onDepositSending? })`**: Across. The quote
+  (`acrossQuote`, `checkAcrossQuote`) is refused unless its tokens, chains and both spokes are the pinned ones
+  (`ACROSS`), the amount is above Across's minimum, the quote is fresh enough for the spoke and the fee is within
+  `maxFeeBps` (default 100). Then an approval of exactly the amount (only when the allowance is short), a simulated
+  `depositV3` to the signer's own address on Base with the quote's `outputAmount` exactly, `onDepositSending` awaited
+  before the broadcast, and Across's deposit status polled until it is filled. Needs ETH for gas on Robinhood Chain.
+- **`returnToRobinhood({ signer, amount, baseProvider?, maxFeeBps? })`**: Relay's gasless route. Relay's quote carries
+  an EIP-712 `ReceiveWithAuthorization`; it is never signed as returned. `checkRelayReturn` checks every field (USDC's
+  domain on Base, from the signer, to Relay's pinned proxy `RELAY.receiver`, the exact value, valid from now for at
+  most 15 minutes, a 32-byte nonce, USDG on Robinhood Chain by full address as the output, the signer as recipient,
+  the fee) and the message signed is rebuilt from those values. It never goes through `CappedExactEvmScheme`.
+  `submitRelayPermit` hands it to Relay as Relay's own SDK does; that call is **unverified against the live API**
+  until the first real return.
+- **Errors** (`PayError`, `moved` says whether money may have left): before anything is sent, `BRIDGE_QUOTE_FAILED`,
+  `BRIDGE_QUOTE_REFUSED`, `BRIDGE_FEE_TOO_HIGH`, `INSUFFICIENT_USDG`, `BRIDGE_WOULD_REVERT`, `BRIDGE_REVERTED`,
+  `NO_GAS`, `NOT_RECORDED`, `RELAY_QUOTE_FAILED`, `RELAY_QUOTE_REFUSED`, `INSUFFICIENT_USDC`; once it may be out,
+  `DEPOSIT_UNCONFIRMED` (the deposit's answer was lost), `BRIDGE_PENDING` (not filled in the time: it may still land,
+  or Across refunds it on Robinhood Chain after its fill deadline), `BRIDGE_REFUNDED`, `RETURN_PENDING` and
+  `RETURN_FAILED` (the authorization is out until it expires). Never send a transfer again while one may be out.
+
 ## Tests
 
 `npm run test:packages` in the Priors repository: unit tests with mocks, and, with `RPC_URL` set, an anvil fork of
 chain 4663 where a standard `@x402/express` server priced with `registerUsdg` is paid by `createPayer`.
+`scripts/test-x402-base.mjs` (also part of `npm test`) covers the Base path and the bridge; with `--fork`,
+`BASE_RPC_URL` settles a seller's USDC 402 on a Base fork, and `RPC_URL` deposits into the real Across spoke on a
+Robinhood Chain fork.

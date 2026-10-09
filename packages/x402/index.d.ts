@@ -42,6 +42,35 @@ export type UsdgAmount = bigint | number | string;
 export declare function toAtomicUsdg(v: UsdgAmount, what?: string): bigint;
 export declare function formatUsdg(units: bigint | number | string): string;
 
+// ---- networks ----------------------------------------------------------------------------------------------
+
+/** A network a payer can sign for: its one token, matched by full address, and that token's EIP-712 domain. */
+export interface PayNetwork {
+  readonly network: "eip155:4663" | "eip155:8453";
+  readonly chainId: 4663 | 8453;
+  readonly name: string;
+  readonly asset: `0x${string}`;
+  readonly symbol: "USDG" | "USDC";
+  readonly decimals: 6;
+  readonly eip712: { readonly name: string; readonly version: string };
+  /** Public JSON-RPC endpoint. */
+  readonly rpcUrl: string;
+}
+/** The frozen allowlist: Robinhood Chain USDG ("Global Dollar"/"1") and Base USDC ("USD Coin"/"2"). */
+export declare const NETWORKS: { readonly "eip155:4663": PayNetwork; readonly "eip155:8453": PayNetwork };
+export declare const ROBINHOOD_USDG: PayNetwork;
+export declare const BASE_USDC: PayNetwork;
+/** ["eip155:4663"]: what a payer signs for unless told otherwise. */
+export declare const DEFAULT_PAY_NETWORKS: readonly string[];
+/** Across: the pinned API host and SpokePools (4663, 8453), and the spokes' quote and fill-deadline buffers (s). */
+export declare const ACROSS: { readonly api: string; readonly spokes: { readonly 4663: `0x${string}`; readonly 8453: `0x${string}` }; readonly quoteTimeBuffer: number; readonly fillDeadlineBuffer: number };
+/** Relay: the pinned API host, its approval proxy (the only `to` a return authorization may name), and the longest
+ *  authorization accepted (s). */
+export declare const RELAY: { readonly api: string; readonly receiver: `0x${string}`; readonly maxValiditySeconds: number };
+export declare function networkOf(id: string): PayNetwork | null;
+/** The enabled networks, checked against the allowlist (array or comma-separated string); empty: DEFAULT_PAY_NETWORKS. Throws on an unknown id. */
+export declare function payNetworks(list?: string | string[] | null): readonly string[];
+
 // ---- merchant ----------------------------------------------------------------------------------------------
 
 /** Registers a money parser so `price: "$0.05"` on eip155:4663 becomes USDG with extra {name, version}. */
@@ -93,7 +122,17 @@ export interface CreatePayerOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Called with each signed payment before it is sent, so a caller can keep its own record across processes;
    *  awaited. If it throws, the payment is not sent and pay() rejects with NOT_RECORDED. */
-  onSigned?: (s: { purchase: string; paymentHeaders: Record<string, string>; validBefore: number; price: bigint; requirement: any; x402Version: number; borrowed?: bigint; loanId?: bigint | null }) => void | Promise<void>;
+  onSigned?: (s: { purchase: string; paymentHeaders: Record<string, string>; validBefore: number; price: bigint; requirement: any; x402Version: number; network: string; asset: string; borrowed?: bigint; loanId?: bigint | null }) => void | Promise<void>;
+  /** Networks it signs for (networks.mjs); default ["eip155:4663"]. Naming "eip155:8453" pays Base USDC requirements
+   *  from the wallet's USDC on Base (its Base float): no savings top-up, reserve or loan there; short of the price is
+   *  BASE_FLOAT_SHORT before anything is signed. Needs `baseProvider`. */
+  networks?: string[];
+  /** A Base JSON-RPC provider (ethers), to read the Base float before signing; required when `networks` names Base. */
+  baseProvider?: any;
+  /** What the Base float keeps back from payments (e.g. a transfer back to Robinhood Chain whose authorization can
+   *  still pull it), read before the float's balance: a Base payment the rest does not cover is BASE_FLOAT_SHORT before
+   *  anything is signed. If it throws, nothing is signed and pay() rejects with that error. */
+  baseReserve?: () => bigint | Promise<bigint>;
   /** Called once the price is known when the wallet holds less, before any loan: fund the wallet from the caller's own
    *  money (e.g. `(need) => topUpFromSavings(c, signer, need)` from "@priors/x402/savings"). Its result, or the error
    *  it threw as `{ withdrawn: 0n, error }`, is returned as `savings`; a failure never stops the payment. Also used by
@@ -113,15 +152,18 @@ export interface SavingsTopUp { withdrawn: bigint; hash?: string | null; short?:
 
 export interface PayResult {
   response: Response;
-  /** Atomic USDG paid (0 unless the paid response is 2xx). */
+  /** Atomic units paid (0 unless the paid response is 2xx): USDG on Robinhood Chain, USDC on Base (both 6 decimals). */
   paid: bigint;
-  /** Atomic USDG borrowed for this purchase (0 if none). */
+  /** Atomic USDG borrowed for this purchase (0 if none; always 0 on Base). */
   borrowed: bigint;
   loanId: bigint | null;
   /** Unix seconds the loan is due: repay (settleLoans) before this. */
   dueAt: bigint | null;
   requirement?: PaymentRequirements | Record<string, unknown>;
   x402Version?: 1 | 2;
+  /** Once a requirement was picked: the network it is paid on ("eip155:4663" or "eip155:8453") and its token. */
+  network?: string;
+  asset?: string;
   /** Decoded PAYMENT-RESPONSE on success, when the merchant sent one. */
   settlement?: SettleResponse;
   /** true: the payment may still land (a "pending" answer, a timeout, or a lost connection). Resend
@@ -155,7 +197,7 @@ export interface Payer {
 export declare function createPayer(opts: CreatePayerOptions): Payer;
 
 /** An x402Client for USDG on eip155:4663 with a price cap and a ≤600 s signing window (for @x402/fetch, @x402/mcp). */
-export declare function createUsdgClient(opts: { signer: any; maxPrice?: UsdgAmount; maxValiditySeconds?: number; asset?: string; x402Signer?: any }): x402Client;
+export declare function createUsdgClient(opts: { signer: any; maxPrice?: UsdgAmount; maxValiditySeconds?: number; asset?: string; x402Signer?: any; networks?: string[] }): x402Client;
 
 export declare function resend(input: RequestInfo | URL, paymentHeaders: Record<string, string>, opts?: { init?: RequestInit; fetchImpl?: typeof fetch; retries?: number; sleep?: (ms: number) => Promise<void>; maxSleepMs?: number; timeoutMs?: number; signal?: AbortSignal }): Promise<{ response: Response; pending: boolean; timedOut?: boolean; transportError?: boolean; error?: unknown; paymentHeaders?: Record<string, string> }>;
 /** A payer's per-request timeout unless `timeoutMs` says otherwise: 60 000 ms. */
@@ -177,12 +219,14 @@ export declare class CappedExactEvmScheme implements SchemeNetworkClient {
   createPaymentPayload(x402Version: number, requirements: PaymentRequirements, context?: PaymentPayloadContext): Promise<PaymentPayloadResult>;
 }
 export declare function toX402Signer(signer: any, address?: string): { address: `0x${string}`; signTypedData(m: { domain: Record<string, unknown>; types: Record<string, unknown>; primaryType: string; message: Record<string, unknown> }): Promise<`0x${string}`> };
-export declare function pickV2Requirement(accepts: unknown, asset?: string): PaymentRequirements | null;
+/** First signable v2 requirement on an enabled network (default Robinhood Chain only), its token by full address and
+ *  its domain the token's own; Robinhood Chain preferred when a seller offers both. */
+export declare function pickV2Requirement(accepts: unknown, asset?: string, opts?: { networks?: string[] }): PaymentRequirements | null;
 export declare function pickV1Requirement(accepts: unknown, asset?: string): Record<string, any> | null;
 export declare function signPaymentV1(signer: any, req: Record<string, any>, opts?: { now?: number; chainId?: number; maxValiditySeconds?: number }): Promise<string>;
 
 export declare class PayError extends Error {
-  /** PRICE_ABOVE_MAX_PRICE, PRICE_ABOVE_MAX_BORROW, MIN_LOAN_ABOVE_MAX_BORROW, ABOVE_MAX_LOAN, TERM_OUT_OF_RANGE, FEE_TOO_HIGH, NO_POOL, NO_SIGNER, NO_PROVIDER, BAD_402, NO_USDG_REQUIREMENT, BORROW_WOULD_REVERT, BORROW_UNCONFIRMED, ... */
+  /** PRICE_ABOVE_MAX_PRICE, PRICE_ABOVE_MAX_BORROW, MIN_LOAN_ABOVE_MAX_BORROW, ABOVE_MAX_LOAN, TERM_OUT_OF_RANGE, FEE_TOO_HIGH, NO_POOL, NO_SIGNER, NO_PROVIDER, BAD_402, NO_USDG_REQUIREMENT, BORROW_WOULD_REVERT, BORROW_UNCONFIRMED, BAD_NETWORK, BASE_FLOAT_SHORT, ...; "@priors/x402/bridge" adds its own (bridge.d.ts BridgeErrorCode). */
   code: string;
   /** Set on BORROW_UNCONFIRMED (the amount sent to borrow: it may have opened a loan), and on any error thrown after a loan. */
   borrowed?: bigint;
@@ -192,6 +236,13 @@ export declare class PayError extends Error {
   unconfirmed?: boolean;
   /** BORROW_UNCONFIRMED: the borrow's transaction hash, when it came back before the answer was lost. */
   hash?: string | null;
+  /** BASE_FLOAT_SHORT: the price and the wallet's USDC on Base; the network and token. */
+  price?: bigint;
+  balance?: bigint;
+  /** RESERVE: the USDG kept back; BASE_FLOAT_SHORT: what `baseReserve()` kept back of the Base float (0n without it). */
+  reserve?: bigint;
+  network?: string;
+  asset?: string;
   constructor(code: string, message: string, details?: Record<string, unknown>);
 }
 export declare function settleLoans(o: { signer: any; pool: string | any; agentId: bigint | number | string; topUp?: (need: bigint) => Promise<SavingsTopUp>; onlyInWindow?: boolean; now?: () => number }): Promise<{ repaid: bigint[]; open: bigint[]; waiting?: Array<{ loanId: bigint; opens: number }>; savings?: SavingsTopUp }>;

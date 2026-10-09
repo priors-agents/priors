@@ -40,6 +40,8 @@ repaying.
 | `pt_buy(amount_usdg, slippage_bps?, dry_run?)` | buy PT-USDG with the wallet's USDG through Pendle's router (at most `PRIORS_MAX_PT_USD` per call, `PRIORS_MAX_PT_TOTAL_USD` per run); `dry_run` lists the calls; needs ETH for gas | yes |
 | `pt_sell(amount_pt \| "all", slippage_bps?, dry_run?)` | sell the wallet's PT-USDG for USDG at the market, before maturity; needs ETH for gas | yes |
 | `pt_redeem(amount_pt \| "all", slippage_bps?, dry_run?)` | redeem the wallet's PT-USDG for USDG 1:1, from maturity (2027-03-25) on; needs ETH for gas | yes |
+| `fund_base(amount_usd, max_borrow_usd?)` | only with Base on (below): move USDG to USDC in the same address on Base through Across, keeping back what Autopay and signed payments need, borrowing the gap only with `max_borrow_usd`; needs ETH for gas | yes |
+| `return_to_robinhood(amount_usd \| "all")` | only with Base on: move USDC from the Base float back to USDG on Robinhood Chain through Relay, one signature and no gas on Base; keeps back what signed Base payments need | yes |
 
 Tools that move money state the amounts in their answer, are marked destructive for MCP clients, and their
 descriptions tell the assistant to confirm with you first. They run one at a time and each answers within 45 s, under an
@@ -91,6 +93,27 @@ trade may need a wider margin.
 Once the Priors stock vault lists PT-USDG, an agent's owner can post it behind a line (`pt_position` says when);
 until then it is a token the wallet holds. `PRIORS_PT=off` removes the five tools.
 
+## Paying USDC sellers on Base (off by default)
+
+Many x402 sellers (search, market data, model calls) take USDC on Base only. With `PRIORS_PAY_NETWORKS` naming
+`eip155:8453` and `PRIORS_BRIDGE=across`, the agent keeps a small USDC balance on Base, its Base float, and `pay_url`
+pays those sellers from it. Without both settings nothing changes.
+
+- `fund_base` moves USDG from the wallet on Robinhood Chain to USDC in the same address on Base through Across, in a
+  few seconds. It keeps back what Autopay loans pull in the next 24 hours and what signed payments still need, refuses
+  a fee above `PRIORS_MAX_BRIDGE_FEE_BPS`, keeps the float at most `PRIORS_MAX_BASE_FLOAT_USD`, and borrows the gap
+  from the line only with `max_borrow_usd` covering that loan (the gap, or the pool's minimum loan if that is more; a
+  short answer names the amount). That loan counts like any other, and is repaid in USDG on Robinhood Chain.
+- `pay_url` pays a USDC 402 on Base from the float, never from a loan; a float short of the price is refused before
+  anything is signed, with a pointer to `fund_base`. USDC that a return to Robinhood Chain still in flight may pull is
+  not counted as free. A seller that takes both is paid in USDG.
+- `return_to_robinhood` brings USDC back as USDG through Relay, with one signature and no gas on Base. The signature is
+  checked field by field and rebuilt before it is signed.
+- One transfer at a time per wallet: while one is on its way (kept on file next to the payments, so a restart or
+  another session sees it), `fund_base` and `return_to_robinhood` do nothing; payments, `borrow` and `repay` go on.
+  `wallet_balance` and `credit_status` show the float and any transfer in flight, and `credit_status` warns when a
+  loan is due within 24 hours while money sits on Base.
+
 ## Configure
 
 The only secret is the wallet key, and it is read from the environment variable `PRIORS_KEY`, never from the command
@@ -120,6 +143,14 @@ dedicated agent wallet holding only what the agent may spend.
 | `PRIORS_PT` | on | `off` (or `false`, `0`, `no`) removes the PT-USDG tools |
 | `PRIORS_MAX_PT_USD` | `50` | most USDG one `pt_buy` may spend (sales and redemptions only turn the wallet's PT back into USDG) |
 | `PRIORS_MAX_PT_TOTAL_USD` | `200` | most USDG `pt_buy` may spend in total while the server runs (a buy whose transaction was sent counts, even if its answer is lost) |
+| `PRIORS_PAY_NETWORKS` | `eip155:4663` | networks `pay_url` pays on, comma-separated; add `eip155:8453` for USDC on Base (also needs `PRIORS_BRIDGE`). Robinhood Chain is always on |
+| `PRIORS_BRIDGE` | `off` | `across`: `fund_base` moves money out through Across (`relay`, the Relay route out, is not built yet); `return_to_robinhood` goes through Relay either way |
+| `PRIORS_BASE_RPC` | `https://mainnet.base.org` | Base JSON-RPC endpoint, read only (a private URL is redacted from every answer) |
+| `PRIORS_BRIDGE_TIMEOUT_S` | `30` | longest `fund_base` and `return_to_robinhood` wait for the money to land, never past the call's own 45 s; one still on its way is reported as in flight |
+| `PRIORS_MAX_BRIDGE_USD` | `10` | most one `fund_base` or `return_to_robinhood` may move |
+| `PRIORS_MAX_BRIDGE_TOTAL_USD` | `25` | most both may move in total while the server runs, either way (a transfer that may be out counts, and one in flight when the server starts counts too) |
+| `PRIORS_MAX_BRIDGE_FEE_BPS` | `100` | a bridge fee above this, in basis points of the amount, is refused |
+| `PRIORS_MAX_BASE_FLOAT_USD` | `10` | `fund_base` never brings the Base float above this |
 | `PRIORS_STATE_DIR` | `~/.local/state/priors-mcp` | where the payments signed and not yet settled are kept (one owner-only file per wallet, never the key, with a short-lived `.lock` beside it while it is written), so a restart, a new session or another session of the same wallet resends them instead of signing again. An absolute path, or one starting with `~/` (a relative one is refused at start). A payment that cannot be written there is not sent. `off` keeps them in memory only |
 
 Contract addresses (pool, lens, registry, USDG) come from `deployments/4663.v2.json`, bundled in the package, and the
@@ -135,7 +166,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.6.4"],
+      "args": ["-y", "@priors/mcp@0.7.0"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -157,7 +188,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.6.4"],
+      "args": ["-y", "@priors/mcp@0.7.0"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -167,7 +198,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 }
 ```
 
-or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.6.4`
+or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.7.0`
 (the key is expanded by your shell from the environment; do not paste it on the command line).
 
 ## Try it
@@ -178,4 +209,5 @@ prices" · "Pay https://api.example.com/report, up to 5 cents" · "Borrow $5 for
 ## Tests
 
 `npm run test:packages` in the Priors repository lists and calls every tool through the MCP SDK's in-memory client and
-over stdio, and checks that the key never appears in any output or error.
+over stdio, and checks that the key never appears in any output or error. `scripts/test-x402-base.mjs` covers the
+Base tools: their caps, one money call at a time, a restart with a transfer in flight, and the default being off.

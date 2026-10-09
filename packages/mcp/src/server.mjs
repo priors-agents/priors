@@ -36,6 +36,24 @@
 //   PRIORS_PT              "off": no PT-USDG tool (default on: the market is Pendle's, live on Robinhood Chain)
 //   PRIORS_MAX_PT_USD      most USDG one pt_buy may spend (default 50); sales and redemptions only turn PT back into USDG
 //   PRIORS_MAX_PT_TOTAL_USD  most USDG pt_buy may spend in total while the server runs (default 200)
+//
+// Paying USDC sellers on Base (docs/X402-BASE-PLAN.md, phase 1). Off by default: nothing below changes anything unless
+// PRIORS_PAY_NETWORKS names eip155:8453 AND PRIORS_BRIDGE is across or relay. Then pay_url also pays x402 URLs that take
+// USDC on Base only, from the USDC this wallet holds on Base (its Base float), and two tools move money between the
+// float and Robinhood Chain: fund_base (USDG out through Across, borrowing the gap only when asked) and
+// return_to_robinhood (USDC back through Relay, gasless). Loans and repayments stay on Robinhood Chain.
+//   PRIORS_PAY_NETWORKS    comma-separated CAIP-2 networks pay_url pays on (default eip155:4663, always on; add
+//                          eip155:8453 for Base)
+//   PRIORS_BRIDGE          off (default), across (fund_base through Across) or relay (the Relay route out is phase 2:
+//                          fund_base says so); return_to_robinhood goes through Relay either way
+//   PRIORS_BASE_RPC        Base JSON-RPC endpoint (default the public https://mainnet.base.org); cut from answers like
+//                          PRIORS_RPC
+//   PRIORS_BRIDGE_TIMEOUT_S  longest fund_base and return_to_robinhood wait for the money to land (default 30; never
+//                          past the call's own time budget)
+//   PRIORS_MAX_BRIDGE_USD  most one fund_base or return_to_robinhood may move (default 10)
+//   PRIORS_MAX_BRIDGE_TOTAL_USD  most both may move in total while the server runs, either way (default 25)
+//   PRIORS_MAX_BRIDGE_FEE_BPS  a bridge fee above this, in basis points of the amount, is refused (default 100)
+//   PRIORS_MAX_BASE_FLOAT_USD  fund_base never brings the Base float above this (default 10)
 import { readFileSync, writeFileSync, mkdirSync, renameSync, openSync, closeSync, statSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -55,13 +73,13 @@ import * as P from "./pt-usdg.mjs";
 // @priors/x402 when installed from npm; the sibling package in the monorepo otherwise.
 async function loadX402() {
   try {
-    return { X: await import("@priors/x402"), C: await import("@priors/x402/credit"), S: await import("@priors/x402/savings"), A: await import("@priors/x402/autopay") };
+    return { X: await import("@priors/x402"), C: await import("@priors/x402/credit"), S: await import("@priors/x402/savings"), A: await import("@priors/x402/autopay"), B: await import("@priors/x402/bridge") };
   } catch (e) {
     if (e?.code !== "ERR_MODULE_NOT_FOUND" || !String(e.message).includes("@priors/x402")) throw e;
-    return { X: await import("../../x402/index.mjs"), C: await import("../../x402/src/credit.mjs"), S: await import("../../x402/src/savings.mjs"), A: await import("../../x402/src/autopay.mjs") };
+    return { X: await import("../../x402/index.mjs"), C: await import("../../x402/src/credit.mjs"), S: await import("../../x402/src/savings.mjs"), A: await import("../../x402/src/autopay.mjs"), B: await import("../../x402/src/bridge.mjs") };
   }
 }
-const { X, C, S, A } = await loadX402();
+const { X, C, S, A, B } = await loadX402();
 
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const ADDRESSES = JSON.parse(readFileSync(new URL("../deployments/4663.v2.json", import.meta.url), "utf8"));
@@ -219,7 +237,30 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   const ptOn = !/^(off|false|0|no|none)$/i.test(String(env.PRIORS_PT ?? "").trim());
   const maxPtCeiling = envDollars(env, "PRIORS_MAX_PT_USD", 50);
   const ptTotalCap = envDollars(env, "PRIORS_MAX_PT_TOTAL_USD", 200);
-  const session = { spent: 0n, borrowed: 0n, saved: 0n, ptBought: 0n };
+  // Base (docs/X402-BASE-PLAN.md phase 1): on only when PRIORS_PAY_NETWORKS names eip155:8453 AND PRIORS_BRIDGE picks a
+  // route. Off, the server is exactly as before: no Base provider, no Base tool, pay_url pays Robinhood Chain only, and
+  // the other Base settings are not read (a value these two cannot parse stops the start, as PRIORS_STATE_DIR's does).
+  // Neither value is ever echoed: a key pasted into one must not reach a log.
+  let payNets;
+  try { payNets = X.payNetworks(env.PRIORS_PAY_NETWORKS); } catch (_) { throw new Error(`PRIORS_PAY_NETWORKS must list networks this server pays on, comma-separated (${Object.keys(X.NETWORKS).join(", ")})`); }
+  const bridgeRaw = String(env.PRIORS_BRIDGE ?? "").trim().toLowerCase();
+  if (bridgeRaw && !/^(off|false|0|no|none|across|relay)$/.test(bridgeRaw)) throw new Error("PRIORS_BRIDGE must be off, across or relay");
+  const bridgeRoute = bridgeRaw === "across" || bridgeRaw === "relay" ? bridgeRaw : null;
+  const baseOn = payNets.includes(X.BASE_USDC.network) && bridgeRoute !== null;
+  // Robinhood Chain is always paid on: the line, the savings and every other tool live there.
+  const networks = baseOn ? [X.ROBINHOOD_USDG.network, X.BASE_USDC.network] : [X.ROBINHOOD_USDG.network];
+  const envInt = (name, dflt, lo, hi) => {
+    const raw = String(env[name] ?? "").trim();
+    if (raw === "") return dflt;
+    if (!/^\d{1,7}$/.test(raw) || Number(raw) < lo || Number(raw) > hi) throw new Error(`${name} must be a whole number from ${lo} to ${hi}`);
+    return Number(raw);
+  };
+  const bridgeTimeoutMs = baseOn ? envInt("PRIORS_BRIDGE_TIMEOUT_S", 30, 1, 600) * 1000 : 0;
+  const maxBridgeCeiling = baseOn ? envDollars(env, "PRIORS_MAX_BRIDGE_USD", 10) : 0n;
+  const bridgeTotalCap = baseOn ? envDollars(env, "PRIORS_MAX_BRIDGE_TOTAL_USD", 25) : 0n;
+  const maxBridgeFeeBps = baseOn ? envInt("PRIORS_MAX_BRIDGE_FEE_BPS", 100, 0, 1000) : 0;
+  const maxBaseFloat = baseOn ? envDollars(env, "PRIORS_MAX_BASE_FLOAT_USD", 10) : 0n;
+  const session = { spent: 0n, borrowed: 0n, saved: 0n, ptBought: 0n, bridged: 0n };
   const allowLocal = env.PRIORS_ALLOW_LOCAL === "1";
   const lookup = deps.lookup || ((host) => dnsLookup(host, { all: true }));
   const sleep = deps.sleep; // undefined: the library's own
@@ -316,10 +357,12 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     const h = rawKey.replace(/^0x/i, "").replace(/[^0-9a-zA-Z]/g, "");
     if (h.length >= 16) secrets.push(new RegExp(`(0x)?${[...h].join("[\\s\"'+,\\-]{0,3}")}`, "gi"));
   }
-  if (env.PRIORS_RPC && env.PRIORS_RPC !== X.robinhood.rpcUrl) {
-    const parts = [env.PRIORS_RPC];
+  // A private RPC endpoint: PRIORS_RPC, and PRIORS_BASE_RPC (set, it is cut whether or not Base is on).
+  for (const [raw, pub] of [[env.PRIORS_RPC, X.robinhood.rpcUrl], [env.PRIORS_BASE_RPC, X.BASE_USDC.rpcUrl]]) {
+    if (!raw || raw === pub) continue;
+    const parts = [raw];
     try {
-      const u = new URL(env.PRIORS_RPC);
+      const u = new URL(raw);
       // the hostname alone too: with a port, u.host is "name:port", and a DNS error names the bare hostname
       parts.push(u.href, u.host, u.hostname, u.hostname.replace(/^\[|\]$/g, ""), u.username, u.password);
       for (const seg of u.pathname.split("/")) if (seg.length >= 8) parts.push(seg, decodeURIComponent(seg));
@@ -336,6 +379,9 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   // answers a batch that size with HTTP 429, which ethers retries until its 5-minute timeout (stock_assets' ~140 reads).
   const provider = deps.provider || new ethers.JsonRpcProvider(rpc, ethers.Network.from(X.robinhood.chainId), { staticNetwork: true, cacheTimeout: -1, batchMaxCount: 1 });
   const wallet = key ? new ethers.Wallet(key, provider) : null;
+  // Base, read only (the Base float's balance; USDC's authorization state): payments there are signatures, and the way
+  // back is Relay's gasless route, so this server never sends a transaction on Base.
+  const baseProvider = !baseOn ? null : deps.baseProvider || new ethers.JsonRpcProvider(env.PRIORS_BASE_RPC || X.BASE_USDC.rpcUrl, ethers.Network.from(X.BASE_USDC.chainId), { staticNetwork: true, cacheTimeout: -1, batchMaxCount: 1 });
   // The payments this wallet signed and has not seen settle outlive the process (a restart, or the client closing its
   // session, starts a new one): one file per wallet under PRIORS_STATE_DIR (default ~/.local/state/priors-mcp; "off"
   // disables it), owner-only. It holds signed authorizations, each payable only to the merchant it was sent to, never the key.
@@ -346,11 +392,13 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   if (stateHome && !/^(off|none|false|0)$/i.test(stateHome) && !isAbsolute(stateHome)) throw new Error(`PRIORS_STATE_DIR must be an absolute path (or start with ~/), not "${stateRaw}"`);
   const stateDir = /^(off|none|false|0)$/i.test(stateRaw) ? null : stateHome || join(homedir(), ".local", "state", "priors-mcp");
   const stateFile = wallet && stateDir ? join(stateDir, `outstanding-${wallet.address.toLowerCase()}.json`) : null;
-  // An entry is { paymentHeaders, validBefore, price, payTo, borrowed, loanId }: only what this server wrote, never the
-  // merchant's requirement object (its fields are the merchant's to choose). On disk the amounts are decimal strings;
-  // each entry is checked on its own, so one bad entry never costs the others. No reviver.
+  // An entry is { paymentHeaders, validBefore, price, payTo, borrowed, loanId, network, asset }: only what this server
+  // wrote, never the merchant's requirement object (its fields are the merchant's to choose). On disk the amounts are
+  // decimal strings; each entry is checked on its own, so one bad entry never costs the others. No reviver. An entry an
+  // older server wrote has no network: it is Robinhood Chain USDG, the only one it paid on.
   const live = (e, nowS) => e.validBefore + X.SKEW_SECONDS > nowS;
   const DEC = /^\d{1,30}$/;
+  const onRobinhood = (e) => (e.network ?? X.ROBINHOOD_USDG.network) === X.ROBINHOOD_USDG.network;
   function entryFrom(v) {
     if (!v || typeof v !== "object" || !v.paymentHeaders || typeof v.paymentHeaders !== "object") return null;
     const headers = {};
@@ -359,7 +407,11 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     if (Object.keys(headers).length === 0 || !Number.isSafeInteger(validBefore) || !DEC.test(String(v.price)) || !ethers.isAddress(String(v.payTo))) return null;
     const borrowed = DEC.test(String(v.borrowed ?? "0")) ? BigInt(v.borrowed ?? "0") : 0n;
     const loanId = v.loanId !== null && v.loanId !== undefined && DEC.test(String(v.loanId)) ? BigInt(v.loanId) : null;
-    return { paymentHeaders: headers, validBefore, price: BigInt(v.price), payTo: String(v.payTo), borrowed, loanId };
+    const net = X.networkOf(v.network === undefined || v.network === null ? X.ROBINHOOD_USDG.network : String(v.network));
+    if (!net) return null;
+    const asset = v.asset === undefined || v.asset === null ? (net === X.ROBINHOOD_USDG && ethers.isAddress(String(addresses.usdg)) ? ethers.getAddress(String(addresses.usdg)) : net.asset) : ethers.isAddress(String(v.asset)) ? ethers.getAddress(String(v.asset)) : null;
+    if (!asset) return null;
+    return { paymentHeaders: headers, validBefore, price: BigInt(v.price), payTo: String(v.payTo), borrowed, loanId, network: net.network, asset };
   }
   function readState() {
     const m = new Map();
@@ -373,7 +425,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   function writeState(m) {
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     const tmp = `${stateFile}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-    const out = Object.fromEntries([...m].map(([k, e]) => [k, { paymentHeaders: e.paymentHeaders, validBefore: e.validBefore, price: String(e.price), payTo: e.payTo, borrowed: String(e.borrowed || 0n), loanId: e.loanId === null || e.loanId === undefined ? null : String(e.loanId) }]));
+    const out = Object.fromEntries([...m].map(([k, e]) => [k, { paymentHeaders: e.paymentHeaders, validBefore: e.validBefore, price: String(e.price), payTo: e.payTo, borrowed: String(e.borrowed || 0n), loanId: e.loanId === null || e.loanId === undefined ? null : String(e.loanId), network: e.network ?? X.ROBINHOOD_USDG.network, ...(e.asset ? { asset: e.asset } : {}) }]));
     writeFileSync(tmp, JSON.stringify(out), { mode: 0o600 });
     renameSync(tmp, stateFile);
   }
@@ -424,6 +476,127 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     if (stateFile) { try { await locked(() => { const m = readState(); if (same(m.get(key)) && m.delete(key)) writeState(m); }); } catch (_) { /* best effort */ } }
   }
   refresh();
+
+  // ---- The Base float's transfer in flight (fund_base / return_to_robinhood) ----------------------------------------
+  // At most one transfer between Robinhood Chain and Base is in flight per wallet. Its record is written before the
+  // money can leave (fundBase's onDepositSending, returnToRobinhood's onSigned) to its own file next to the payments
+  // (bridge-<wallet>.json, owner-only, under the same lock), and read back at start and by every session of the wallet.
+  // While it stands, fund_base, return_to_robinhood and borrowing for a bridge do nothing; payments, borrow and repay
+  // go on (an Across refund can take hours, and must not freeze the agent's ordinary USDG payments). It ends when the
+  // route reports the transfer done (Across filled or refunded, Relay success), or once nothing more can happen to it:
+  // an Across deposit 12 h past its fill deadline (Across refunds an expired one within hours), a Relay authorization
+  // past its validBefore (it can no longer be used). Its amount counts against PRIORS_MAX_BRIDGE_TOTAL_USD, from start.
+  const bridgeFile = wallet && stateDir ? join(stateDir, `bridge-${wallet.address.toLowerCase()}.json`) : null;
+  const ACROSS_REFUND_WAIT_S = 12 * 3600;
+  const B32 = /^0x[0-9a-fA-F]{64}$/;
+  let flightMem = null; // with PRIORS_STATE_DIR=off: this process's memory only
+  function flightFrom(v) {
+    if (!v || typeof v !== "object" || !DEC.test(String(v.amount)) || !Number.isSafeInteger(v.startedAt)) return null;
+    const base = { route: v.route, amount: BigInt(v.amount), startedAt: v.startedAt };
+    if (v.route === "across" && Number.isSafeInteger(v.fillDeadline) && DEC.test(String(v.outputAmount))) {
+      return { ...base, fillDeadline: v.fillDeadline, outputAmount: BigInt(v.outputAmount), hash: TX_RE.test(String(v.hash ?? "")) ? String(v.hash) : null };
+    }
+    if (v.route === "relay" && Number.isSafeInteger(v.validBefore) && B32.test(String(v.requestId)) && B32.test(String(v.nonce)) && DEC.test(String(v.expectedOut))) {
+      return { ...base, validBefore: v.validBefore, requestId: String(v.requestId), nonce: String(v.nonce), expectedOut: BigInt(v.expectedOut) };
+    }
+    return null;
+  }
+  const flightJson = (f) => JSON.stringify(Object.fromEntries(Object.entries(f).map(([k, x]) => [k, typeof x === "bigint" ? String(x) : x])));
+  const sameFlight = (a, b) => !!a && !!b && a.route === b.route && a.startedAt === b.startedAt && a.amount === b.amount;
+  function readFlight() {
+    if (!bridgeFile) return flightMem;
+    try { return flightFrom(JSON.parse(readFileSync(bridgeFile, "utf8"))); } catch (_) { return null; }
+  }
+  function writeFlight(f) {
+    if (!f) { rmSync(bridgeFile, { force: true }); return; }
+    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    const tmp = `${bridgeFile}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+    writeFileSync(tmp, flightJson(f), { mode: 0o600 });
+    renameSync(tmp, bridgeFile);
+  }
+  /** Before the money can leave: refused (and so never sent) if it cannot be written, or if another session of this
+   *  wallet has a transfer in flight. */
+  async function recordFlight(f) {
+    if (!bridgeFile) { if (flightMem) throw new Error("a transfer is already in flight"); flightMem = f; return f; }
+    await locked(() => {
+      if (readFlight()) throw Object.assign(new Error("another session of this wallet has a transfer in flight"), { code: "OTHER_SESSION" });
+      writeFlight(f);
+    });
+    return f;
+  }
+  /** The hash, once known (best effort: the record already blocks a second transfer). */
+  async function updateFlight(f) {
+    if (!bridgeFile) { if (sameFlight(flightMem, f)) flightMem = f; return; }
+    try { await locked(() => { if (sameFlight(readFlight(), f)) writeFlight(f); }); } catch (_) { /* best effort */ }
+  }
+  /** Only that same transfer's record: another session's is never removed. */
+  async function clearFlight(f) {
+    if (!bridgeFile) { if (sameFlight(flightMem, f)) flightMem = null; return; }
+    try { await locked(() => { if (sameFlight(readFlight(), f)) writeFlight(null); }); } catch (_) { /* best effort */ }
+  }
+  const startFlight = baseOn ? readFlight() : null;
+  if (startFlight) session.bridged += startFlight.amount; // what the previous process may have moved counts here too
+
+  // The bridge routes and the Base float, behind one facade (tests replace parts of it).
+  const bridgeFetch = deps.bridgeFetch || fetchImpl;
+  const bridge = {
+    floatOf: async (addr) => BigInt(await new ethers.Contract(X.BASE_USDC.asset, C.ERC20_ABI, baseProvider).balanceOf(addr)),
+    quote: (o) => B.acrossQuote({ fetchImpl: bridgeFetch, ...o }),
+    fundBase: (o) => B.fundBase({ signer: wallet, fetchImpl: bridgeFetch, ...o }),
+    returnToRobinhood: (o) => B.returnToRobinhood({ signer: wallet, baseProvider, fetchImpl: bridgeFetch, ...o }),
+    depositStatus: (hash) => B.depositStatus({ hash, fetchImpl: bridgeFetch }),
+    relayStatus: (requestId) => B.relayStatus({ requestId, fetchImpl: bridgeFetch }),
+    authorizationUsed: (nonce) => B.authorizationUsed({ baseProvider, from: wallet.address, nonce }),
+    ...(deps.bridge || {}),
+  };
+  /** The transfer in flight, after asking its route whether it is done (a read that fails keeps it), or null. */
+  async function settleFlight() {
+    const f = readFlight();
+    if (!f) return null;
+    const nowS = Math.floor(Date.now() / 1000);
+    // Past the time after which nothing more can happen to it, a record ends whatever its route answers, and before
+    // asking: a route that cannot be reached (DNS, refused, slow) must not hold the Base tools on a record that has
+    // already run out, with an "at the latest" time in the past (own review).
+    if (f.route === "across" ? nowS > f.fillDeadline + ACROSS_REFUND_WAIT_S : nowS > f.validBefore + X.SKEW_SECONDS) { await clearFlight(f); return null; }
+    try {
+      if (f.route === "across") {
+        if (f.hash) {
+          const st = await withinTime(bridge.depositStatus(f.hash), 5_000);
+          if (st.status === "filled" || st.status === "refunded") { await clearFlight(f); return null; }
+          f.status = st.status;
+        }
+      } else {
+        const st = await withinTime(bridge.relayStatus(f.requestId), 5_000);
+        if (st.status === "success") { await clearFlight(f); return null; }
+        f.status = st.status;
+      }
+    } catch (_) { /* its route did not answer: the record stands until its time runs out */ }
+    return f;
+  }
+  /**
+   * What the Base float keeps back from pay_url (createPayer's `baseReserve`): a return to Robinhood Chain whose
+   * ReceiveWithAuthorization is out and can still be used. Until validBefore Relay may pull its whole value, and a
+   * payment signed against the same USDC would make one of the two fail (the return, or the seller's settlement after it
+   * served). Once USDC records the nonce as used, the float already shows the transfer and nothing is kept back; a read
+   * that fails keeps it back (a Base payment is then refused, never signed twice over). No record, an Across transfer
+   * (it adds to the float, never takes from it), or one past validBefore: nothing.
+   */
+  async function baseHeld() {
+    const f = readFlight();
+    if (!f || f.route !== "relay" || Math.floor(Date.now() / 1000) > f.validBefore + X.SKEW_SECONDS) return 0n;
+    try { if (await withinTime(bridge.authorizationUsed(f.nonce), 5_000)) return 0n; } catch (_) { /* kept back */ }
+    return f.amount;
+  }
+  /** One line on a transfer in flight. */
+  function flightText(f) {
+    if (f.route === "across") {
+      return `A transfer of ${usd(f.amount)} from Robinhood Chain to Base (Across) is in flight${f.hash ? ` (tx ${f.hash})` : " (its transaction hash was not seen)"}${f.status === "expired" ? ": it was not filled in time, and Across refunds it to this wallet on Robinhood Chain within hours" : f.status && f.status !== "unknown" ? `, ${f.status}` : ""}. fund_base, return_to_robinhood and borrowing for Base wait until it lands (at the latest ${when(f.fillDeadline + ACROSS_REFUND_WAIT_S)}).`;
+    }
+    return `A return of ${X.formatUsdg(f.amount)} USDC from Base to Robinhood Chain (Relay request ${f.requestId}) is in flight${f.status && f.status !== "pending" ? `, ${f.status}` : ""}. fund_base, return_to_robinhood and borrowing for Base wait until it lands, or until its authorization expires at ${when(f.validBefore)}.`;
+  }
+  /** "0.05 USDG", or "0.01 USDC on Base": what pay_url says it paid, in the token it was paid in. */
+  const money = (units, network) => (network === X.BASE_USDC.network ? `${X.formatUsdg(units)} USDC on Base` : usd(units));
+
   const contracts = C.creditContracts({ runner: provider, addresses: { pool: addresses.pool, lens: addresses.lens, usdg: addresses.usdg, registry: addresses.registry, stockVault: addresses.stockVault || null, seatVaultV5: v5.v5, seatVaultV5AgentId: v5.v5Root } });
 
   // The chain, behind one facade (tests replace it).
@@ -445,6 +618,10 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     save: async (amount) => S.save(await savingsC(), wallet, amount),
     unsave: async (o) => S.unsave(await savingsC(), wallet, o),
     topUp: async (need, o) => S.topUpFromSavings(await savingsC(), wallet, need, o),
+    // fund_base's loan: pay_url's borrow-the-gap (a draw of max(shortfall, the pool's minimum loan), simulated first),
+    // and the pool's minimum loan, read so a refusal can name the max_borrow_usd that would do
+    borrowGap: (o) => C.borrowGap({ signer: wallet, pool: addresses.pool, ...v5, ...o }),
+    minLoan: async () => (await contracts.pool.getParams()).minLoan,
   };
   let savingsCache = null;
   function needSavings() { if (savingsProblem) throw new ToolError(savingsProblem); }
@@ -594,7 +771,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   }
 
   const server = new McpServer({ name: "priors", version: VERSION }, {
-    instructions: `Priors on Robinhood Chain (chain 4663): pay x402-priced URLs in USDG, and run the agent's Priors credit line. Tools that move money (pay_url, borrow, repay, save, unsave, autopay_on, autopay_off${ptOn ? ", pt_buy, pt_sell, pt_redeem" : ""}) act immediately on mainnet: state the amounts to the user and get their go-ahead first. Spare USDG can be saved in a Morpho vault (save); pay_url and repay take it back out when the wallet is short, before any borrowing.${ptOn ? ` PT-USDG (Pendle's principal token for USDG, redeemable 1:1 for USDG on ${P.PT_USDG.maturity.slice(0, 10)}) can be bought, sold and redeemed through Pendle's router (pt_quote, pt_position first).` : ""} Amounts are in US dollars of USDG.`,
+    instructions: `Priors on Robinhood Chain (chain 4663): pay x402-priced URLs in USDG, and run the agent's Priors credit line. Tools that move money (pay_url, borrow, repay, save, unsave, autopay_on, autopay_off${ptOn ? ", pt_buy, pt_sell, pt_redeem" : ""}${baseOn ? ", fund_base, return_to_robinhood" : ""}) act immediately on mainnet: state the amounts to the user and get their go-ahead first. Spare USDG can be saved in a Morpho vault (save); pay_url and repay take it back out when the wallet is short, before any borrowing.${ptOn ? ` PT-USDG (Pendle's principal token for USDG, redeemable 1:1 for USDG on ${P.PT_USDG.maturity.slice(0, 10)}) can be bought, sold and redeemed through Pendle's router (pt_quote, pt_position first).` : ""}${baseOn ? ` pay_url also pays URLs that take USDC on Base only, from the wallet's USDC on Base (its Base float, kept at most ${X.formatUsdg(maxBaseFloat)}): fund_base moves USDG from Robinhood Chain into it (borrowing the gap from the line only with max_borrow_usd), and return_to_robinhood brings what is left back as USDG. Loans stay on Robinhood Chain and are repaid there.` : ""} Amounts are in US dollars of USDG${baseOn ? " (of USDC on Base)" : ""}.`,
   });
   const tool = (name, config, handler) => server.registerTool(name, config, async (args) => {
     try { return text(await handler(args || {})); } catch (e) { return failure(explain(e)); }
@@ -602,8 +779,10 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
 
   // ---- pay_url -------------------------------------------------------------------------------------------------
   tool("pay_url", {
-    title: "Pay for a URL with x402 (USDG)",
-    description: "Fetch a URL that may charge per call with x402 (HTTP 402) and pay it in USDG on Robinhood Chain from the configured wallet. Moves real money: confirm the URL and the most you will pay with the user first. Pays only if the price is at or below max_price_usd (default 0.10 USD); a higher price is refused before anything is signed. If the wallet is short, it borrows the gap from the agent's Priors credit line only when max_borrow_usd is given and covers it (the loan must then be repaid with the repay tool before its due date). Returns what was paid and borrowed, and the response body.",
+    title: baseOn ? "Pay for a URL with x402 (USDG, or USDC on Base)" : "Pay for a URL with x402 (USDG)",
+    description: baseOn
+      ? "Fetch a URL that may charge per call with x402 (HTTP 402) and pay it from the configured wallet: in USDG on Robinhood Chain, or, when the URL only takes USDC on Base, in USDC from the wallet's Base float (fund_base tops it up; a float short of the price is refused before anything is signed). Moves real money: confirm the URL and the most you will pay with the user first. Pays only if the price is at or below max_price_usd (default 0.10 USD); a higher price is refused before anything is signed. If the wallet is short of USDG on Robinhood Chain, it borrows the gap from the agent's Priors credit line only when max_borrow_usd is given and covers it (the loan must then be repaid with the repay tool before its due date); a Base payment never borrows. Returns what was paid and borrowed, and the response body."
+      : "Fetch a URL that may charge per call with x402 (HTTP 402) and pay it in USDG on Robinhood Chain from the configured wallet. Moves real money: confirm the URL and the most you will pay with the user first. Pays only if the price is at or below max_price_usd (default 0.10 USD); a higher price is refused before anything is signed. If the wallet is short, it borrows the gap from the agent's Priors credit line only when max_borrow_usd is given and covers it (the loan must then be repaid with the repay tool before its due date). Returns what was paid and borrowed, and the response body.",
     inputSchema: {
       url: z.string().url().describe("The https URL to fetch (http only for localhost)."),
       method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional().describe("HTTP method; default GET."),
@@ -648,15 +827,17 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     const unmatched = !prior && purchase !== urlOnly ? outstanding.get(urlOnly) : undefined;
     if (unmatched) {
       const until = when(unmatched.validBefore + X.SKEW_SECONDS);
-      throw new ToolError(`A payment of ${usd(unmatched.price)} to ${unmatched.payTo} for ${urlOnly} was signed earlier and kept without its request body (by an earlier version of this server, or for a call without a body), and the merchant may still settle it until ${until}. It cannot be told apart from this purchase, so nothing was signed: do NOT call pay_url again for this URL before ${until}; check wallet_balance.`);
+      throw new ToolError(`A payment of ${money(unmatched.price, unmatched.network)} to ${unmatched.payTo} for ${urlOnly} was signed earlier and kept without its request body (by an earlier version of this server, or for a call without a body), and the merchant may still settle it until ${until}. It cannot be told apart from this purchase, so nothing was signed: do NOT call pay_url again for this URL before ${until}; check wallet_balance.`);
     }
     let r;
     let signedPrice = null; // what the payer checked and signed; never a merchant field read again here
+    let signedNetwork = null; // where: Robinhood Chain (USDG) or Base (USDC)
     if (prior) {
       // A payment for this purchase is already out and still cashable: send that same one, never a second.
       r = await X.createPayer({ signer, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}) }).resend(url, prior.paymentHeaders, init);
-      r = { ...r, requirement: { payTo: prior.payTo }, paid: r.response.ok ? prior.price : 0n, borrowed: 0n, signed: prior, resent: true, ...(r.response.ok ? { settlement: settlementOf(r.response) } : {}) };
+      r = { ...r, requirement: { payTo: prior.payTo }, paid: r.response.ok ? prior.price : 0n, borrowed: 0n, signed: prior, resent: true, network: prior.network, ...(r.response.ok ? { settlement: settlementOf(r.response) } : {}) };
       signedPrice = prior.price;
+      signedNetwork = prior.network;
       lines.push("No new payment was signed: the same signed payment was sent again.");
       if (prior.borrowed > 0n) lines.push(`The first attempt at this purchase borrowed ${usd(prior.borrowed)}${prior.loanId !== null && prior.loanId !== undefined ? ` as loan #${prior.loanId}` : ""}: repay it with the repay tool.`);
     } else {
@@ -668,9 +849,13 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       // The agent's own savings before a loan: once the 402 names the price, only what the wallet is short of.
       const topUp = use_savings && autoSavings && typeof credit.topUp === "function" ? (need) => topUpWithin(need, deadline) : undefined;
       const payer = X.createPayer({ signer, maxPrice, maxBorrow, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}), ...(maxBorrow > 0n ? { pool: addresses.pool, agentId, ...v5 } : {}), ...(topUp ? { topUp } : {}), ...(reserveOn && autopay ? { reserve: autopayReserve } : {}),
+        // Base (when on): a USDC requirement there is paid from the Base float, never from a loan or savings, and never
+        // from USDC a return to Robinhood Chain still in flight may pull (baseHeld)
+        ...(baseOn ? { networks, baseProvider, baseReserve: baseHeld } : {}),
         // Recorded, then counted, when signed, at the price the payer checked and signed (a v1 requirement's `amount` is the
-        // merchant's text). A record that cannot be kept throws, and the payer does not send the payment.
-        onSigned: async (s) => { await record(purchase, { paymentHeaders: s.paymentHeaders, validBefore: s.validBefore, price: s.price, payTo: s.requirement.payTo, borrowed: s.borrowed || 0n, loanId: s.loanId ?? null }); signedPrice = s.price; session.spent += s.price; } });
+        // merchant's text). A record that cannot be kept throws, and the payer does not send the payment. A payment on
+        // either chain counts against PRIORS_MAX_SPEND_USD.
+        onSigned: async (s) => { await record(purchase, { paymentHeaders: s.paymentHeaders, validBefore: s.validBefore, price: s.price, payTo: s.requirement.payTo, borrowed: s.borrowed || 0n, loanId: s.loanId ?? null, network: s.network, asset: s.asset }); signedPrice = s.price; signedNetwork = s.network; session.spent += s.price; } });
       try { r = await payer.pay(url, init); } catch (e) {
         // What savings did before the failure is part of the answer, whatever failed after.
         const sv = []; savingsLines(e?.savings, sv);
@@ -681,13 +866,20 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
         if (e?.unconfirmed) throw new ToolError(`A borrow of ${usd(e.borrowed)} was sent${e.hash ? ` (tx ${e.hash})` : ""} and its answer was lost (${explain(e.cause ?? e)}), so it may have opened a loan: check credit_status, and repay it with the repay tool before its due date. Nothing was signed or paid.${note}`);
         if (e?.signed) {
           // onSigned ran before the payment left; should it not have, count the most this call could sign
-          if (signedPrice === null) { signedPrice = maxPrice; session.spent += maxPrice; await recordSent(purchase, { ...e.signed, price: maxPrice, payTo: e.requirement.payTo, borrowed: e.borrowed || 0n, loanId: e.loanId ?? null }); }
+          if (signedPrice === null) { signedPrice = maxPrice; signedNetwork = e.network ?? null; session.spent += maxPrice; await recordSent(purchase, { ...e.signed, price: maxPrice, payTo: e.requirement.payTo, borrowed: e.borrowed || 0n, loanId: e.loanId ?? null, network: e.network, asset: e.asset }); }
           const price = signedPrice;
           const until = when(e.signed.validBefore + X.SKEW_SECONDS);
-          throw new ToolError(`A payment of ${usd(price)} to ${e.requirement.payTo} was signed, then the request failed (${explain(e)}). The merchant may still settle it until ${until}, so do NOT call pay_url again for this purchase (the same method, URL and body) before ${until}; check wallet_balance.${e.borrowed > 0n ? ` Borrowed ${usd(e.borrowed)}${e.loanId !== null ? ` as loan #${e.loanId}` : ""}: repay it with the repay tool.` : ""}${note}`);
+          throw new ToolError(`A payment of ${money(price, signedNetwork ?? e.network)} to ${e.requirement.payTo} was signed, then the request failed (${explain(e)}). The merchant may still settle it until ${until}, so do NOT call pay_url again for this purchase (the same method, URL and body) before ${until}; check wallet_balance.${e.borrowed > 0n ? ` Borrowed ${usd(e.borrowed)}${e.loanId !== null ? ` as loan #${e.loanId}` : ""}: repay it with the repay tool.` : ""}${note}`);
         }
         const loan = e?.borrowed > 0n ? ` ${usd(e.borrowed)} was borrowed${e.loanId !== null ? ` as loan #${e.loanId}` : ""} before it failed: repay it with the repay tool.` : "";
-        if (e?.code === "NOT_RECORDED" && e.cause?.code === "OTHER_SESSION") { outstanding.set(purchase, e.cause.prior); throw new ToolError(`Another session of this wallet signed a payment of ${usd(e.cause.prior.price)} for this purchase a moment ago, and it may still settle until ${when(e.cause.prior.validBefore + X.SKEW_SECONDS)}. Nothing was sent from this call and no payment of its own is out: calling pay_url again resends that same payment, never a new one.${loan}`); }
+        // Base: the float is short. Nothing was signed; topping it up is a call of its own (phase 1), the user's to approve.
+        if (e?.code === "BASE_FLOAT_SHORT") {
+          // USDC a return to Robinhood Chain may still pull is not the float's to spend: wait for it, fund_base waits too
+          const f = e.reserve > 0n ? readFlight() : null;
+          if (f?.route === "relay") throw new ToolError(`${method} ${u.href} takes USDC on Base. The wallet's Base float holds ${X.formatUsdg(e.balance)} USDC, and ${X.formatUsdg(e.reserve)} of it is held for a return to Robinhood Chain still in flight (Relay may use its authorization until ${when(f.validBefore)}), leaving less than the price of ${X.formatUsdg(e.price)} USDC. Nothing was signed or paid. wallet_balance shows when the return lands or expires; call pay_url again after that (top the float up with fund_base first if it is still short).`);
+          throw new ToolError(`${method} ${u.href} takes USDC on Base, and the wallet's Base float holds ${X.formatUsdg(e.balance)} USDC, less than the price of ${X.formatUsdg(e.price)} USDC. Nothing was signed or paid. Top the float up with fund_base (it moves USDG from Robinhood Chain to USDC on Base, borrowing only with max_borrow_usd: state the amount to the user and get their go-ahead first), then call pay_url again.`);
+        }
+        if (e?.code === "NOT_RECORDED" && e.cause?.code === "OTHER_SESSION") { outstanding.set(purchase, e.cause.prior); throw new ToolError(`Another session of this wallet signed a payment of ${money(e.cause.prior.price, e.cause.prior.network)} for this purchase a moment ago, and it may still settle until ${when(e.cause.prior.validBefore + X.SKEW_SECONDS)}. Nothing was sent from this call and no payment of its own is out: calling pay_url again resends that same payment, never a new one.${loan}`); }
         if (e?.code === "NOT_RECORDED") throw new ToolError(`A payment was signed but could not be written to PRIORS_STATE_DIR (${explain(e.cause ?? e)}), so it was not sent and nothing can be settled. Fix that directory, or set PRIORS_STATE_DIR=off to keep payments in this process's memory only, then call again.${loan}${note}`);
         if (e?.name === "TimeoutError" || e?.name === "AbortError") throw new ToolError(`${method} ${u.href} did not answer in time. Nothing was signed or paid.${loan}${note}`);
         if (loan || note) throw new ToolError(`${explain(e)}.${loan}${note}`);
@@ -695,8 +887,8 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       }
       savingsLines(r.savings, lines);
       if (r.signed && signedPrice === null) { // onSigned counted and recorded it; should it not have, the most this call could sign
-        signedPrice = maxPrice; session.spent += maxPrice;
-        if (r.paid === 0n) await recordSent(purchase, { ...r.signed, price: maxPrice, payTo: r.requirement.payTo, borrowed: r.borrowed || 0n, loanId: r.loanId ?? null });
+        signedPrice = maxPrice; signedNetwork = r.network ?? null; session.spent += maxPrice;
+        if (r.paid === 0n) await recordSent(purchase, { ...r.signed, price: maxPrice, payTo: r.requirement.payTo, borrowed: r.borrowed || 0n, loanId: r.loanId ?? null, network: r.network, asset: r.asset });
       }
       if (r.borrowed > 0n) { session.borrowed += r.borrowed; lines.push(`Borrowed ${usd(r.borrowed)} from the Priors line for agent #${agentId}${r.loanId !== null ? ` as loan #${r.loanId}` : ""}${r.dueAt ? `, due ${when(r.dueAt)}` : ""}. Repay it with the repay tool before then.`); }
       else if (r.requirement) lines.push("Nothing was borrowed.");
@@ -706,10 +898,10 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     else if (r.paid > 0n) {
       await forget(purchase, r.signed?.paymentHeaders);
       const tx = r.settlement?.transaction;
-      lines.unshift(`Paid ${usd(r.paid)}${r.x402Version ? ` (x402 v${r.x402Version})` : ""} to ${r.requirement.payTo} for ${method} ${u.href}: ${status}.${tx ? (TX_RE.test(String(tx)) ? ` Settlement tx ${tx}.` : " (The merchant's settlement id is not a transaction hash; not shown.)") : ""}`);
+      lines.unshift(`Paid ${money(r.paid, signedNetwork ?? r.network)}${r.x402Version ? ` (x402 v${r.x402Version})` : ""} to ${r.requirement.payTo} for ${method} ${u.href}: ${status}.${tx ? (TX_RE.test(String(tx)) ? ` Settlement tx ${tx}.` : " (The merchant's settlement id is not a transaction hash; not shown.)") : ""}`);
     } else {
       const until = when(r.signed.validBefore + X.SKEW_SECONDS);
-      lines.unshift(`A payment of ${usd(signedPrice)} to ${r.requirement.payTo} was signed and sent (${status}), and the merchant may still settle it until ${until}, so do NOT call pay_url again for this purchase (the same method, URL and body) before ${until}; check wallet_balance. A later call for this purchase only resends this same payment.`);
+      lines.unshift(`A payment of ${money(signedPrice, signedNetwork ?? r.network)} to ${r.requirement.payTo} was signed and sent (${status}), and the merchant may still settle it until ${until}, so do NOT call pay_url again for this purchase (the same method, URL and body) before ${until}; check wallet_balance. A later call for this purchase only resends this same payment.`);
     }
     const loc = r.response.status >= 300 && r.response.status < 400 ? r.response.headers.get("location") : null;
     if (loc) lines.push(`The server redirected (not followed): ${fenced(oneLine(loc, 500), "redirect target")}`);
@@ -720,9 +912,22 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   }));
 
   // ---- wallet_balance ------------------------------------------------------------------------------------------
+  /** The Base float of `addr` and, for this server's wallet, a transfer in flight: lines for wallet_balance and
+   *  credit_status, and the float itself (null when it could not be read). Never fails the calling tool. */
+  async function baseLines(addr) {
+    if (!baseOn) return { lines: [], float: null };
+    const out = [];
+    let float = null;
+    try { float = await withinTime(bridge.floatOf(addr), 5_000); out.push(`On Base it holds ${X.formatUsdg(float)} USDC: its Base float, for x402 sellers paid in USDC on Base (at most ${X.formatUsdg(maxBaseFloat)} by fund_base).`); } catch (e) { out.push(`Its USDC on Base could not be read just now (${explain(e)}).`); }
+    if (wallet && ethers.getAddress(addr) === wallet.address) { const f = await settleFlight(); if (f) out.push(flightText(f)); }
+    return { lines: out, float };
+  }
+
   tool("wallet_balance", {
-    title: "USDG and gas balance",
-    description: "Show how much USDG (the dollar the payments and loans use) and native ETH for gas a Robinhood Chain address holds. Defaults to the configured wallet; any address works without a key. Read-only.",
+    title: baseOn ? "USDG, gas and Base float balance" : "USDG and gas balance",
+    description: baseOn
+      ? "Show how much USDG (the dollar the payments and loans use) and native ETH for gas a Robinhood Chain address holds, and the USDC it holds on Base (its Base float, for x402 sellers paid on Base), with any transfer between the two still in flight. Defaults to the configured wallet; any address works without a key. Read-only."
+      : "Show how much USDG (the dollar the payments and loans use) and native ETH for gas a Robinhood Chain address holds. Defaults to the configured wallet; any address works without a key. Read-only.",
     inputSchema: { address: z.string().optional().describe("0x address to check; default: the configured wallet.") },
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, async ({ address }) => {
@@ -730,7 +935,8 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     if (!addr) throw new ToolError("No wallet is configured (PRIORS_KEY is not set): pass an address to check.");
     if (!ethers.isAddress(addr)) throw new ToolError(`not an address: ${clean(addr, 80)}`);
     const b = await credit.balances(ethers.getAddress(addr));
-    return `${b.address}${wallet && ethers.getAddress(addr) === wallet.address ? " (this server's wallet)" : ""} holds ${usd(b.usdg)} and ${ethers.formatEther(b.native)} ETH for gas on Robinhood Chain.${await savedNote(b.address)}`;
+    const base = await baseLines(b.address);
+    return `${b.address}${wallet && ethers.getAddress(addr) === wallet.address ? " (this server's wallet)" : ""} holds ${usd(b.usdg)} and ${ethers.formatEther(b.native)} ETH for gas on Robinhood Chain.${await savedNote(b.address)}${base.lines.length ? ` ${base.lines.join(" ")}` : ""}`;
   });
 
   // ---- credit_status -------------------------------------------------------------------------------------------
@@ -753,6 +959,14 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     if (s.openLoans.length === 0) lines.push("Open loans: none.");
     for (const l of s.openLoans) lines.push(`Open loan #${l.loanId}: ${usd(l.principal)} + fee ${usd(l.fee)} = ${usd(l.due)}, due ${when(l.dueAt)}${Date.now() / 1000 > l.dueAt ? " (PAST DUE: repay now)" : ""}.`);
     lines.push(...(await autopayLines(id)));
+    // The configured wallet's own agent: its Base float, a transfer in flight, and a loan due soon while money sits on Base
+    // (loans are repaid in USDG on Robinhood Chain only).
+    if (baseOn && wallet && (agent_id === undefined || (await resolveAgent().catch(() => null)) === id)) {
+      const base = await baseLines(wallet.address);
+      lines.push(...base.lines);
+      const soon = s.openLoans.find((l) => l.dueAt - Date.now() / 1000 <= 86_400);
+      if (soon && base.float > 0n) lines.push(`Loan #${soon.loanId} is due within 24 hours and ${X.formatUsdg(base.float)} USDC sits on Base, where it cannot repay it: bring it back with return_to_robinhood (about a minute; confirm with the user first), or repay from USDG on Robinhood Chain.`);
+    }
     return lines.join("\n");
   });
 
@@ -907,6 +1121,148 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     return out.join("\n");
   }));
 
+  // ---- fund_base / return_to_robinhood (the Base float; registered only with Base on) ------------------------------
+  // The agent's own money between USDG on Robinhood Chain and USDC on Base, where some x402 sellers take payment: out
+  // through Across (bridge.mjs fundBase), back through Relay's gasless route (returnToRobinhood). Both are money calls
+  // (serial(): one at a time with pay_url and borrow, so neither spends USDG the other is about to move, and no loan is
+  // taken twice), both are capped per call and per process (PRIORS_MAX_BRIDGE_USD, PRIORS_MAX_BRIDGE_TOTAL_USD, either
+  // way), and both wait at most PRIORS_BRIDGE_TIMEOUT_S, never past the call's own budget (so a slow fill is answered as
+  // in flight and never turns into the 120 s hold of a call that ran out of time). A transfer still on its way is kept
+  // on file and reported, and never sent again.
+  if (baseOn) {
+    /** Answer this long before the call's budget ends: time to clear the record and read the float. */
+    const BRIDGE_MARGIN_MS = Math.min(4_000, callBudgetMs / 5);
+    const blocked = (f) => `${flightText(f)} Nothing was done by this call: check wallet_balance in a minute.`;
+    const otherSession = (e) => e?.code === "NOT_RECORDED" && e.cause?.code === "OTHER_SESSION";
+    const heldOnBase = () => { const nowS = Math.floor(Date.now() / 1000); refresh(); return [...outstanding.values()].filter((v) => live(v, nowS) && !onRobinhood(v)).reduce((a, v) => a + v.price, 0n); };
+    const stillOut = (what) => `Do NOT call ${what} again for this: wallet_balance shows when it lands. Until then fund_base and return_to_robinhood do nothing; pay_url, borrow and repay work as usual.`;
+
+    tool("fund_base", {
+      title: "Move USDG to the Base float (Across)",
+      description: `Move USDG from the configured wallet on Robinhood Chain to USDC in the same address on Base (its Base float), through Across, so pay_url can pay x402 sellers that take USDC on Base only. Takes a few seconds and needs a little ETH for gas on Robinhood Chain. Across's fee is quoted first and refused above ${maxBridgeFeeBps / 100}% (PRIORS_MAX_BRIDGE_FEE_BPS); Across's minimum is about 0.50. One call moves at most ${X.formatUsdg(maxBridgeCeiling)} (PRIORS_MAX_BRIDGE_USD), and the float is kept at most ${X.formatUsdg(maxBaseFloat)} USDC (PRIORS_MAX_BASE_FLOAT_USD). USDG kept for Autopay loans due in the next 24 hours and for signed payments not settled yet stays on Robinhood Chain. If the wallet is short, it borrows the gap from the agent's Priors line, raised to the pool's minimum loan, only when max_borrow_usd is given and covers that loan (when it refuses, its answer names the max_borrow_usd that would do); the loan is repaid in USDG on Robinhood Chain before its due date. Moves real money: state the amount, any loan and the fee to the user and get their go-ahead first.`,
+      inputSchema: {
+        amount_usd: z.number().positive().describe("How much USDG to move to Base, in US dollars (required, no default)."),
+        max_borrow_usd: z.number().nonnegative().optional().describe("Most to borrow from the Priors line if the wallet is short, in US dollars. Default 0: never borrow."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    }, serial(async ({ amount_usd, max_borrow_usd }, deadline, count) => {
+      needWallet("fund_base");
+      if (bridgeRoute !== "across") throw new ToolError("fund_base moves money out through Across only in this version (PRIORS_BRIDGE=across); the Relay route out is not built yet. Nothing was done.");
+      const amount = dollars(amount_usd, "amount_usd");
+      if (amount === 0n) throw new ToolError("amount_usd must be above zero");
+      if (amount > maxBridgeCeiling) throw new ToolError(`amount_usd ${X.formatUsdg(amount)} is above this server's ceiling of ${X.formatUsdg(maxBridgeCeiling)} per transfer (PRIORS_MAX_BRIDGE_USD).`);
+      if (session.bridged + amount > bridgeTotalCap) throw new ToolError(`this would bring what moved between Robinhood Chain and Base in this session to ${X.formatUsdg(session.bridged + amount)}, above ${X.formatUsdg(bridgeTotalCap)} (PRIORS_MAX_BRIDGE_TOTAL_USD).`);
+      const maxBorrow = dollars(max_borrow_usd ?? 0, "max_borrow_usd");
+      if (maxBorrow > maxBorrowCeiling) throw new ToolError(`max_borrow_usd ${X.formatUsdg(maxBorrow)} is above this server's ceiling of ${usd(maxBorrowCeiling)} (PRIORS_MAX_BORROW_USD).`);
+      if (maxBorrow > 0n && session.borrowed + maxBorrow > borrowTotalCap) throw new ToolError(`this could bring what is borrowed in this session to ${usd(session.borrowed + maxBorrow)}, above ${usd(borrowTotalCap)} (PRIORS_MAX_BORROW_TOTAL_USD).`);
+      const f = await settleFlight();
+      if (f) throw new ToolError(blocked(f));
+      const float = await bridge.floatOf(wallet.address);
+      if (float + amount > maxBaseFloat) throw new ToolError(`this would bring the Base float to about ${X.formatUsdg(float + amount)} USDC, above ${X.formatUsdg(maxBaseFloat)} (PRIORS_MAX_BASE_FLOAT_USD); it holds ${X.formatUsdg(float)} now. Nothing was done.`);
+      count("bridged", amount); count("borrowed", maxBorrow); // the most it may move and borrow, until it ends (GHSA-cq9v)
+      // What stays on Robinhood Chain: what Autopay pulls in the next 24 h, and the USDG of payments signed there and not
+      // settled (the borrow-the-gap rule alone does not know either).
+      const nowS = Math.floor(Date.now() / 1000);
+      refresh();
+      const signedOut = [...outstanding.values()].filter((v) => live(v, nowS) && onRobinhood(v)).reduce((a, v) => a + v.price, 0n);
+      const autopayKept = reserveOn ? await autopayReserve() : 0n;
+      const kept = signedOut + autopayKept;
+      const balance = (await credit.balances(wallet.address)).usdg;
+      const lines = [];
+      if (amount + kept > balance) {
+        // The loan is the gap (what moving `amount` while keeping `kept` needs beyond the balance), raised to the pool's
+        // minimum loan, and max_borrow_usd caps that loan, as the answer below tells the model to pass it. borrowGap is
+        // handed the gap as its price with a zero balance: its first rule (price at most maxBorrow) is then the gap's.
+        // Handed the whole amount, it refused whenever max_borrow_usd covered the gap but not the amount (own review).
+        const gap = amount + kept - balance;
+        const why = [autopayKept > 0n ? `${usd(autopayKept)} for Autopay loans due in the next 24 hours` : null, signedOut > 0n ? `${usd(signedOut)} for signed payments not settled yet` : null].filter(Boolean).join(" and ");
+        const holds = `The wallet holds ${usd(balance)} on Robinhood Chain${why ? ` and keeps ${why}` : ""}: it is ${usd(gap)} short of moving ${usd(amount)}.`;
+        // the pool's minimum loan, best effort (borrowGap reads it again and refuses a loan above max_borrow_usd anyway)
+        let minLoan = null;
+        try { if (typeof credit.minLoan === "function") minLoan = BigInt(await withinTime(credit.minLoan(), 5_000)); } catch (_) { /* said as "at least its minimum loan" */ }
+        const loanNeed = minLoan !== null && minLoan > gap ? minLoan : gap;
+        const loanText = minLoan === null ? `at least ${usd(gap)} (the pool lends at least its minimum loan, so it may be more)` : loanNeed > gap ? `${usd(loanNeed)}, the pool's minimum loan` : usd(gap);
+        const atLeast = `pass max_borrow_usd of at least ${X.formatUsdg(loanNeed)}, after confirming the loan with the user`;
+        if (maxBorrow === 0n) throw new ToolError(`${holds} Nothing was done. A loan from the Priors line for it would be ${loanText}: to take it, ${atLeast}; or add USDG.`);
+        if (loanNeed > maxBorrow) throw new ToolError(`${holds} A loan for it would be ${loanText}, above max_borrow_usd ${X.formatUsdg(maxBorrow)}. Nothing was borrowed or moved: ${atLeast}; or move less.`);
+        const agentId = await resolveAgent();
+        await needController(agentId);
+        // The route first (a read-only quote): a transfer Across would refuse (its fee, its minimum, a token or spoke that
+        // is not the pinned one) never leaves behind a loan taken for it.
+        try { await bridge.quote({ amount, maxFeeBps: maxBridgeFeeBps }); } catch (e) { throw new ToolError(`${explain(e)}. Nothing was borrowed or moved.`); }
+        let loan;
+        try { loan = await credit.borrowGap({ agentId, price: gap, balance: 0n, maxBorrow }); } catch (e) {
+          // a borrow sent whose answer was lost may have mined (GHSA-v9xj): counted, and said
+          if (e?.borrowed > 0n) session.borrowed += e.borrowed;
+          if (e?.unconfirmed) throw new ToolError(`A borrow of ${usd(e.borrowed)} was sent${e.hash ? ` (tx ${e.hash})` : ""} and its answer was lost (${explain(e.cause ?? e)}), so it may have opened a loan: check credit_status, and repay it with the repay tool before its due date. Nothing was moved to Base.`);
+          // the pool's minimum loan (when it could not be read above) above the cap: said in dollars, with what would do
+          if (e?.code === "MIN_LOAN_ABOVE_MAX_BORROW" && typeof e.amount === "bigint") throw new ToolError(`${holds} The pool lends at least ${usd(e.amount)}, above max_borrow_usd ${X.formatUsdg(maxBorrow)}. Nothing was borrowed or moved: pass max_borrow_usd of at least ${X.formatUsdg(e.amount)}, after confirming the loan with the user; or add USDG.`);
+          throw e;
+        }
+        session.borrowed += loan.borrowed;
+        lines.push(`Borrowed ${usd(loan.borrowed)} from the Priors line for agent #${agentId}${loan.loanId !== null && loan.loanId !== undefined ? ` as loan #${loan.loanId}` : ""}${loan.dueAt ? `, due ${when(loan.dueAt)}` : ""}: repay it with the repay tool, in USDG on Robinhood Chain, before then.`);
+      }
+      let rec = null, r;
+      try {
+        r = await bridge.fundBase({ amount, maxFeeBps: maxBridgeFeeBps, timeoutMs: bridgeTimeoutMs, pollUntil: deadline - BRIDGE_MARGIN_MS,
+          onDepositSending: async (t) => { rec = await recordFlight(t); },
+          onDepositSent: async (t) => { if (rec) { rec = { ...rec, hash: t.hash }; await updateFlight(rec); } } });
+      } catch (e) {
+        const loanNote = lines.length ? ` ${lines.join(" ")}` : "";
+        if (!rec || e?.moved === false) {
+          if (rec) await clearFlight(rec);
+          if (otherSession(e)) throw new ToolError(`Another session of this wallet has a transfer to or from Base in flight. Nothing was sent: check wallet_balance in a minute.${loanNote}`);
+          throw new ToolError(`${explain(e)}. Nothing was moved to Base.${loanNote}`);
+        }
+        session.bridged += amount; // it may have moved: counted, and its record holds every other transfer
+        if (e?.code === "BRIDGE_REFUNDED") { await clearFlight(rec); throw new ToolError(`${explain(e)}. The USDG is back in the wallet on Robinhood Chain.${loanNote}`); }
+        throw new ToolError(`${explain(e)}. ${stillOut("fund_base")}${loanNote}`);
+      }
+      session.bridged += amount;
+      await clearFlight(rec);
+      let after = "";
+      try { after = ` The Base float now holds ${X.formatUsdg(await withinTime(bridge.floatOf(wallet.address), 2_000))} USDC.`; } catch (_) { /* wallet_balance shows it */ }
+      return [`Moved ${usd(amount)} from Robinhood Chain to ${X.formatUsdg(r.outputAmount)} USDC on Base through Across (fee ${X.formatUsdg(r.fee)}, ${r.feeBps / 100}%). Deposit tx ${r.hash}${r.fillTx ? `; filled on Base in tx ${r.fillTx}` : ""}.${after}`, ...lines].join("\n");
+    }));
+
+    tool("return_to_robinhood", {
+      title: "Move the Base float back to Robinhood Chain (Relay)",
+      description: `Move USDC from the configured wallet's Base float back to USDG in the same address on Robinhood Chain, through Relay's gasless route: one signature, no gas on Base. amount_usd, or "all" for everything the float does not owe to signed payments still settling on Base. About a minute; Relay's fee is quoted first and refused above ${maxBridgeFeeBps / 100}% (PRIORS_MAX_BRIDGE_FEE_BPS); one call moves at most ${X.formatUsdg(maxBridgeCeiling)} (PRIORS_MAX_BRIDGE_USD). Loans are repaid in USDG on Robinhood Chain only: use it before a due date when money sits on Base. Moves real money: state the amount to the user and get their go-ahead first.`,
+      inputSchema: { amount_usd: z.union([z.number().positive(), z.literal("all")]).describe('USDC to move back, in US dollars, or "all".') },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    }, serial(async ({ amount_usd }, deadline, count) => {
+      needWallet("return_to_robinhood");
+      const f = await settleFlight();
+      if (f) throw new ToolError(blocked(f));
+      const float = await bridge.floatOf(wallet.address);
+      // USDC that payments signed on Base and not settled yet still need stays: the merchant may cash them until they expire.
+      const held = heldOnBase();
+      const free = float > held ? float - held : 0n;
+      const amount = amount_usd === "all" ? free : dollars(amount_usd, "amount_usd");
+      const owes = held > 0n ? `, of which ${X.formatUsdg(held)} is held for signed payments on Base not settled yet` : "";
+      if (amount === 0n) throw new ToolError(amount_usd === "all" ? `The Base float holds ${X.formatUsdg(float)} USDC${owes}: nothing to move back.` : "amount_usd must be above zero");
+      if (amount > free) throw new ToolError(`The Base float holds ${X.formatUsdg(float)} USDC${owes}: at most ${X.formatUsdg(free)} can move back now. Nothing was done.`);
+      if (amount > maxBridgeCeiling) throw new ToolError(`${X.formatUsdg(amount)} is above this server's ceiling of ${X.formatUsdg(maxBridgeCeiling)} per transfer (PRIORS_MAX_BRIDGE_USD): move it back in parts.`);
+      if (session.bridged + amount > bridgeTotalCap) throw new ToolError(`this would bring what moved between Robinhood Chain and Base in this session to ${X.formatUsdg(session.bridged + amount)}, above ${X.formatUsdg(bridgeTotalCap)} (PRIORS_MAX_BRIDGE_TOTAL_USD).`);
+      count("bridged", amount);
+      let rec = null, r;
+      try {
+        r = await bridge.returnToRobinhood({ amount, maxFeeBps: maxBridgeFeeBps, timeoutMs: bridgeTimeoutMs, pollUntil: deadline - BRIDGE_MARGIN_MS, onSigned: async (t) => { rec = await recordFlight(t); } });
+      } catch (e) {
+        if (!rec || e?.moved === false) {
+          if (rec) await clearFlight(rec);
+          if (otherSession(e)) throw new ToolError("Another session of this wallet has a transfer to or from Base in flight. Nothing was signed or sent: check wallet_balance in a minute.");
+          throw new ToolError(`${explain(e)}. Nothing left the Base float.`);
+        }
+        session.bridged += amount; // the authorization is out: counted, and its record holds every other transfer until it expires
+        throw new ToolError(`${explain(e)}. ${stillOut("return_to_robinhood")}`);
+      }
+      session.bridged += amount;
+      await clearFlight(rec);
+      return `Moved ${X.formatUsdg(amount)} USDC from Base back to Robinhood Chain through Relay: ${usd(r.expectedOut)} delivered to ${wallet.address} (fee ${X.formatUsdg(r.fee)}).${r.txHashes?.length ? ` Tx ${r.txHashes.join(", ")}.` : ""} Relay request ${r.requestId}.`;
+    }));
+  }
+
   // ---- autopay_on / autopay_off ---------------------------------------------------------------------------------
   // Autopay: the agent's own wallet approves AutoRepay for a budget (4 x the limit, never unlimited)
   // and enrolls; Priors' keeper (or anyone) then repays each loan in the 6 hours before it is due, from this wallet,
@@ -1005,7 +1361,8 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     // Payments signed and not yet settled still need their USDG in the wallet: never save it away from under them.
     const nowS = Math.floor(Date.now() / 1000);
     refresh(); // another session's pending payments need their USDG too
-    const reserved = [...outstanding.values()].filter((v) => live(v, nowS)).reduce((a, v) => a + v.price, 0n);
+    // only Robinhood Chain's: a payment signed on Base is paid from the Base float, not from this USDG
+    const reserved = [...outstanding.values()].filter((v) => live(v, nowS) && onRobinhood(v)).reduce((a, v) => a + v.price, 0n);
     if (reserved > 0n) {
       const b = await credit.balances(wallet.address);
       if (b.usdg < amount + reserved) throw new ToolError(`${usd(reserved)} of the wallet's USDG is held for signed payments that have not settled yet; at most ${usd(b.usdg > reserved ? b.usdg - reserved : 0n)} can be saved now.`);

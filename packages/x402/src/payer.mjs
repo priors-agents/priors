@@ -1,4 +1,5 @@
-// Agent side: pay x402 USDG requirements on Robinhood Chain, borrowing the gap from a Priors v2 line when short.
+// Agent side: pay x402 USDG requirements on Robinhood Chain, borrowing the gap from a Priors v2 line when short; and,
+// only when the caller enables it (`networks`), USDC requirements on Base, paid from the agent's Base float.
 //
 // Built on the official client stack: `x402Client` and `x402HTTPClient` (re-exported by @x402/fetch from
 // @x402/core) parse the 402, apply spend controls, build the v2 payload and encode the PAYMENT-SIGNATURE header,
@@ -16,11 +17,20 @@
 //      network @x402/evm's v1 scheme knows; they go to the v1 signer ported from sdk/float.mjs instead.
 // `createUsdgClient()` still gives a plain x402Client for @x402/fetch's wrapper or @x402/mcp's client, with the
 // same USDG allowance, price cap and 600 s authorization cap, for callers that never borrow.
+//
+// Base (eip155:8453, networks.mjs): a payer signs a Base USDC requirement only when `networks` names Base, and pays it
+// from the USDC the wallet already holds there (its Base float, read through `baseProvider`). Nothing on the Robinhood
+// Chain side runs for it: no savings top-up, no Autopay reserve, no loan (the line lives on Robinhood Chain, and
+// bridge.mjs moves money between the two). A float short of the price is refused (BASE_FLOAT_SHORT) before anything is
+// signed, and so is one whose free part is: `baseReserve()` names what the float keeps back (the MCP's return to
+// Robinhood Chain whose authorization can still pull it). A seller that offers both is paid in USDG on Robinhood Chain.
+// Legacy v1 bodies stay Robinhood Chain only.
 import { ethers } from "ethers";
 import { x402Client, x402HTTPClient, decodePaymentResponseHeader } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { robinhood, ROBINHOOD_NETWORKS, DEFAULT_MAX_PRICE, MAX_VALIDITY_SECONDS, TRANSFER_WITH_AUTHORIZATION_TYPES, toAtomicUsdg, formatUsdg } from "./robinhood.mjs";
 import { PayError, borrowGap, settleLoans, poolContract, ERC20_ABI } from "./credit.mjs";
+import { DEFAULT_PAY_NETWORKS, ROBINHOOD_USDG, networkOf, payNetworks } from "./networks.mjs";
 
 const sameAddr = (a, b) => typeof a === "string" && typeof b === "string" && ethers.isAddress(a) && ethers.isAddress(b) && ethers.getAddress(a) === ethers.getAddress(b);
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -81,10 +91,11 @@ export function toX402Signer(signer, address) {
 }
 
 /**
- * `ExactEvmScheme` (client) for USDG on eip155:4663 that never signs an authorization valid for more than
- * `maxValiditySeconds` (≤ 600), whatever `maxTimeoutSeconds` the 402 names. The signed window is capped; the
- * payload's `accepted` stays the merchant's requirement verbatim (the resource server matches it field for field).
- * A requirement without `extra.name/version` is signed on USDG's own domain.
+ * `ExactEvmScheme` (client) for USDG on eip155:4663 (and USDC on Base, where the caller registers it) that never signs
+ * an authorization valid for more than `maxValiditySeconds` (≤ 600), whatever `maxTimeoutSeconds` the 402 names. The
+ * signed window is capped; the payload's `accepted` stays the merchant's requirement verbatim (the resource server
+ * matches it field for field). A requirement without `extra.name/version` is signed on the domain of its network's
+ * token (networks.mjs: "USD Coin"/"2" on Base), and on USDG's own domain on any network not listed there.
  */
 export class CappedExactEvmScheme {
   /** @param {any} signer ClientEvmSigner (or an ethers Wallet) @param {{ maxValiditySeconds?: number }} [o] */
@@ -96,36 +107,58 @@ export class CappedExactEvmScheme {
   async createPaymentPayload(x402Version, requirements, context) {
     if (requirements?.extra?.assetTransferMethod && requirements.extra.assetTransferMethod !== "eip3009") throw new PayError("UNSUPPORTED_TRANSFER_METHOD", "only EIP-3009 authorizations are signed for USDG");
     const extra = { ...(requirements.extra || {}) };
-    if (!extra.name) extra.name = robinhood.eip712.name;
-    if (!extra.version) extra.version = robinhood.eip712.version;
+    const domain = networkOf(requirements?.network)?.eip712 ?? robinhood.eip712;
+    if (!extra.name) extra.name = domain.name;
+    if (!extra.version) extra.version = domain.version;
     const signed = { ...requirements, maxTimeoutSeconds: validityWindow(requirements.maxTimeoutSeconds, this.maxValiditySeconds), extra };
     return this.inner.createPaymentPayload(x402Version, signed, context);
   }
 }
 
 /**
- * An `x402Client` that pays USDG on eip155:4663 only: capped signing window, and a spend control that refuses any
- * requirement above `maxPrice` (atomic USDG or "$0.10"; default 0.10). Use it with @x402/fetch's
- * `wrapFetchWithPayment` or @x402/mcp's `wrapMCPClientWithPayment` when no borrowing is wanted.
- * @param {{ signer: any, maxPrice?: bigint|number|string, maxValiditySeconds?: number, asset?: string }} o
+ * An `x402Client` that pays USDG on eip155:4663 only (and USDC on Base when `networks` names it): capped signing
+ * window, and a spend control that allows only each enabled network's own token (networks.mjs; `asset` overrides USDG
+ * for a fork or test token) and refuses any requirement above `maxPrice` (atomic units of the 6-decimal dollar token,
+ * or "$0.10"; default 0.10). Use it with @x402/fetch's `wrapFetchWithPayment` or @x402/mcp's
+ * `wrapMCPClientWithPayment` when no borrowing is wanted.
+ * @param {{ signer: any, maxPrice?: bigint|number|string, maxValiditySeconds?: number, asset?: string, networks?: string[] }} o
  */
-export function createUsdgClient({ signer, maxPrice = DEFAULT_MAX_PRICE, maxValiditySeconds = MAX_VALIDITY_SECONDS, asset = robinhood.usdg, x402Signer } = {}) {
+export function createUsdgClient({ signer, maxPrice = DEFAULT_MAX_PRICE, maxValiditySeconds = MAX_VALIDITY_SECONDS, asset = robinhood.usdg, x402Signer, networks = DEFAULT_PAY_NETWORKS } = {}) {
   const cap = toAtomicUsdg(maxPrice, "maxPrice");
-  return new x402Client()
-    .register(robinhood.network, new CappedExactEvmScheme(x402Signer || signer, { maxValiditySeconds }))
-    .setSpendControls({ allowedAssets: [{ network: robinhood.network, asset, maxAmountPerPayment: cap.toString() }] });
+  const scheme = new CappedExactEvmScheme(x402Signer || signer, { maxValiditySeconds });
+  const client = new x402Client();
+  const allowedAssets = [];
+  // Base is registered only when enabled: by default the client knows no network but Robinhood Chain.
+  for (const id of payNetworks(networks)) {
+    client.register(id, scheme);
+    allowedAssets.push({ network: id, asset: id === robinhood.network ? asset : networkOf(id).asset, maxAmountPerPayment: cap.toString() });
+  }
+  return client.setSpendControls({ allowedAssets });
 }
 
 /** A payTo is a 0x address: ethers also accepts an ICAP "XE..." form, whose 30 characters the merchant chooses and
  *  pay_url would print outside its fence (own audit 2026-10-01). */
 const isPayTo = (a) => typeof a === "string" && /^0x[0-9a-fA-F]{40}$/.test(a) && ethers.isAddress(a);
 
-/** First v2 `exact` USDG requirement on eip155:4663 this payer can sign (EIP-3009, USDG's domain). */
-export function pickV2Requirement(accepts, asset = robinhood.usdg) {
-  return (Array.isArray(accepts) ? accepts : []).find((r) => r && r.scheme === "exact" && r.network === robinhood.network && sameAddr(r.asset, asset)
-    && /^\d+$/.test(String(r.amount)) && isPayTo(r.payTo)
-    && (!r.extra?.assetTransferMethod || r.extra.assetTransferMethod === "eip3009")
-    && (!r.extra?.name || r.extra.name === robinhood.eip712.name) && (!r.extra?.version || r.extra.version === robinhood.eip712.version)) || null;
+/**
+ * First v2 `exact` requirement this payer can sign: EIP-3009, on an enabled network of the allowlist (networks.mjs;
+ * `networks` defaults to Robinhood Chain only), for that network's own token by full address (`asset` on Robinhood
+ * Chain, default USDG; Base USDC's pinned address on Base: a lookalike is never matched), with no EIP-712 domain but
+ * that token's own (a requirement naming none is signed on it). A seller that takes both is paid on Robinhood Chain.
+ */
+export function pickV2Requirement(accepts, asset = robinhood.usdg, { networks = DEFAULT_PAY_NETWORKS } = {}) {
+  const list = Array.isArray(accepts) ? accepts : [];
+  const enabled = payNetworks(networks);
+  const order = enabled.includes(robinhood.network) ? [robinhood.network, ...enabled.filter((id) => id !== robinhood.network)] : enabled;
+  for (const id of order) {
+    const n = networkOf(id), token = id === robinhood.network ? asset : n.asset;
+    const r = list.find((x) => x && x.scheme === "exact" && x.network === id && sameAddr(x.asset, token)
+      && /^\d+$/.test(String(x.amount)) && isPayTo(x.payTo)
+      && (!x.extra?.assetTransferMethod || x.extra.assetTransferMethod === "eip3009")
+      && (!x.extra?.name || x.extra.name === n.eip712.name) && (!x.extra?.version || x.extra.version === n.eip712.version));
+    if (r) return r;
+  }
+  return null;
 }
 
 /** First v1 `exact` USDG requirement on Robinhood Chain (sdk/float.mjs `pickRequirement`). */
@@ -428,16 +461,24 @@ function multipartFields(bytes, boundary) {
 export const SKEW_SECONDS = 60;
 
 /**
- * A payer for x402 USDG on Robinhood Chain.
+ * A payer for x402 USDG on Robinhood Chain (and, with `networks` naming Base and a `baseProvider`, USDC on Base from
+ * the wallet's Base float).
  * @param {import("../index.d.ts").CreatePayerOptions} opts
  * @returns {import("../index.d.ts").Payer}
  */
 export function createPayer(opts = {}) {
-  const { signer, agentId, pool, termSeconds, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = DEFAULT_TIMEOUT_MS, signal, maxValiditySeconds = MAX_VALIDITY_SECONDS, topUp, onSigned, reserve, v5, v5Root } = opts;
+  const { signer, agentId, pool, termSeconds, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = DEFAULT_TIMEOUT_MS, signal, maxValiditySeconds = MAX_VALIDITY_SECONDS, topUp, onSigned, reserve, v5, v5Root, baseProvider, baseReserve } = opts;
   if (!signer || typeof signer.getAddress !== "function" || typeof signer.signTypedData !== "function") {
     throw new PayError("NO_SIGNER", "createPayer: `signer` must be an ethers v6 Signer (a Wallet connected to a Robinhood Chain provider)");
   }
   if (typeof fetchImpl !== "function") throw new PayError("NO_FETCH", "createPayer: no fetch implementation");
+  // The networks it signs for (networks.mjs): Robinhood Chain only unless the caller names another. Every network but
+  // Robinhood Chain is paid from what the wallet holds there, read through that network's provider: Base's is needed.
+  let networks;
+  try { networks = payNetworks(opts.networks); } catch (e) { throw new PayError("BAD_NETWORK", `createPayer: ${e.message}`); }
+  if (networks.includes("eip155:8453") && (!baseProvider || typeof baseProvider.call !== "function")) {
+    throw new PayError("NO_PROVIDER", "createPayer: paying on Base needs `baseProvider` (a Base JSON-RPC provider: the USDC balance there is read before anything is signed)");
+  }
   const maxPrice = toAtomicUsdg(opts.maxPrice ?? DEFAULT_MAX_PRICE, "maxPrice");
   const maxBorrow = toAtomicUsdg(opts.maxBorrow ?? 0n, "maxBorrow");
   const http = new x402HTTPClient(new x402Client());
@@ -466,7 +507,7 @@ export function createPayer(opts = {}) {
       const r = await resend(base, out.paymentHeaders, resendOpts);
       if (r.response.ok) unsettled.delete(key);
       const settlement = r.response.ok ? settlementOf(r.response) : undefined;
-      return { ...r, paid: r.response.ok ? out.price : 0n, borrowed: 0n, loanId: null, dueAt: null, requirement: out.requirement, x402Version: out.x402Version, signed: { paymentHeaders: out.paymentHeaders, validBefore: out.validBefore }, resent: true, ...(settlement ? { settlement } : {}) };
+      return { ...r, paid: r.response.ok ? out.price : 0n, borrowed: 0n, loanId: null, dueAt: null, requirement: out.requirement, x402Version: out.x402Version, network: out.network, asset: out.asset, signed: { paymentHeaders: out.paymentHeaders, validBefore: out.validBefore }, resent: true, ...(settlement ? { settlement } : {}) };
     }
     const first = await fx(base.clone()); // a timeout here throws: nothing is signed yet
     if (first.status !== 402) return { response: first, paid: 0n, borrowed: 0n, loanId: null, dueAt: null };
@@ -481,41 +522,60 @@ export function createPayer(opts = {}) {
       else throw new PayError("BAD_402", "pay: the 402 response carries no x402 payment requirements");
     }
     const version = paymentRequired?.x402Version;
-    const req = version === 2 ? pickV2Requirement(paymentRequired.accepts, usdgAddr) : version === 1 ? pickV1Requirement(paymentRequired.accepts, usdgAddr) : null;
+    const req = version === 2 ? pickV2Requirement(paymentRequired.accepts, usdgAddr, { networks }) : version === 1 && networks.includes(robinhood.network) ? pickV1Requirement(paymentRequired.accepts, usdgAddr) : null;
     // Never quote the merchant's value: callers show this message to a model, outside any data fence.
     if (version !== 1 && version !== 2) throw new PayError("BAD_402", `pay: unsupported x402Version (${Number.isSafeInteger(version) ? version : `a ${typeof version}`})`);
-    if (!req) throw new PayError("NO_USDG_REQUIREMENT", "pay: the resource does not accept exact USDG on Robinhood Chain");
+    if (!req) throw new PayError("NO_USDG_REQUIREMENT", `pay: the resource does not accept exact USDG on Robinhood Chain${networks.includes("eip155:8453") ? " or USDC on Base" : ""}`);
+    // The network it is paid on, and its token (v1 is Robinhood Chain only): the payer's own values, never the merchant's text.
+    const n = version === 2 ? networkOf(req.network) : ROBINHOOD_USDG;
+    const onRobinhood = n.network === robinhood.network;
+    const token = onRobinhood ? ethers.getAddress(usdgAddr) : n.asset;
 
     const price = BigInt(version === 2 ? req.amount : req.maxAmountRequired);
     // The merchant names the price. Without a cap a funded agent signs whatever a 402 asks (its whole balance).
     if (price > maxPrice) throw new PayError("PRICE_ABOVE_MAX_PRICE", `pay: price ${price} is above maxPrice ${maxPrice}; not paying`, { price, maxPrice });
 
     const me = await signer.getAddress();
-    if (!signer.provider) throw new PayError("NO_PROVIDER", "pay: the signer must be connected to a Robinhood Chain provider (to read its USDG balance)");
-    const usdgC = new ethers.Contract(usdgAddr, ERC20_ABI, signer);
-    let balance = await usdgC.balanceOf(me);
-    // What the wallet keeps back (`reserve()`: e.g. what Autopay loans will pull in the next 24 h): a payment that would
-    // cut into it is refused before anything is signed or borrowed, after the caller's own top-up had its chance.
-    let kept = 0n;
-    if (typeof reserve === "function") kept = BigInt((await reserve()) || 0n);
-    const keptShort = () => kept > 0n && balance >= price && balance - price < kept;
-
-    // Short: the caller's own money first (`topUp(need)`, e.g. savings), once the price is known and before any loan.
-    // A failed top-up never stops the payment: it is reported in `savings` and the payment goes on as before.
     let savings;
-    if ((balance < price || keptShort()) && typeof topUp === "function") {
-      try { savings = await topUp(price + kept); } catch (e) { savings = { withdrawn: 0n, error: e }; }
-      // A withdrawal that was sent and may still land: never borrow for money that is on its way.
-      if (savings?.error?.pending || savings?.error?.code === "UNCONFIRMED") throw Object.assign(new PayError("SAVINGS_PENDING", "pay: a savings withdrawal was sent and has not confirmed yet; nothing was borrowed or signed. Try again once it has landed."), { savings });
-      try { balance = await usdgC.balanceOf(me); } catch (e) { if (e && typeof e === "object") e.savings = savings; throw e; }
-    }
-
-    if (keptShort() || (kept > 0n && balance < price)) throw Object.assign(new PayError("RESERVE", `pay: this payment would cut into the ${formatUsdg(kept)} USDG kept for Autopay loans due in the next 24 h; nothing was signed or borrowed`, { price, reserve: kept }), savings ? { savings } : {});
     let loan = { borrowed: 0n, loanId: null, dueAt: null };
-    if (balance < price) {
-      try { signal?.throwIfAborted?.(); loan = await borrowGap({ signer, pool: poolC, agentId, price, balance, maxBorrow, termSeconds, maxFee, me, v5, v5Root }); } catch (e) {
-        if (savings && e && typeof e === "object") e.savings = savings; // what the top-up did is not lost with the error
-        throw e;
+    if (!onRobinhood) {
+      // Base: paid from the wallet's Base float only. Robinhood Chain's savings, Autopay reserve and line are not
+      // touched; a float short of the price is refused here, before anything is signed (phase 1: the caller tops it up
+      // with bridge.mjs fundBase, in a call of its own). What the float keeps back (`baseReserve()`, e.g. a return to
+      // Robinhood Chain whose authorization can still pull it) is not free: it is read BEFORE the balance, so a transfer
+      // that lands in between shows in the balance (and the payment is refused), never in neither (it would be signed
+      // against USDC already gone). A reserve that cannot be read throws here: nothing is signed.
+      const held = typeof baseReserve === "function" ? BigInt((await baseReserve()) || 0n) : 0n;
+      const float = await new ethers.Contract(n.asset, ERC20_ABI, baseProvider).balanceOf(me);
+      if (float < price + held) {
+        const free = float > held ? float - held : 0n;
+        throw new PayError("BASE_FLOAT_SHORT", `pay: the wallet holds ${formatUsdg(float)} ${n.symbol} on ${n.name}${held > 0n ? `, ${formatUsdg(held)} of it kept back (${formatUsdg(free)} free)` : ""}, less than the price ${formatUsdg(price)} ${n.symbol}; nothing was signed`, { price, balance: float, reserve: held, network: n.network, asset: n.asset });
+      }
+    } else {
+      if (!signer.provider) throw new PayError("NO_PROVIDER", "pay: the signer must be connected to a Robinhood Chain provider (to read its USDG balance)");
+      const usdgC = new ethers.Contract(usdgAddr, ERC20_ABI, signer);
+      let balance = await usdgC.balanceOf(me);
+      // What the wallet keeps back (`reserve()`: e.g. what Autopay loans will pull in the next 24 h): a payment that would
+      // cut into it is refused before anything is signed or borrowed, after the caller's own top-up had its chance.
+      let kept = 0n;
+      if (typeof reserve === "function") kept = BigInt((await reserve()) || 0n);
+      const keptShort = () => kept > 0n && balance >= price && balance - price < kept;
+
+      // Short: the caller's own money first (`topUp(need)`, e.g. savings), once the price is known and before any loan.
+      // A failed top-up never stops the payment: it is reported in `savings` and the payment goes on as before.
+      if ((balance < price || keptShort()) && typeof topUp === "function") {
+        try { savings = await topUp(price + kept); } catch (e) { savings = { withdrawn: 0n, error: e }; }
+        // A withdrawal that was sent and may still land: never borrow for money that is on its way.
+        if (savings?.error?.pending || savings?.error?.code === "UNCONFIRMED") throw Object.assign(new PayError("SAVINGS_PENDING", "pay: a savings withdrawal was sent and has not confirmed yet; nothing was borrowed or signed. Try again once it has landed."), { savings });
+        try { balance = await usdgC.balanceOf(me); } catch (e) { if (e && typeof e === "object") e.savings = savings; throw e; }
+      }
+
+      if (keptShort() || (kept > 0n && balance < price)) throw Object.assign(new PayError("RESERVE", `pay: this payment would cut into the ${formatUsdg(kept)} USDG kept for Autopay loans due in the next 24 h; nothing was signed or borrowed`, { price, reserve: kept }), savings ? { savings } : {});
+      if (balance < price) {
+        try { signal?.throwIfAborted?.(); loan = await borrowGap({ signer, pool: poolC, agentId, price, balance, maxBorrow, termSeconds, maxFee, me, v5, v5Root }); } catch (e) {
+          if (savings && e && typeof e === "object") e.savings = savings; // what the top-up did is not lost with the error
+          throw e;
+        }
       }
     }
 
@@ -524,7 +584,7 @@ export function createPayer(opts = {}) {
     let paymentHeaders, validBefore;
     try {
       if (version === 2) {
-        const client = createUsdgClient({ signer, maxPrice, maxValiditySeconds, asset: usdgAddr, x402Signer: toX402Signer(signer, me) });
+        const client = createUsdgClient({ signer, maxPrice, maxValiditySeconds, asset: usdgAddr, x402Signer: toX402Signer(signer, me), networks });
         const payload = await client.createPaymentPayload({ ...paymentRequired, accepts: [req] });
         paymentHeaders = http.encodePaymentSignatureHeader(payload);
         validBefore = Number(payload?.payload?.authorization?.validBefore);
@@ -533,12 +593,12 @@ export function createPayer(opts = {}) {
         paymentHeaders = { "X-PAYMENT": header };
         validBefore = Number(JSON.parse(Buffer.from(header, "base64").toString("utf8")).payload.authorization.validBefore);
       }
-      unsettled.set(key, { paymentHeaders, validBefore, price, requirement: req, x402Version: version });
+      unsettled.set(key, { paymentHeaders, validBefore, price, requirement: req, x402Version: version, network: n.network, asset: token });
       // Before the payment leaves: a caller that keeps its own record (the MCP server's state file) writes it now, so a
       // process that dies while the request is in flight cannot lose the only copy. If it cannot, the payment is not
       // sent: an unrecorded payment is one a restart would sign again (own audit 2026-10-01). This signature never leaves.
       if (typeof onSigned === "function") {
-        try { await onSigned({ purchase: key, paymentHeaders, validBefore, price, requirement: req, x402Version: version, borrowed: loan.borrowed, loanId: loan.loanId }); } catch (err) {
+        try { await onSigned({ purchase: key, paymentHeaders, validBefore, price, requirement: req, x402Version: version, network: n.network, asset: token, borrowed: loan.borrowed, loanId: loan.loanId }); } catch (err) {
           unsettled.delete(key);
           paymentHeaders = undefined;
           throw new PayError("NOT_RECORDED", `the payment was signed but could not be recorded (${err?.message || err}), so it was not sent`, { cause: err });
@@ -549,9 +609,9 @@ export function createPayer(opts = {}) {
       const settlement = r.response.ok ? settlementOf(r.response) : undefined;
       // `signed` is always returned once a payment is out: until validBefore the merchant can still cash it, so a
       // caller that retries must resend these headers, never sign a new payment for the same purchase.
-      return { ...r, paid: r.response.ok ? price : 0n, borrowed: loan.borrowed, loanId: loan.loanId, dueAt: loan.dueAt, requirement: req, x402Version: version, signed: { paymentHeaders, validBefore }, ...(settlement ? { settlement } : {}), ...(savings ? { savings } : {}) };
+      return { ...r, paid: r.response.ok ? price : 0n, borrowed: loan.borrowed, loanId: loan.loanId, dueAt: loan.dueAt, requirement: req, x402Version: version, network: n.network, asset: token, signed: { paymentHeaders, validBefore }, ...(settlement ? { settlement } : {}), ...(savings ? { savings } : {}) };
     } catch (e) {
-      if (e && typeof e === "object") Object.assign(e, { borrowed: loan.borrowed, loanId: loan.loanId, dueAt: loan.dueAt, ...(savings ? { savings } : {}), ...(paymentHeaders ? { signed: { paymentHeaders, validBefore }, requirement: req } : {}) });
+      if (e && typeof e === "object") Object.assign(e, { borrowed: loan.borrowed, loanId: loan.loanId, dueAt: loan.dueAt, ...(savings ? { savings } : {}), ...(paymentHeaders ? { signed: { paymentHeaders, validBefore }, requirement: req, network: n.network, asset: token } : {}) });
       throw e;
     }
   }
