@@ -156,8 +156,10 @@ default), `asset` (a USDG address for a fork or test token; default the pool's `
 
 - **`maxPrice`** (default $0.10) is checked before anything is read, signed or borrowed.
 - **Borrowing** happens only when the wallet is short, a `pool` and `agentId` are given, and the price is within
-  `maxBorrow` (default 0: never). It draws `max(shortfall, pool minimum loan)`, refuses above `maxBorrow` or the
-  pool's `maxLoan`, caps the fee at the pool's quote (or `maxFee`), and simulates the borrow first. A borrow that was
+  `maxBorrow` (default 0: never), and only for a requirement x402 core will sign: a `paymentFlow` core does not know is
+  skipped for a later requirement, and core's own selection takes the one picked before the balance is read, topped up
+  or borrowed against (`NO_USDG_REQUIREMENT` otherwise). It draws `max(shortfall, pool minimum loan)`, refuses above
+  `maxBorrow` or the pool's `maxLoan`, caps the fee at the pool's quote (or `maxFee`), and simulates the borrow first. A borrow that was
   sent and whose answer was lost (the broadcast's or the receipt's) may have mined: it throws `BORROW_UNCONFIRMED` with
   `borrowed` set, `loanId: null`, `unconfirmed: true` and the tx `hash` when known. Count it, check the agent's loans,
   and repay before the due date.

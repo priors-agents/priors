@@ -40,7 +40,9 @@ At launch the split and protocol seats are off: `keepBps` 0 (a default burns the
 ## Risks
 
 - **The funder carries the credit risk.** Open loans keep their terms, so if $PRIORS falls far below the level the seats
-  were sized at, defaulting can pay for every agent with a loan open: the loss can reach every open line, 20 × $50.
+  were sized at, defaulting can pay for every agent with a loan open: the loss can reach every line still out, which
+  can be more than 20 × $50 when one week's lines default beside the next week's, and never more than the vault's
+  stake (about 1,116 USDG on 2026-10-09; X-5).
   Short loans, the record gate, the per-loan re-check and the keeper's price guard (an alert to the Safe, which can
   pause new seats) limit it; lenders are never reached.
 - **A farmed record.** The on-chain record counts small self-backed loans, so the gate alone is weak; the seat, about

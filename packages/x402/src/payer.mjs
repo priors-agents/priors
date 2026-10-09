@@ -139,12 +139,16 @@ export function createUsdgClient({ signer, maxPrice = DEFAULT_MAX_PRICE, maxVali
 /** A payTo is a 0x address: ethers also accepts an ICAP "XE..." form, whose 30 characters the merchant chooses and
  *  pay_url would print outside its fence (own audit 2026-10-01). */
 const isPayTo = (a) => typeof a === "string" && /^0x[0-9a-fA-F]{40}$/.test(a) && ethers.isAddress(a);
+/** The `extra.paymentFlow` values @x402/core's client signs (x402Client.selectPaymentRequirements drops any other, and
+ *  none at all is "authorization"). createPayer also asks core itself before anything is borrowed (GHSA-f35g). */
+const CORE_PAYMENT_FLOWS = new Set(["authorization", "upfront", "escrow"]);
 
 /**
  * First v2 `exact` requirement this payer can sign: EIP-3009, on an enabled network of the allowlist (networks.mjs;
  * `networks` defaults to Robinhood Chain only), for that network's own token by full address (`asset` on Robinhood
  * Chain, default USDG; Base USDC's pinned address on Base: a lookalike is never matched), with no EIP-712 domain but
- * that token's own (a requirement naming none is signed on it). A seller that takes both is paid on Robinhood Chain.
+ * that token's own (a requirement naming none is signed on it), and no `paymentFlow` x402 core does not sign (a later
+ * requirement is taken instead, as core takes it). A seller that takes both is paid on Robinhood Chain.
  */
 export function pickV2Requirement(accepts, asset = robinhood.usdg, { networks = DEFAULT_PAY_NETWORKS } = {}) {
   const list = Array.isArray(accepts) ? accepts : [];
@@ -155,6 +159,7 @@ export function pickV2Requirement(accepts, asset = robinhood.usdg, { networks = 
     const r = list.find((x) => x && x.scheme === "exact" && x.network === id && sameAddr(x.asset, token)
       && /^\d+$/.test(String(x.amount)) && isPayTo(x.payTo)
       && (!x.extra?.assetTransferMethod || x.extra.assetTransferMethod === "eip3009")
+      && (x.extra?.paymentFlow == null || CORE_PAYMENT_FLOWS.has(x.extra.paymentFlow))
       && (!x.extra?.name || x.extra.name === n.eip712.name) && (!x.extra?.version || x.extra.version === n.eip712.version));
     if (r) return r;
   }
@@ -536,6 +541,16 @@ export function createPayer(opts = {}) {
     if (price > maxPrice) throw new PayError("PRICE_ABOVE_MAX_PRICE", `pay: price ${price} is above maxPrice ${maxPrice}; not paying`, { price, maxPrice });
 
     const me = await signer.getAddress();
+    // The client that will sign judges the requirement before anything is read, topped up, borrowed or signed: x402
+    // core refuses at signing time what its own selection does not take, and that must never come after a loan
+    // (GHSA-f35g: a paymentFlow core does not know threw once the borrow had mined). Core's words are not passed on:
+    // some of its errors quote the merchant's requirements, and callers show this message to a model.
+    const client = version === 2 ? createUsdgClient({ signer, maxPrice, maxValiditySeconds, asset: usdgAddr, x402Signer: toX402Signer(signer, me), networks }) : null;
+    if (client) {
+      try { client.selectPaymentRequirements(2, [req]); } catch (_) {
+        throw new PayError("NO_USDG_REQUIREMENT", "pay: x402 core would not sign the requirement this payer picked; nothing was read, borrowed or signed");
+      }
+    }
     let savings;
     let loan = { borrowed: 0n, loanId: null, dueAt: null };
     if (!onRobinhood) {
@@ -584,7 +599,6 @@ export function createPayer(opts = {}) {
     let paymentHeaders, validBefore;
     try {
       if (version === 2) {
-        const client = createUsdgClient({ signer, maxPrice, maxValiditySeconds, asset: usdgAddr, x402Signer: toX402Signer(signer, me), networks });
         const payload = await client.createPaymentPayload({ ...paymentRequired, accepts: [req] });
         paymentHeaders = http.encodePaymentSignatureHeader(payload);
         validBefore = Number(payload?.payload?.authorization?.validBefore);

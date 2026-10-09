@@ -172,6 +172,7 @@ ones:
   collateral's value now. A default seizes the whole deposit to the Safe and burns the vault's stake, never
   lenders'. Drawing past that, or moving a depositor's tokens without a default, is a finding.
 - **Bounded, known losses.** The self-seat loop (X-3), the invite-to-raise path (T10) and self-service invites
-  (AI-1) can cost a backer money within the per-epoch caps stated in SECURITY-v2.md, and holding stake only while
+  (AI-1) can cost a backer money within the per-epoch caps stated in SECURITY-v2.md (what one week of the seat vaults
+  can lose is X-5), and holding stake only while
   marking a default (SO-1, SO-2) takes a share of lender fees within the bounds stated there. Beating those bounds is
   a finding; restating them is not.

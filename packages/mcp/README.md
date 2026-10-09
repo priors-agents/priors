@@ -166,7 +166,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.7.0"],
+      "args": ["-y", "@priors/mcp@0.7.1"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -188,7 +188,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.7.0"],
+      "args": ["-y", "@priors/mcp@0.7.1"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -198,8 +198,16 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 }
 ```
 
-or, for your user only: `claude mcp add priors --scope user -e PRIORS_KEY="$PRIORS_KEY" -- npx -y @priors/mcp@0.7.0`
-(the key is expanded by your shell from the environment; do not paste it on the command line).
+or, for your user only, from a macOS or Linux terminal:
+
+```sh
+ (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.7.1' priors-mcp ~/.config/priors/agent.key
+```
+
+It waits for the key without showing it (paste it, then Enter), saves it in a file only you can read, and gives Claude
+Code that file's path; the server reads the key from it when Claude Code starts it. Do not pass the key itself to
+`claude mcp add` (`-e PRIORS_KEY=…`, even as `"$PRIORS_KEY"`): a program's arguments can be read by every user of the
+machine while it runs (`ps`).
 
 ## Try it
 

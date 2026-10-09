@@ -219,8 +219,9 @@ export declare class CappedExactEvmScheme implements SchemeNetworkClient {
   createPaymentPayload(x402Version: number, requirements: PaymentRequirements, context?: PaymentPayloadContext): Promise<PaymentPayloadResult>;
 }
 export declare function toX402Signer(signer: any, address?: string): { address: `0x${string}`; signTypedData(m: { domain: Record<string, unknown>; types: Record<string, unknown>; primaryType: string; message: Record<string, unknown> }): Promise<`0x${string}`> };
-/** First signable v2 requirement on an enabled network (default Robinhood Chain only), its token by full address and
- *  its domain the token's own; Robinhood Chain preferred when a seller offers both. */
+/** First signable v2 requirement on an enabled network (default Robinhood Chain only), its token by full address,
+ *  its domain the token's own and its `paymentFlow` (if any) one x402 core signs; Robinhood Chain preferred when a
+ *  seller offers both. */
 export declare function pickV2Requirement(accepts: unknown, asset?: string, opts?: { networks?: string[] }): PaymentRequirements | null;
 export declare function pickV1Requirement(accepts: unknown, asset?: string): Record<string, any> | null;
 export declare function signPaymentV1(signer: any, req: Record<string, any>, opts?: { now?: number; chainId?: number; maxValiditySeconds?: number }): Promise<string>;
