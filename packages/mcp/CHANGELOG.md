@@ -1,0 +1,47 @@
+# @priors/mcp changelog
+
+## 0.8.0 (2026-10-09)
+
+For agents that run on their own (in ElizaOS, OpenClaw, Hermes or their own code) and read untrusted text all day.
+Every change is opt-in: with none of the new settings, a 0.7.x configuration behaves as before, and every 0.7.x
+variable and state file (`outstanding-<wallet>.json`, `bridge-<wallet>.json`) keeps working.
+
+- **`PRIORS_KEY_FILE`**: the key from a file, so a runtime's config holds a path instead of the key. The file is read
+  only when nobody but the user can read it: on Linux and macOS a regular file the user owns with no group or other
+  permission bits (root may read another user's owner-only file, such as a container secret, only where every
+  directory above it, on the path as given and as resolved, belongs to root or to that user and nobody else can write
+  it: ssh's secure_path rule, so never under /tmp, where anyone could have put their own key at the path); on Windows
+  a file whose access list lets only the user, SYSTEM and Administrators read it, checked by SID through PowerShell's
+  Get-Acl (PowerShell run from System32 by its full path, never looked up in the working directory). Any other file is
+  refused without being read (the checks use the opened file itself), and the server starts read-only, each money tool
+  saying what to fix. `~/` (and `~\` on Windows) is the home directory; a relative path is refused. The content is
+  never echoed. `PRIORS_KEY` still works; both at once are refused. Replaces the `sh -c` wrapper.
+- **Daily limits that survive a restart**: `PRIORS_MAX_SPEND_DAY_USD` (what `pay_url` signs) and
+  `PRIORS_MAX_BORROW_DAY_USD` (what `borrow`, `pay_url` and `fund_base` borrow), per UTC day for the agent
+  (`PRIORS_AGENT_ID`, which a daily limit requires: without it the start stops) and for the wallet that signs, across
+  restarts and every process sharing `PRIORS_STATE_DIR`: every key and client of the agent shares one count, and a key
+  run under another agent id still shares its wallet's. A call is counted at its most from before its check until it
+  ends, then at what it did; a call cut short by a crash stays counted at its most. The ledger is one empty file per
+  call whose name carries its amounts, created before the directory is summed, so two processes can never pass a limit
+  together and there is no lock to go stale. `PRIORS_MAX_BORROW_DAY_USD=0` turns borrowing off. A daily limit with
+  `PRIORS_STATE_DIR=off` stops the start. `credit_status` shows today's use.
+- **`PRIORS_PAY_HOSTS`**: the only hosts `pay_url` pays, matched exactly after the WHATWG URL parser's normalisation
+  (lowercase, punycode, one trailing dot, default port), checked before any request and again on every request the
+  payer sends; redirects are never followed. A wildcard, URL, path or user info in the list stops the start.
+- **Share facts from `repay`**: for each loan repaid, the agent, the loan, the amount, on time or late (by the
+  repaying block's time, read back from the pool) and by how many days, for a late one whether it came inside the
+  pool's grace period (said only when the loan's defaultableAt was read: the pool takes a repayment after it too,
+  until someone marks the loan defaulted), the loans repaid in all, and the record's page, in the answer and as
+  structured content with a suggested line. Reads are best effort within the call's time and never fail the repayment.
+  Nothing is ever posted.
+- **`@priors/mcp/share`**: `shareFacts`, `repaidPost(facts, { link })` (lowercase, no @mention, hashtag or link unless
+  asked) and `REPAID_POST_TEMPLATE`, the rule a runtime's character can carry: one post per repaid loan, in its own
+  words, never a reply and never about a borrow alone.
+- **`priors-mcp link-wallet --agent <id>`**: the agent's key signs the ERC-8004 registry's `AgentWalletSet` (EIP-712,
+  domain "ERC8004IdentityRegistry" version 1 on chain 4663, read from the registry and refused if it differs; the
+  owner from `ownerOf`; a deadline 4 minutes past the latest block, at most 290 seconds), and it prints the owner's
+  `setAgentWallet` call (`--json` for one line). A command only, never an MCP tool.
+- The tool descriptions and the server's instructions name the daily limits and the host list when they are set.
+
+Setup for these, with a block for ElizaOS, OpenClaw and Hermes: the README's "An agent that runs on its own". No
+@priors/x402 change: it stays 0.6.2.

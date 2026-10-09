@@ -9,21 +9,28 @@
     "source": "github",
     "subfolder": "packages/mcp"
   },
-  "version": "0.7.2",
+  "version": "0.8.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@priors/mcp",
-      "version": "0.7.2",
+      "version": "0.8.0",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
           "name": "PRIORS_KEY",
-          "description": "Private key of a dedicated agent wallet on Robinhood Chain; without it only the read-only tools work",
+          "description": "Private key of a dedicated agent wallet on Robinhood Chain; without it (or PRIORS_KEY_FILE) only the read-only tools work",
           "isRequired": false,
           "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "PRIORS_KEY_FILE",
+          "description": "Absolute path (or ~/) of a file holding the agent wallet's key, read only when nobody but the user can read it; instead of PRIORS_KEY",
+          "isRequired": false,
+          "isSecret": false,
           "format": "string"
         },
         {
@@ -50,6 +57,27 @@
         {
           "name": "PRIORS_MAX_BORROW_USD",
           "description": "Most one loan may be (default 25)",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "PRIORS_MAX_SPEND_DAY_USD",
+          "description": "Most x402 payments may total per UTC day for the agent, across restarts (needs PRIORS_AGENT_ID)",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "PRIORS_MAX_BORROW_DAY_USD",
+          "description": "Most the agent may borrow per UTC day, across restarts (needs PRIORS_AGENT_ID; 0 turns borrowing off)",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "PRIORS_PAY_HOSTS",
+          "description": "Comma-separated exact hosts pay_url may pay; any other URL is refused before a request",
           "isRequired": false,
           "isSecret": false,
           "format": "string"
