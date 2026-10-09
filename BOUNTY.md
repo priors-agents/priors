@@ -73,12 +73,20 @@ The v2 contracts on Robinhood Chain (chain 4663), live since block 71,702,460, a
 | `PriorsLiquidity` (`src/PriorsLiquidity.sol`), engine 2 | [`0xbEC159832D05749557F3f972c4823979C8dC8451`](https://robinhoodchain.blockscout.com/address/0xbEC159832D05749557F3f972c4823979C8dC8451) |
 | `SwapLimiter` (`src/SwapLimiter.sol`), the engines' depth guard | [`0x4535b1d92ebBe8176463dE4b58Ca9B66A231eb0E`](https://robinhoodchain.blockscout.com/address/0x4535b1d92ebBe8176463dE4b58Ca9B66A231eb0E) |
 | `KeeperHelper` (`src/KeeperHelper.sol`), SeatSizerV4's keeper since 2026-10-06 | [`0x3Ba233d2ac1C6233C5fA954C2DaaD83fcCFE5372`](https://robinhoodchain.blockscout.com/address/0x3Ba233d2ac1C6233C5fA954C2DaaD83fcCFE5372) |
+| `SeatVaultV5` (`src/SeatVaultV5.sol`, root `#8641`; live since 2026-10-09, owner-only backing), with its nine linked libraries in `src/v5/`: `V5Pos`, `V5Steps`, `V5Book`, `V5Records`, `V5Exit`, `V5Auto`, `V5Sync`, `V5View`, `V5Lens` | [`0xdE29D3A627d77CFA13c5331C1B7B181a4C5B752E`](https://robinhoodchain.blockscout.com/address/0xdE29D3A627d77CFA13c5331C1B7B181a4C5B752E) |
+| its libraries, which V5 calls by DELEGATECALL (they run in V5's context and hold nothing) | `V5Pos` `0xD43711128f49187b6396F8Bb365e2D00D228840c`, `V5Steps` `0xa0729ed369afbff4e3E3241d8d1ae077b2661be0`, `V5Book` `0x8D9D168EC419460d20026002c8c732f5f7Be6B20`, `V5Records` `0x4c8f394222909a0044e0Fb90d0de18FE2A89629a`, `V5Exit` `0xCA6Dfe1b85ff8c29AB91E7A3736fd16E59AC4C56`, `V5Auto` `0x0896833364b96F42b60e8947b2bb61C3C8277D14`, `V5Sync` `0x9EDb8C831f559638bBbECD43f913eC9E96FA2916`, `V5View` `0x5d130640f8cE621aa96E0c2702e262e448E476Ea`, `V5Lens` `0x2623ec71Ea24E3257bf47738EB9f28BD9716B356` |
 | `InviteBond` (the bond an automatic invite needs) | [`0x8BE478c754D9124D11e78dB20F5bf4dA45403275`](https://robinhoodchain.blockscout.com/address/0x8BE478c754D9124D11e78dB20F5bf4dA45403275) |
 | `StockVault`, the stock vault (root `#6424`; live since 2026-09-28): the proxy users call | [`0xbEcd07EC689988e16b870C121756C4c2C8cb02B6`](https://robinhoodchain.blockscout.com/address/0xbEcd07EC689988e16b870C121756C4c2C8cb02B6) |
 | its implementation (`src/StockVault.sol`) | [`0xC16f7230b79Fb7dB3b1761A23e9d56365300B2A4`](https://robinhoodchain.blockscout.com/address/0xC16f7230b79Fb7dB3b1761A23e9d56365300B2A4) (since 2026-10-04) |
 
 The stock vault is the one upgradeable contract: what is in scope is the implementation its proxy points to when you
 report (the ERC-1967 implementation slot), which the table will follow after any upgrade.
+
+SeatVaultV5 runs Stage 1 with owner-only backing (`openBacking` false, premium cap 0): others' backing is closed, so
+only an agent's owner, and BuyAndBack's protocol backing once it buys for V5, stake $PRIORS behind a line. Two of its
+paths are not live yet: paying in USDG (`openWithUsdg`, `backWithUsdg`) and BuyAndBack's buying and placement for V5
+both wait for the timelock batch that names V5 in BuyAndBack and the SwapLimiter, scheduled and executable from
+2026-10-11 16:48:02 UTC. Until it executes, those paths revert on chain.
 
 Also in scope: the SDK (`sdk/`), the npm packages
 [`@priors/x402`](https://www.npmjs.com/package/@priors/x402) and [`@priors/mcp`](https://www.npmjs.com/package/@priors/mcp)
@@ -163,9 +171,10 @@ ones:
   the Safe if the agent defaults. Without a bond,
   an invite still needs an admin's approval. New treasury lines are capped at $100 a week by treasury v4's
   `epochCap`; one person taking the week's first lines within that cap, bond paid, is a listed residual (AI-1), not
-  a finding. A seat needs a staker's $PRIORS and a repaid record: new seats go to the growth seat vault (V4), a $50
-  line after 10 repaid loans, since SeatVaultV3 (3 repaid loans) is full. A backer needs the owner's consent. Credit
-  without one of those is "High".
+  a finding. A seat needs a staker's $PRIORS and a repaid record: SeatVaultV3 (3 repaid loans) is full, and the growth
+  seat vault (V4, a $50 line after 10 repaid loans) takes no new seats since 2026-10-09. A SeatVaultV5 line needs the
+  agent owner's own $PRIORS staked behind it and the owner's consent to V5's root. A backer needs the owner's consent.
+  Credit without one of those is "High".
 - **Stock lines.** The stock vault vouches a line of the token's loan-to-value (25-50%, plus a record bonus) of the
   deposit's Chainlink value, at most $250, out of its own stake. Every new loan asks the vault again: a fresh price,
   no lending hold, the owner who opened the position, and the drawn principal within the loan-to-value of the

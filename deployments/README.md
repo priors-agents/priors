@@ -38,8 +38,10 @@ SeatVaultV3. The six protocol contracts live since 2026-10-04 (sources in `src/`
 (PoolSteward, the pool's owner since 2026-10-06, behind the 48 h timelock), `revenueRouter` (RevenueRouter, the fee
 sinks' and the steward's sweep destination), `buyAndBack` (BuyAndBack), `priorsLiquidity` (PriorsLiquidity),
 `swapLimiter` (SwapLimiter, the depth guard the engines read) and `keeperHelper` (KeeperHelper, SeatSizerV4's keeper
-since 2026-10-06). `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it (the SDK's stock-line calls use `stockVault`
-from it; `priors-v2 join --seat` takes a staker's offer on `seatVaultV4` first, else on `seatVault`);
+since 2026-10-06). `seatVaultV5` (root `seatVaultV5AgentId` 8641, `seatVaultV5Block` 84,306,464) is SeatVaultV5, live
+since 2026-10-09 with owner-only backing. `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it (the SDK's stock-line calls use `stockVault`
+from it; `priors-v2 join --seat` takes a staker's offer on `seatVaultV4` first, else on `seatVault`; `borrow` and `pay`
+on a line V5 sponsors take V5's step before the borrow, from `seatVaultV5` and `seatVaultV5AgentId`);
 `PRIORS_ADDRESSES` points them at another file; on a real chain a file whose addresses differ from the published record
 is refused unless `PRIORS_ALLOW_CUSTOM_ADDRESSES=1` is exported in the shell (a `.env` cannot set it). The same opt-in
 governs the v1 tools' `POOL`, `TREASURY` and `USDC` overrides on a real chain.

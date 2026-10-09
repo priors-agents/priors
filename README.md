@@ -41,7 +41,9 @@ Reviews are cheap to fake. Repaid debt isn't.
 > 71,702,460, and the seat vault (`SeatVaultV3`) since 2026-09-25. Addresses come from [`deployments/4663.v2.json`](deployments/4663.v2.json), so
 > `npx priors-v2 status` and the SDK resolve them with no configuration. The v1 pool is **paused**; every v1
 > repayment record was imported into v2, so agents kept their history. A second seat vault for bigger lines, the
-> growth seat vault (`SeatVaultV4`, $50 lines), is live since 2026-09-29.
+> growth seat vault (`SeatVaultV4`, $50 lines), is live since 2026-09-29 and takes no new seats since 2026-10-09.
+> `SeatVaultV5` is live since 2026-10-09 with owner-only backing: an agent's owner stakes its own $PRIORS to open the
+> agent's line, which V5's root backs 100% in USDG. It has had internal reviews, no external audit.
 >
 > **What v2 changes.** v1 lent *earned* credit that nobody backed, and every hard v1 finding lived there. v2 drops
 > it: every line is 100% backed by a backer's locked pool shares, a default burns that backer's shares worth the
@@ -377,6 +379,8 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | **SeatSizer** (owns the seat vault since 2026-09-26; resizes the seat from the $PRIORS price, within bounds) | `0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61` |
 | **SeatVaultV4**, the growth seat vault (live since 2026-09-29, root `#6466`) | `0xb1c3a04496238D62E3c93118C297163855e22192` |
 | SeatSizer of the growth seat vault (owns it; the Safe owns the sizer) | `0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777` |
+| **SeatVaultV5** (live since 2026-10-09, root `#8641`; owner-only backing) | `0xdE29D3A627d77CFA13c5331C1B7B181a4C5B752E` |
+| SeatVaultV5's linked libraries (`src/v5/`; V5 calls them by DELEGATECALL) | `V5Pos` `0xD43711128f49187b6396F8Bb365e2D00D228840c`, `V5Steps` `0xa0729ed369afbff4e3E3241d8d1ae077b2661be0`, `V5Book` `0x8D9D168EC419460d20026002c8c732f5f7Be6B20`, `V5Records` `0x4c8f394222909a0044e0Fb90d0de18FE2A89629a`, `V5Exit` `0xCA6Dfe1b85ff8c29AB91E7A3736fd16E59AC4C56`, `V5Auto` `0x0896833364b96F42b60e8947b2bb61C3C8277D14`, `V5Sync` `0x9EDb8C831f559638bBbECD43f913eC9E96FA2916`, `V5View` `0x5d130640f8cE621aa96E0c2702e262e448E476Ea`, `V5Lens` `0x2623ec71Ea24E3257bf47738EB9f28BD9716B356` |
 | **StockVault** (live since 2026-09-28, root `#6424`; lines against stock tokens; a Transparent proxy, `StockVaultProxy`) | `0xbEcd07EC689988e16b870C121756C4c2C8cb02B6` |
 | StockVault implementation (behind the proxy; since 2026-10-04) | `0xC16f7230b79Fb7dB3b1761A23e9d56365300B2A4` |
 | StockVault ProxyAdmin (the only way to upgrade the vault; owned by the 48 h timelock since 2026-10-07, by the Safe before) | `0x5174A18550a295cd25aF59416a56B7e4c38C8Afc` |
@@ -442,7 +446,9 @@ src/libraries/PoolV2Lib.sol  v2 pool's linked library (hooks, consent digest)
 src/CreditLensV2.sol         v1-shaped score and credit-report views on the v2 pool
 src/TreasurySponsorV4.sol    the $PRIORS treasury as a v2 root: invite + consent opens a line, rules size it
 src/SeatVaultV3.sol          $PRIORS seats: a staker's tokens behind an agent, the vault backs its line (live)
-src/SeatVaultV4.sol          growth seats: V3 plus the slash split, protocol seats, a loan-term cap (live)
+src/SeatVaultV4.sol          growth seats: V3 plus the slash split, protocol seats, a loan-term cap (live; no new seats)
+src/SeatVaultV5.sol          the owner's own $PRIORS behind its agent's line, the root's USDG backing it (live, owner-only)
+src/v5/                      SeatVaultV5's linked libraries (V5Book, V5Records, V5Exit, ...) and its storage, types, math
 src/SeatSizer.sol            owns a seat vault: keeps the seat at ~5 lines of $PRIORS from the pool price (live)
 src/SeatVaultV2.sol          the previous seat vault (retired; V3 closes audit V-2)
 src/InviteBond.sol           the bond behind an automatic invite: back after seasoning, to the Safe on default
@@ -460,9 +466,9 @@ src/TreasurySponsor.sol      v1 treasury (v3)
 src/ReserveFunder.sol        v1 creator-fee sweep into the reserve
 src/libraries/ScoreLib.sol   the trust score (shared by v1 and the v2 lens)
 src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPonsFeeEscrow
-test/                        754 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
+test/                        1,066 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
                              review-v2/, audit-v4/, audit-r2/, audit-sizer/), the stock vault's (StockVault*), the growth seat
-                             vault's (SeatVaultV4*), and the v1 suite
+                             vault's (SeatVaultV4*), SeatVaultV5's (v5/), and the v1 suite
 script/DeployV2.s.sol        deploys the v2 set under a 48 h timelock, writes deployments/<chainId>.v2.json
 script/Deploy.s.sol          v1 deploy (mocks on dev chains), writes deployments/<chainId>.json
 sdk/priors-v2.mjs            the v2 client on ethers v6, ABIs included
@@ -499,7 +505,7 @@ small and we say so up front rather than after you have spent a week.
 ## Working on it
 
 ```bash
-forge test                     # 754 tests, all green (fork-only tests skip without FORK_RPC)
+forge test                     # 1,066 tests, all green (fork-only tests skip without FORK_RPC)
 npm test                       # SDK, CLI and publish-guard checks (needs Foundry for the v1 end-to-end run)
 npm run test:v2                # the v2 SDK and x402 client, network-free
 npm run devnet                 # local chain + deployed, bootstrapped v1 pool

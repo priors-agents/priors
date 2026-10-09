@@ -55,6 +55,7 @@ the affected function and your own severity assessment. We cannot evaluate, prio
 | `src/BuyAndBack.sol`, `src/PriorsLiquidity.sol` | the two engines the router funds: buying $PRIORS on its Pons pool, and its liquidity |
 | `src/SwapLimiter.sol`, `src/libraries/PoolDepth.sol`, `src/libraries/EngineMath.sol` | the depth guard on every engine swap, and the math both engines use |
 | `src/KeeperHelper.sol`, `src/GuardianPause.sol` | the keeper's one entry point (SeatSizerV4's price and the limiter's depth snapshot), and the guardian pause the engines share |
+| `src/SeatVaultV5.sol`, `src/v5/` | SeatVaultV5 (live since 2026-10-09, owner-only backing) and its nine linked libraries: books opened with the agent owner's own $PRIORS, the burn on default, the backing layers, fees, the exit queue, the breaker and the guardian pause |
 | `sdk/`, `bin/` | the SDK, the x402 float client and the CLIs, including anything that could sign or broadcast wrongly |
 | `packages/x402`, `packages/mcp` | the npm payer (`@priors/x402`) and the local MCP server (`@priors/mcp`), including anything that could pay, borrow or repay wrongly |
 | The live v2 deployment | addresses are in `deployments/4663.v2.json` and the README's *Robinhood Chain* table |
@@ -137,7 +138,9 @@ matches `forge build` of `src/StockVault.sol` is the implementation behind it (i
 `0x8Be04c08De0158c88F84875DAe181054c30734fA` matched on 2026-09-30 and the first one,
 `0xF781b2634254d7819E9E17BfFc9D18C54C32008b`, on 2026-09-29). The six protocol contracts (`poolSteward`,
 `revenueRouter`, `buyAndBack`, `priorsLiquidity`, `swapLimiter`, `keeperHelper` in the record) matched `forge build`
-of `src/` on 2026-10-07, immutables masked and the metadata hash included.
+of `src/` on 2026-10-07, immutables masked and the metadata hash included. `seatVaultV5` and its nine linked libraries
+(their addresses in the README's table) matched `forge build` of `src/` on 2026-10-09, with the library links filled in,
+immutables and each library's own address masked, and the metadata hash included.
 
 An independent rediscovery of a fixed issue is still worth telling us about, and we will say so and
 credit the work. It is not a new finding.

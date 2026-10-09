@@ -3,7 +3,8 @@
 This page covers the v2 set live on Robinhood Chain since block 71,702,460: `CreditPoolV2` (+ `PoolV2Lib`,
 `CreditLensV2`), `TreasurySponsorV4`, `SeatVaultV3` (which replaced `SeatVaultV2` on 2026-09-25), the
 `SeatSizer` that owns it since 2026-09-26, `InviteBond`, the `StockVault` since 2026-09-28 (the one upgradeable
-Priors contract), and the growth seat vault `SeatVaultV4` with its own `SeatSizer` (live since 2026-09-29), plus the SDK's x402 float client and ERC-8004 credit reader and the `@priors/x402` and `@priors/mcp` packages. It lists every known
+Priors contract), the growth seat vault `SeatVaultV4` with its own `SeatSizer` (live since 2026-09-29), and
+`SeatVaultV5` with its linked libraries (live since 2026-10-09, owner-only backing), plus the SDK's x402 float client and ERC-8004 credit reader and the `@priors/x402` and `@priors/mcp` packages. It lists every known
 finding, so a rediscovery is not mistaken for a new one, and so you can check each ruling against a test.
 
 **How these were found.** Several internal adversarial reviews before launch (three per-contract hunts, Slither,
@@ -107,7 +108,8 @@ USDG of backing (block 75,648,677) before its seats were opened. It is owned by 
 (`0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777`, block 75,614,955, the same `src/SeatSizer.sol`, bounds
 [110,000, 20,000,000] $PRIORS), which the Safe owns, as for the V3 pair. The deployed runtime bytecode of both matches
 `forge build` of this repository's source (immutables masked); explorer verification is pending. SeatVaultV3 is
-unchanged: its open seats run until they close, and new seats go to V4.
+unchanged: its open seats run until they close, and new seats went to V4, which takes none since 2026-10-09
+(SeatVaultV5, below).
 
 The settings at deployment: a seat of 120,000 $PRIORS (the sizer's target, about 5 lines), a $50 line, `burnBps`
 5000 with `keepBps` 0 (a default burns half the seat, all of it, as on V3), at most 20 open seats, $1,000 of new lines
@@ -198,6 +200,53 @@ Reviewed before deployment by an internal audit (2026-09-27) and a readiness rev
 | SV-13 | Medium | **A deposit made after an issuer burn paid the earlier positions' shortfall.** `_payout` shares what the vault holds over the positions open at each payout, so a deposit or a top-up into a token the vault was already short of came back short, and an earlier position, or its seizure, took the difference. The impact of a higher row (a depositor's stock taken without a default of its own), but it needs the token issuer's burn from the vault, a key no user holds, and SV-4, the same trigger, is Low. GHSA-cwm2-g4fh-wvf2. | **Fixed (implementation `0x8Be04c08…34fA`, 2026-09-30), before any stock was deposited:** `open` and `addCollateral` revert `Shortfall(token)` while the vault holds less of the token than it owes. | `test/StockVaultShortfall.t.sol` (`test_depositAfterBurn_*`, `test_topUpAfterBurn_*`, `test_defaultAfterBurn_*`) |
 | SV-14 | Medium | **After an issuer burn, a line could be drawn past its loan-to-value of what was left.** `canBorrow` and `borrowRoom` valued the position's amount, not what it would be paid. The loss falls on the vault's stake, never on lenders, within `maxLine`; one row lower than a line drawn past its loan-to-value for the same reason as SV-13. GHSA-wh68-cx3m-5r7p. | **Fixed (the same upgrade):** both value what `_payout` would pay. | `test_afterBurn_loansStayWithinLtvOfWhatThePositionIsPaid` |
 | SV-15 | Low | A depositor's `close` with a loan open never gave the line back to the weekly epoch budget when the last repayment ended the position, so four close-with-loan cycles (~$510 of SPY reused, ~$0.007 of fees) filled the $1,000 cap with nothing open and blocked new stock lines until the epoch rolled. No funds at risk; no position had ever been opened. GHSA-f8mq-9j3m-c2f4. | **Fixed (implementation `0x32F1c32A…d0A5`, live since 2026-10-01):** a close requested with a loan open keeps its refund (`closeRefund`, appended storage) until the last repayment; an owner eviction (`freezePosition`), before or after the close, still keeps the spend. `settle()`, the ending a failed `onRelease` hook leaves, still ended with no refund (whoever called it first kept the line counted; a `leave` lost its refund the same way): reported by Muse, 2026-10-04, **fixed in `0xC16f7230…B2A4`** (live since 2026-10-04), where `settle` gives the refund `onRelease` would. After an owner eviction and a failed last `onRelease`, the depositor's `close` still gave the line back where `settle` kept it counted: reported by @byfor8, GHSA-jgwm-4r5q-r2mf. **Fix written, not live yet:** `_close` honours the eviction's stored "no refund" on every ending; it reaches the vault with an upgrade through the 48 h timelock: the Safe scheduled it on 2026-10-08 (implementation `0xAe8f0A34A0bEf514D61132726bCF6a78960672a4`, tx `0x073e0ce335b85bbb8f63b6927d697b0c4907a910d4dfa60f2e7b0d6901235c47`, block 83,200,097), executable from 2026-10-10 09:13:52 UTC; its source and tests come to this repository at the execute. No position was exposed (none was closing). | `test/StockVaultEpochRefund.t.sol` (11) |
+
+## SeatVaultV5
+
+Deployed on 2026-10-09: **SeatVaultV5** (`0xdE29D3A627d77CFA13c5331C1B7B181a4C5B752E`, `src/SeatVaultV5.sol`, root
+`#8641`; `seatVaultV5Block` 84,306,464 in the record, its 14 deployment transactions in blocks 84,307,046 to
+84,307,418) and the nine libraries it is linked to (`src/v5/`: `V5Pos`, `V5Steps`, `V5Book`, `V5Records`, `V5Exit`,
+`V5Auto`, `V5Sync`, `V5View`, `V5Lens`; their addresses are in [BOUNTY.md](../BOUNTY.md)), which run by DELEGATECALL in
+V5's context and on its storage. An agent's owner opens the agent's line with its own $PRIORS, 75% of which burns on a
+default; V5's root backs every line 100% with its USDG in the pool, so a default burns the root's shares and never
+reaches lenders, as for every root. V5 has no owner and cannot be upgraded: the 48 h timelock and the Safe (guardian)
+are immutables. The deployed runtime bytecode of V5 and of each library matches `forge build` of this repository's
+source (immutables and each library's own address masked, the metadata hash included).
+
+**What is live (Stage 1).** Backing is owner-only: `openBacking` is false (others' backing is closed; only an agent's
+owner, and BuyAndBack's protocol backing once it buys for V5, stake behind a line) and the premium cap is 0. The
+timelock batch that names V5 in BuyAndBack and the SwapLimiter is scheduled, executable from 2026-10-11 16:48:02 UTC.
+Until it executes, V5 opens with the owner's own $PRIORS only: paying in USDG (`openWithUsdg`, `backWithUsdg`) and
+BuyAndBack's buying and placement wait for it. On 2026-10-09 SeatVaultV4 stopped taking new seats and its free USDG
+(1,116.60) went into V5's root, whose free backing was then 1,166.60 USDG.
+
+**Reviewed internally only; no third-party audit.** Deploying without an external audit was the owner's decision. Three
+internal reviews ran before deployment: an internal audit (one Medium, four Low, five Informational), a deep audit of
+V5 and its libraries (one High, three Low, two Informational) and a review of its gas and its integration with the
+engines (one High, one Medium in the deploy tooling, Low and Informational findings). The two Highs: a breaker trip
+inside a `compound` batch could lock an owner's stake for good and stall the exit queue, and anyone could latch V5's
+depth guard on with a `sync()` given too little gas, stopping opens, backing, new loans and both engines. The findings
+were fixed before deployment, except one Low whose fix belongs to the client, not the contract (a stake of exactly
+`needed().fullLine` opens the $5 step below once its valuation moves down at all), and their proofs of concept are
+kept as regression tests: `test/v5/V5AuditFixes.t.sol` (the internal audit's), `test/v5/V5DeepAuditFixes.t.sol` (the
+deep audit's, and the gas review's starved reads, hook gas and retire backlog) and `test/v5/V5StarvedReads.t.sol`
+(every gas budget a caller can give V5's reads of the SwapLimiter, the depth-guard griefer included). The reviews' own
+proof-of-concept suites are internal. The rest of `test/v5/` holds V5's unit, attack, invariant and gas tests;
+`test/v5/V5Fork.t.sol` runs against live chain state with `FORK_RPC`.
+
+**What bounds a loss at Stage 1:**
+
+- **Owner-only backing.** No third party's $PRIORS stands behind an agent: a default burns that agent's owner's stake
+  (75% of what opened the line, 50% of any further backing of its own) and half of any protocol backing BuyAndBack
+  placed (at most a sixth of the owner's stake), and the root's pool shares cover the loan.
+- **The root's free backing.** V5 vouches only out of its root's stake in the pool (1,166.60 USDG free when V4's USDG
+  went in), and `vouchCap` keeps what the root vouches at or under 1,083.79 USDG.
+- **The breaker.** It trips on its own once the principal defaulted on V5's lines in 30 days reaches $250 or 5% of the
+  counted principal repaid on them, whichever is more. Tripped, V5 opens no book, takes no new stake and raises no line
+  (a `refresh` only lowers) until the Safe's `clear()`; loans within a line already vouched still go through.
+- **The guardian pause.** The Safe can pause V5 for up to 14 days: new books, backing, raises and new loans stop, exits
+  never do (leave, release, collect, close and settle keep working). It cannot pause again within 14 days of a pause's
+  end.
 
 ## SDK and x402 float
 
@@ -392,8 +441,10 @@ forge test --match-path 'test/StockVault*' -vv
 forge test --match-path 'test/SeatVaultV4*' -vv
 forge test --match-path 'test/audit-v4/*' -vv
 forge test --match-path 'test/audit-r2/*' -vv
+forge test --match-path 'test/v5/*' -vv
 FORK_RPC=https://rpc.mainnet.chain.robinhood.com forge test --match-path test/StockVaultFork.t.sol -vv
 FORK_RPC=https://rpc.mainnet.chain.robinhood.com forge test --match-path test/SeatSizerFork.t.sol -vv
+FORK_RPC=https://rpc.mainnet.chain.robinhood.com forge test --match-path test/v5/V5Fork.t.sol -vv
 ```
 
 The proofs of concept for SO-1, SO-2 and AI-1 are internal (V-2's are public, replayed against V3 in `test/SeatVaultV3V2Fixes.t.sol`) and not in this repository; the rows above state
