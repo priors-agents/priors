@@ -185,7 +185,9 @@ export interface PayResult {
 }
 
 export interface Payer {
-  /** fetch-like: pays an x402 USDG 402 (v2 or legacy v1 "robinhood"), borrowing the gap if allowed. */
+  /** fetch-like: pays an x402 USDG 402 (v2 or legacy v1 "robinhood"), borrowing the gap if allowed. `init.signal` aborts
+   *  this call: before the payment is signed nothing more is read, topped up, borrowed or signed and it rejects with the
+   *  abort; once the payment may be out the abort is pending, never thrown. */
   pay(input: RequestInfo | URL, init?: RequestInit): Promise<PayResult>;
   /** Resend an already-signed payment (from a pending result); never signs. */
   resend(input: RequestInfo | URL, paymentHeaders: Record<string, string>, init?: RequestInit): Promise<{ response: Response; pending: boolean; timedOut?: boolean; transportError?: boolean; error?: unknown; paymentHeaders?: Record<string, string> }>;

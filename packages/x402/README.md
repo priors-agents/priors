@@ -184,8 +184,9 @@ default), `asset` (a USDG address for a fork or test token; default the pool's `
 - **No redirects.** Requests go out with `redirect: "manual"` unless you pass another `redirect` in `init` (`redirect:
   undefined` counts as none): a signed payment never travels to a host you did not name, and a 3xx comes back as the
   answer.
-- **Bounded.** Bodies are read up to 256 KB (`readCapped`). `timeoutMs` (60 s by default; 0 = none) bounds each request and `signal` the whole
-  call; a timeout once the payment is out returns `{ pending: true, timedOut: true, paymentHeaders }`, and a dropped
+- **Bounded.** Bodies are read up to 256 KB (`readCapped`). `timeoutMs` (60 s by default; 0 = none) bounds each request, `signal` every
+  call and `init.signal` (as `fetch` takes it) the one call: once either has fired, nothing more is read, topped up,
+  borrowed or signed, and `pay()` rejects with the abort. A timeout or an abort once the payment is out returns `{ pending: true, timedOut: true, paymentHeaders }`, and a dropped
   connection `{ pending: true, transportError: true, error, paymentHeaders }`: never an error once the payment may be
   out. An error thrown after a loan or a signature carries `borrowed`, `loanId`, `dueAt` and `signed`.
 - **One payment at a time** per payer: two concurrent `pay()` calls on a short wallet do not both borrow the gap.

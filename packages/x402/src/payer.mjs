@@ -217,14 +217,15 @@ function settlementOf(response) {
 const asRequest = (input, init) => new Request(input, { ...(init || {}), redirect: init?.redirect ?? "manual" });
 
 /**
- * fetchImpl with a per-request timeout (`timeoutMs`, 0 = none) and an overall `signal`, both optional.
+ * fetchImpl with a per-request timeout (`timeoutMs`, 0 = none) and an overall `signal`, both optional, kept with the
+ * request's own signal (the caller's `init.signal`): rebuilding the request with only these two dropped it (GHSA-868j).
  * @returns {(req: Request) => Promise<Response>}
  */
 function timedFetch(fetchImpl, { timeoutMs = 0, signal } = {}) {
   if (!timeoutMs && !signal) return fetchImpl;
   return (req) => {
-    const signals = [timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null, signal || null].filter(Boolean);
-    return fetchImpl(new Request(req, { signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals) }));
+    const signals = [req.signal, timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null, signal || null].filter(Boolean);
+    return fetchImpl(new Request(req, { signal: AbortSignal.any(signals) }));
   };
 }
 
@@ -251,7 +252,7 @@ export async function resend(input, paymentHeaders, { init, fetchImpl = globalTh
   try {
     response = await send();
     for (let i = 0; i < retries && (await isPending(response)); i++) {
-      if (signal?.aborted) return timedOut();
+      if (signal?.aborted || base.signal.aborted) return timedOut();
       const after = Number(response.headers.get("retry-after"));
       await sleep(Math.min(maxSleepMs, 1000 * Math.min(30, Math.max(1, Number.isFinite(after) && after > 0 ? after : 5))));
       response = await send();
@@ -516,6 +517,11 @@ export function createPayer(opts = {}) {
     }
     const first = await fx(base.clone()); // a timeout here throws: nothing is signed yet
     if (first.status !== 402) return { response: first, paid: 0n, borrowed: 0n, loanId: null, dueAt: null };
+    // The caller's cancellation (`init.signal`) and the payer's `signal`: once either has fired, nothing more is read,
+    // topped up, borrowed or signed (GHSA-868j: a merchant that held its 402 past the caller's abort was paid). Once the
+    // payment may be out, an abort is pending with its headers, never thrown (resend).
+    const stopIfAborted = () => { base.signal.throwIfAborted(); signal?.throwIfAborted?.(); };
+    stopIfAborted();
 
     const poolC = pool ? poolContract(pool, signer) : null;
     const usdgAddr = asset || (poolC ? await poolC.usdg() : robinhood.usdg);
@@ -579,6 +585,7 @@ export function createPayer(opts = {}) {
       // Short: the caller's own money first (`topUp(need)`, e.g. savings), once the price is known and before any loan.
       // A failed top-up never stops the payment: it is reported in `savings` and the payment goes on as before.
       if ((balance < price || keptShort()) && typeof topUp === "function") {
+        stopIfAborted();
         try { savings = await topUp(price + kept); } catch (e) { savings = { withdrawn: 0n, error: e }; }
         // A withdrawal that was sent and may still land: never borrow for money that is on its way.
         if (savings?.error?.pending || savings?.error?.code === "UNCONFIRMED") throw Object.assign(new PayError("SAVINGS_PENDING", "pay: a savings withdrawal was sent and has not confirmed yet; nothing was borrowed or signed. Try again once it has landed."), { savings });
@@ -587,7 +594,7 @@ export function createPayer(opts = {}) {
 
       if (keptShort() || (kept > 0n && balance < price)) throw Object.assign(new PayError("RESERVE", `pay: this payment would cut into the ${formatUsdg(kept)} USDG kept for Autopay loans due in the next 24 h; nothing was signed or borrowed`, { price, reserve: kept }), savings ? { savings } : {});
       if (balance < price) {
-        try { signal?.throwIfAborted?.(); loan = await borrowGap({ signer, pool: poolC, agentId, price, balance, maxBorrow, termSeconds, maxFee, me, v5, v5Root }); } catch (e) {
+        try { stopIfAborted(); loan = await borrowGap({ signer, pool: poolC, agentId, price, balance, maxBorrow, termSeconds, maxFee, me, v5, v5Root }); } catch (e) {
           if (savings && e && typeof e === "object") e.savings = savings; // what the top-up did is not lost with the error
           throw e;
         }
@@ -598,6 +605,7 @@ export function createPayer(opts = {}) {
     // once signed, the headers), so neither is lost with it.
     let paymentHeaders, validBefore;
     try {
+      stopIfAborted(); // inside the try: a loan taken before the abort is carried
       if (version === 2) {
         const payload = await client.createPaymentPayload({ ...paymentRequired, accepts: [req] });
         paymentHeaders = http.encodePaymentSignatureHeader(payload);
