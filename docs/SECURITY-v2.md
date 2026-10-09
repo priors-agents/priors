@@ -253,7 +253,7 @@ F8, CR-1 and CR-2 here (CR: the ERC-8004 credit reader, `sdk/credit-reader.mjs` 
 GHSA-3r6q-4h4w-5rqg beat SV-1's stated bound and GHSA-jgwm-4r5q-r2mf found another ending in SV-15's rule, both in the
 stock vault's table; GHSA-j4jw-2gj2-v6fc is O-1, credited in its row; three are not findings (GHSA-6px4-qfh6-48pc
 and GHSA-x6cq-mv5f-3cwg below, and GHSA-67c5-gg9v-42qw, which measured the stock vault's record bonus at the price its
-settings set). One more, filed on 2026-10-08 (GHSA-fgg6-4235-36m3), is CR-3. Two more, filed the same day: GHSA-m5wj-mgcg-x3fv is AT-1 (AT: the attester's score notes on the ERC-8004 registry and their verifier, `scripts/verify-attestation.mjs`), and GHSA-cq9v-cwv9-m8j4 is P-35. One more, filed the same day (GHSA-hmqp-v95p-rmjf), is O-4. One more, filed the same day (GHSA-549m-m3x3-xqhq), is P-36. Seven more, filed on 2026-10-09, were triaged the same day: GHSA-f35g-fcvf-x6vh is P-37 (the same text, filed four minutes later as GHSA-rmgm-g3gq-q4xc, is its duplicate); GHSA-vr5c-56m9-8g6h is P-38; GHSA-248v-r446-8wpx is O-5; GHSA-9pv9-9rg7-w287 is PE-1 (PE: the protocol engines and their depth guard, `BuyAndBack`, `PriorsLiquidity` and `SwapLimiter`); GHSA-vjjf-3h25-2pwg is X-5, in SeatVaultV3's table; and GHSA-pw89-w7x5-rr4f is not a finding (below).
+settings set). One more, filed on 2026-10-08 (GHSA-fgg6-4235-36m3), is CR-3. Two more, filed the same day: GHSA-m5wj-mgcg-x3fv is AT-1 (AT: the attester's score notes on the ERC-8004 registry and their verifier, `scripts/verify-attestation.mjs`), and GHSA-cq9v-cwv9-m8j4 is P-35. One more, filed the same day (GHSA-hmqp-v95p-rmjf), is O-4. One more, filed the same day (GHSA-549m-m3x3-xqhq), is P-36. Seven more, filed on 2026-10-09, were triaged the same day: GHSA-f35g-fcvf-x6vh is P-37 (the same text, filed four minutes later as GHSA-rmgm-g3gq-q4xc, is its duplicate); GHSA-vr5c-56m9-8g6h is P-38; GHSA-248v-r446-8wpx is O-5; GHSA-9pv9-9rg7-w287 is PE-1 (PE: the protocol engines and their depth guard, `BuyAndBack`, `PriorsLiquidity` and `SwapLimiter`); GHSA-vjjf-3h25-2pwg is X-5, in SeatVaultV3's table; and GHSA-pw89-w7x5-rr4f is not a finding (below). One more, filed the same day (GHSA-53mm-89qj-qqpj), is not a finding (below).
 
 | id | sev | finding | status |
 |---|---|---|---|
@@ -327,6 +327,13 @@ next call for the same URL signs a new payment (GHSA-gx74, its first part, GHSA-
 each request, keeping the entry would block every repeat purchase, and a merchant that talks the caller into buying
 again stays within P-2's cap, which counts both signatures. A payment resent after a lost connection keeps the price
 it was signed at, even if the merchant asks less by then (GHSA-xw6g, thanks to @byfor8): that is P-10's fix at work.
+A borrow whose `to` is the pool itself books a loan whose USDG transfer moves nothing, and its default then charges
+the backer's stake and settles the staker's seat (GHSA-53mm-89qj-qqpj, thanks to @everforyou). The recipient is the
+borrower's choice, and the backer pays the same whatever it is: on a fork of the live pool and growth vault, the same
+$50 default cost the vault's stake 50.08 USDG and the staker half its seat with the principal sent to the pool, to the
+borrower, or to the borrower and then to the pool. The principal sent to the pool stays there, owed to nobody, instead
+of reaching the borrower. A backer paying for the default of the agent it backs is the design (X-3's economics, which
+apply to V4).
 Asking again and signing the lower price would hand a merchant that read the first payment two it can settle (199,999
 for one 100,000 purchase in the triage); what the caller agreed to pay is what it signed, within `maxPrice`.
 Sessions of one wallet that each call `pay_url` for the same URL, each answered by its own 402 after the earlier payment
