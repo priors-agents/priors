@@ -65,7 +65,7 @@
 //   PRIORS_MAX_BRIDGE_TOTAL_USD  most both may move in total while the server runs, either way (default 25)
 //   PRIORS_MAX_BRIDGE_FEE_BPS  a bridge fee above this, in basis points of the amount, is refused (default 100)
 //   PRIORS_MAX_BASE_FLOAT_USD  fund_base never brings the Base float above this (default 10)
-import { readFileSync, writeFileSync, mkdirSync, renameSync, openSync, closeSync, statSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync, openSync, closeSync, statSync, rmSync, existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -82,7 +82,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as P from "./pt-usdg.mjs";
 // 0.8.0, for agents that run on their own and read untrusted text (posts on X, mail, web pages): the key from a file,
 // limits per UTC day that survive a restart, a list of hosts pay_url may pay, and the facts repay returns for a post.
-import { keyFromEnv } from "./key-file.mjs";
+import { keyFromEnv, stateDirProblem } from "./key-file.mjs";
 import { parsePayHosts, hostAllowed, hostKey, guardFetch } from "./pay-hosts.mjs";
 import { agentOf, dailyLedger, ledgerOwners } from "./daily.mjs";
 import { shareFacts, factsLine, repaidPost } from "./share.mjs";
@@ -449,6 +449,14 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   if (stateHome && !/^(off|none|false|0)$/i.test(stateHome) && !isAbsolute(stateHome)) throw new Error(`PRIORS_STATE_DIR must be an absolute path (or start with ~/), not "${stateRaw}"`);
   const stateDir = /^(off|none|false|0)$/i.test(stateRaw) ? null : stateHome || join(homedir(), ".local", "state", "priors-mcp");
   const stateFile = wallet && stateDir ? join(stateDir, `outstanding-${wallet.address.toLowerCase()}.json`) : null;
+  // ...and only this user may change what is in it (POSIX): another local user who can rename its entries resets what
+  // keeps a payment from being signed twice and the daily limits (GHSA-52gp). Then the money tools refuse, as with a key
+  // they cannot use, and the read-only tools still answer. A directory that cannot be made at all is left to the writes.
+  let stateProblem = null;
+  if (wallet && stateDir && process.platform !== "win32" && typeof process.getuid === "function") {
+    try { mkdirSync(stateDir, { recursive: true, mode: 0o700 }); } catch (_) { /* checked below if it exists */ }
+    if (existsSync(stateDir)) stateProblem = stateDirProblem(stateDir, { fs: { realpathSync, statSync }, uid: process.getuid() });
+  }
   // The daily ledger lives there too: without a state directory a daily limit could not outlive the process, and a
   // limit that quietly resets on a restart is the very thing it replaces, so the start stops instead.
   if ((daySpendCap !== null || dayBorrowCap !== null) && !stateDir) throw new Error("PRIORS_MAX_SPEND_DAY_USD and PRIORS_MAX_BORROW_DAY_USD are kept in PRIORS_STATE_DIR, which is off: set PRIORS_STATE_DIR to a directory, or unset the daily limits");
@@ -795,6 +803,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
 
   function needWallet(action) {
     if (keyProblem) throw new ToolError(keyed.problem ? `${action} needs a wallet, but ${keyProblem}. Nothing was done: restart the MCP server once that is fixed.` : `${action} needs a wallet, but ${keyProblem}. Fix ${keyed.source ?? "PRIORS_KEY"} in the MCP server's environment.`);
+    if (wallet && stateProblem) throw new ToolError(`${action} needs a wallet, but PRIORS_STATE_DIR ${stateDir}: ${stateProblem}, so another local user could move aside the records that keep a payment from being signed twice and the daily limits. Nothing was done: make it yours alone (chmod 700, with no directory above it that other users can write to) or set PRIORS_STATE_DIR to one that is, then restart the MCP server.`);
     if (!wallet) throw new ToolError(`${action} moves money and needs a wallet: set PRIORS_KEY_FILE (the path of a file holding the key, readable by your user only) or PRIORS_KEY in the MCP server's environment (never pass a key as a tool argument or on the command line). Read-only tools (wallet_balance and savings with an address, credit_status, stock_assets, stock_position, score_of, find_services) work without it.`);
     return wallet;
   }

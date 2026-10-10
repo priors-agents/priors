@@ -117,6 +117,37 @@ export function securePathProblem(file, st, fs) {
   return null;
 }
 
+/**
+ * For PRIORS_STATE_DIR (POSIX): null when no other local user can rename or remove what is in `dir`, else what is wrong.
+ * It keeps the records that stop a payment being signed twice and the daily limits' ledgers, and a user who can write
+ * to it, or to a directory above it without the sticky bit, can move them aside so the server starts counting from
+ * nothing (GHSA-52gp). `dir` must belong to this user with no group or other write bit; each directory above it,
+ * on the path as given and as resolved, must belong to root or this user with no group or other write bit unless it
+ * is sticky (/tmp is): OpenSSH's rule, since a user's primary group can be shared (macOS's staff). `fs` needs
+ * realpathSync and statSync; `uid` is this process's.
+ */
+export function stateDirProblem(dir, { fs, uid }) {
+  let real, st;
+  try { real = fs.realpathSync(dir); st = fs.statSync(real); } catch (e) { return `it could not be checked (${e?.code || "error"})`; }
+  if (st.uid !== uid) return `it belongs to another user (uid ${st.uid})`;
+  if ((st.mode & 0o022) !== 0) return `other users can write to it (mode ${(st.mode & 0o7777).toString(8).padStart(4, "0")})`;
+  const dirs = [];
+  for (const p of [dir, real]) {
+    for (let d = path.posix.dirname(p); ; d = path.posix.dirname(d)) {
+      if (!dirs.includes(d)) dirs.push(d);
+      if (d === path.posix.dirname(d)) break;
+    }
+  }
+  for (const d of dirs) {
+    let ds;
+    try { ds = fs.statSync(d); } catch (e) { return `the directory ${d} above it could not be checked (${e?.code || "error"})`; }
+    const sticky = (ds.mode & 0o1000) !== 0;
+    if (ds.uid !== 0 && ds.uid !== uid) return `the directory ${d} above it belongs to another user (uid ${ds.uid})`;
+    if (!sticky && (ds.mode & 0o022) !== 0) return `other users can write to the directory ${d} above it (mode ${(ds.mode & 0o7777).toString(8).padStart(4, "0")})`;
+  }
+  return null;
+}
+
 /** The absolute path PRIORS_KEY_FILE names on `platform` (~ expanded), or a problem. */
 export function keyFilePath(raw, { platform = process.platform, homedir = osHomedir } = {}) {
   const p = platform === "win32" ? path.win32 : path.posix;

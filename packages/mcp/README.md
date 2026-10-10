@@ -156,7 +156,7 @@ may spend. Rows marked (0.8.0) take effect from that version; 0.7.x ignores them
 | `PRIORS_MAX_BRIDGE_TOTAL_USD` | `25` | most both may move in total while the server runs, either way (a transfer that may be out counts, and one in flight when the server starts counts too) |
 | `PRIORS_MAX_BRIDGE_FEE_BPS` | `100` | a bridge fee above this, in basis points of the amount, is refused |
 | `PRIORS_MAX_BASE_FLOAT_USD` | `10` | `fund_base` never brings the Base float above this |
-| `PRIORS_STATE_DIR` | `~/.local/state/priors-mcp` | where the payments signed and not yet settled are kept (one owner-only file per wallet, never the key, with a short-lived `.lock` beside it while it is written), so a restart, a new session or another session of the same wallet resends them instead of signing again. An absolute path, or one starting with `~/` (a relative one is refused at start). A payment that cannot be written there is not sent. `off` keeps them in memory only |
+| `PRIORS_STATE_DIR` | `~/.local/state/priors-mcp` | where the payments signed and not yet settled are kept (one owner-only file per wallet, never the key, with a short-lived `.lock` beside it while it is written), so a restart, a new session or another session of the same wallet resends them instead of signing again. An absolute path, or one starting with `~/` (a relative one is refused at start). A payment that cannot be written there is not sent. `off` keeps them in memory only (0.8.3) On Linux and macOS it must be yours alone: owned by your user with no group or other write bit, and no directory above it that other users can write to unless it is sticky like `/tmp`; otherwise the money tools refuse (another local user could move the records aside), and the read-only tools still answer. |
 
 Contract addresses (pool, lens, registry, USDG) come from `deployments/4663.v2.json`, bundled in the package, and the
 accepted stock tokens from `deployments/stock-assets.4663.json`. The stock vault's address (live since 2026-09-28)
@@ -171,7 +171,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.8.2"],
+      "args": ["-y", "@priors/mcp@0.8.3"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -193,7 +193,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.8.2"],
+      "args": ["-y", "@priors/mcp@0.8.3"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -206,7 +206,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 or, for your user only, from a macOS or Linux terminal:
 
 ```sh
- (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.8.2' priors-mcp ~/.config/priors/agent.key
+ (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.8.3' priors-mcp ~/.config/priors/agent.key
 ```
 
 It waits for the key without showing it (paste it, then Enter), saves it in a file only you can read, and gives Claude
@@ -259,7 +259,7 @@ to approve a borrow; this package, with the key, pays for APIs. With borrowing o
 approves each loan in Priors' Go mode. ElizaOS (`@elizaos/plugin-mcp`):
 
 ```ts
-"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.8.2"],
+"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.8.3"],
   env: { PRIORS_KEY_FILE: "/home/agent/.config/priors/agent-7311.key", PRIORS_AGENT_ID: "7311",
     PRIORS_MAX_BORROW_USD: "0", PRIORS_MAX_BORROW_DAY_USD: "0", PRIORS_MAX_SPEND_DAY_USD: "1", PRIORS_MAX_PRICE_USD: "0.10",
     PRIORS_PAY_HOSTS: "api.example.com" } }
@@ -271,7 +271,7 @@ OpenClaw (`mcp.servers`, JSON5) takes the same `command`, `args` and `env`; Herm
 mcp_servers:
   priors-wallet:
     command: npx
-    args: ["-y", "@priors/mcp@0.8.2"]
+    args: ["-y", "@priors/mcp@0.8.3"]
     env:
       PRIORS_KEY_FILE: /home/agent/.config/priors/agent-7311.key
       PRIORS_AGENT_ID: "7311"
@@ -298,7 +298,7 @@ key proves it is there: it signs the ERC-8004 identity registry's `AgentWalletSe
 agent's).
 
 ```sh
-PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.8.2 link-wallet --agent 7311
+PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.8.3 link-wallet --agent 7311
 ```
 
 It reads the registry's EIP-712 domain and refuses to sign for any other, takes the owner from the chain (`--owner`

@@ -1,5 +1,15 @@
 # @priors/mcp changelog
 
+## 0.8.3 (2026-10-10)
+
+- **`PRIORS_STATE_DIR` must be yours alone** (GHSA-52gp-533q-jx99). It keeps what stops a payment being signed twice
+  and the daily limits' ledgers; another local user who could rename its entries made the server start counting from
+  nothing (a second borrow past `PRIORS_MAX_BORROW_DAY_USD`). On Linux and macOS, with a wallet configured, the
+  directory must belong to your user with no group or other write bit, and every directory above it must belong to
+  root or you and not be writable by others unless sticky (`/tmp`): OpenSSH's rule. Otherwise every money tool refuses
+  and says what to fix (`chmod 700`), and the read-only tools still answer. The default directory is created `0700`
+  and passes; one you made yourself under a `0002` umask (`0775`) needs `chmod 700`.
+
 ## 0.8.2 (2026-10-10)
 
 - **On `@priors/x402` 0.6.4**, whose merchant-side `recordGate` keeps a bounded cache (GHSA-vjcp-qx2h-gr2q). The MCP
