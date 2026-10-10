@@ -425,6 +425,28 @@ await check("GHSA-95v6: on a real chain, an addresses file from a .env must keep
   } finally { c.server.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+await check("GHSA-5c2h: PriorsV2.repay refuses a loan opened while someone else held the agent, before any approval", async () => {
+  const me = ethers.Wallet.createRandom();
+  const pool = new ethers.Interface(POOL_V2_ABI);
+  const P = readDeploymentV2(4663).pool.toLowerCase();
+  const STRANGER = "0x" + "ab".repeat(20);
+  // agent #9 is this key's now (owner and controller); loan #14285 was opened by its interim holder
+  const loan = [9n, 1n, 10_000000n, 23_333n, 0n, 0n, 0n, STRANGER, 1n, 2n, 3n, 0n, 0n, 1];
+  const c = await chain({ call: ({ to, data }) => {
+    if (to.toLowerCase() === REG && data.startsWith(sel("ownerOf(uint256)"))) return ethers.zeroPadValue(me.address, 32);
+    if (to.toLowerCase() !== P) return undefined;
+    if (data.startsWith(sel("getLoan(uint256)"))) return pool.encodeFunctionResult("getLoan", [loan]);
+    if (data.startsWith(sel("isController(uint256,address)"))) return ethers.toBeHex(1, 32);
+    if (data.startsWith(sel("registry()"))) return ethers.zeroPadValue(REG, 32);
+    return undefined;
+  } });
+  try {
+    const s = new PriorsV2({ signer: me.connect(new ethers.JsonRpcProvider(c.url, 4663, { staticNetwork: true })), addresses: readDeploymentV2(4663) });
+    await assert.rejects(s.repay(14_285, { agentId: 9 }), new RegExp(`opened by ${STRANGER}`, "i"));
+    assert.ok(!c.seen.some((r) => /send|estimate/i.test(r.method)), `something was sent: ${c.seen.map((r) => r.method)}`);
+  } finally { c.server.close(); }
+});
+
 await check("audit SD-2: PriorsV2.repay needs the caller's agent, and refuses another agent's loan, or one of an agent the key does not control, before any approval, even when the RPC vouches for it", async () => {
   const me = ethers.Wallet.createRandom();
   const pool = new ethers.Interface(POOL_V2_ABI);

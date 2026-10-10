@@ -238,6 +238,26 @@ contract InviteBondTest is TreasuryV4Base {
         assertEq(usdc.balanceOf(safe), BOND);
     }
 
+    /// GHSA-qvp5-99xq-gqxm: the report's sequence. Wallet A bonds, borrows its first line and keeps the loan open, then
+    /// moves the agent to its own wallet B, which bonds and refunds A; B lets the loan default. The replacement takes
+    /// B's bond before it refunds A's, so one bond stays locked throughout and the default forfeits it: the two wallets
+    /// together end where A alone would have, the loan's 5 USDG against one 5 USDG bond.
+    function test_qvp5_replacementWithAnOpenLoan_keepsOneBondAtRisk() public {
+        uint256 together = usdc.balanceOf(agentOp) + usdc.balanceOf(agentOp2); // before A's bond
+        _deposit(agentOp, AGENT);
+        _firstLine(AGENT, AGENT_PK);
+        uint256 loan = _borrow(agentOp, AGENT, 5 * USDC, 7 days); // open, its 5 USDG with A
+        vm.prank(agentOp);
+        reg.transferFrom(agentOp, agentOp2, AGENT);
+        _deposit(agentOp2, AGENT); // B's bond in, A's back
+        assertEq(usdc.balanceOf(address(bond)), BOND, "one bond locked while the loan is open");
+        assertFalse(bond.releasable(AGENT), "B cannot take it back while the loan is open");
+        _default(loan);
+        bond.slash(AGENT);
+        assertEq(usdc.balanceOf(safe), BOND, "the default forfeits the bond that replaced A's");
+        assertEq(usdc.balanceOf(agentOp) + usdc.balanceOf(agentOp2), together, "A and B together: the loan, less one bond, nets nothing");
+    }
+
     function test_superseding_restartsTheUnusedWait() public {
         _deposit(agentOp, AGENT);
         vm.warp(vm.getBlockTimestamp() + UNUSED + 1); // the old bond is past its wait, no line

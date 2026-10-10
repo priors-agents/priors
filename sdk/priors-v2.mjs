@@ -589,6 +589,10 @@ export class PriorsV2 {
     if (BigInt(agentId) !== l.agentId) throw new Error(`loan #${loanId} is agent #${l.agentId}'s, not #${agentId}'s: not repaid`);
     const me = await this.me();
     if (!(await this.pool.isController(l.agentId, me))) throw new Error(`loan #${loanId} belongs to agent #${l.agentId}, which ${me} does not control: not repaid`);
+    // ...and only a loan the agent's owner now took: one opened while someone else held the agent is theirs (GHSA-mmp8,
+    // GHSA-5c2h), and controlling the agent now does not make it this key's to pay
+    const holder = await (await this._registry()).ownerOf(l.agentId);
+    if (String(l.owner).toLowerCase() !== String(holder).toLowerCase()) throw new Error(`loan #${loanId} was opened by ${l.owner}, which held agent #${l.agentId} then; its owner now (${holder}) did not take it: not repaid`);
     const due = l.principal + l.fee;
     await this._ensure(await this._usdg(), await this.pool.getAddress(), due, `repay(${loanId})`);
     const rc = await sendChecked(this.pool, "repay", [loanId, BigInt(agentId), due], this._ifaces);
