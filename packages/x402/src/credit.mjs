@@ -219,9 +219,11 @@ export async function borrowGap({ signer, pool, agentId, price, balance, maxBorr
  * With `onlyInWindow` (the runtime's own in-window repay): only the loans whose repay window
  * is open now, AutoRepay's rule (autopay.mjs repayWindow: the last 6 h before due, never before day 7 on a term over a
  * week + 2 h), or that are past due; the others are left in `open` and `waiting` (with when their window opens).
- * @returns {Promise<{ repaid: bigint[], open: bigint[], waiting?: Array<{ loanId: bigint, opens: number }>, savings?: object }>}
+ * Only loans the agent's owner now took are repaid: one opened while someone else held the agent (its `Loan.owner` is
+ * another address) stays in `open` and is listed in `others` with who opened it (GHSA-mmp8).
+ * @returns {Promise<{ repaid: bigint[], open: bigint[], others: Array<{ loanId: bigint, openedBy: string }>, waiting?: Array<{ loanId: bigint, opens: number }>, savings?: object }>}
  */
-export async function settleLoans({ signer, pool, agentId, topUp, onlyInWindow = false, now = () => Math.floor(Date.now() / 1000) }) {
+export async function settleLoans({ signer, pool, agentId, topUp, onlyInWindow = false, now = () => Math.floor(Date.now() / 1000), ownerOf }) {
   const poolC = poolContract(pool, signer);
   const me = await signer.getAddress();
   // Only the signer's own agent: a wrong or stale agentId would otherwise pay a stranger's loans (P-7).
@@ -230,7 +232,11 @@ export async function settleLoans({ signer, pool, agentId, topUp, onlyInWindow =
   const ids = await poolC.loansOf(agentId);
   let loans = (await Promise.all(ids.map(async (id) => ({ id, l: await poolC.getLoan(id) })))).filter((x) => x.l.status === LOAN_ACTIVE);
   loans.sort((a, b) => (a.l.dueAt < b.l.dueAt ? -1 : a.l.dueAt > b.l.dueAt ? 1 : 0));
-  const repaid = [], open = [], waiting = [];
+  const repaid = [], open = [], waiting = [], others = [];
+  if (loans.length) {
+    const holder = String(ownerOf ? await ownerOf(agentId) : await new ethers.Contract(await poolC.registry(), REGISTRY_ABI, signer).ownerOf(agentId)).toLowerCase();
+    loans = loans.filter(({ id, l }) => { if (String(l.owner).toLowerCase() === holder) return true; open.push(id); others.push({ loanId: id, openedBy: l.owner }); return false; });
+  }
   if (onlyInWindow) {
     const t = now();
     loans = loans.filter(({ id, l }) => { const { opens } = repayWindow(l.issuedAt, l.dueAt); if (t >= opens) return true; open.push(id); waiting.push({ loanId: id, opens }); return false; });
@@ -257,7 +263,7 @@ export async function settleLoans({ signer, pool, agentId, topUp, onlyInWindow =
     if (e && typeof e === "object") Object.assign(e, { repaid, ...(savings ? { savings } : {}) });
     throw e;
   }
-  const out = savings ? { repaid, open, savings } : { repaid, open };
+  const out = savings ? { repaid, open, others, savings } : { repaid, open, others };
   return onlyInWindow ? { ...out, waiting } : out;
 }
 
@@ -408,6 +414,9 @@ export async function repayLoan(c, signer, loanId) {
   const me = await signer.getAddress();
   // The pool lets anyone repay any loan; this helper spends the signer's USDG only on an agent the signer controls.
   if (!(await pool.isController(l.agentId, me))) throw new PayError("NOT_CONTROLLER", `loan #${loanId} belongs to agent #${l.agentId}, which ${me} does not control (neither its owner nor its pool delegate)`);
+  // ...and only a loan its owner now took: one opened while someone else held the agent is theirs (GHSA-mmp8)
+  const holder = String(await c.registry.ownerOf(l.agentId));
+  if (String(l.owner).toLowerCase() !== holder.toLowerCase()) throw new PayError("NOT_OWNERS_LOAN", `loan #${loanId} was opened by ${l.owner}, which held agent #${l.agentId} then; its owner now (${holder}) did not take it: not repaid`);
   const bal = await usdg.balanceOf(me);
   if (bal < due) throw new PayError("INSUFFICIENT_USDG", `repaying loan #${loanId} needs ${due} atomic USDG but the wallet holds ${bal}`, { due, balance: bal });
   const target = await pool.getAddress();

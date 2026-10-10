@@ -193,7 +193,7 @@ export interface Payer {
   resend(input: RequestInfo | URL, paymentHeaders: Record<string, string>, init?: RequestInit): Promise<{ response: Response; pending: boolean; timedOut?: boolean; transportError?: boolean; error?: unknown; paymentHeaders?: Record<string, string> }>;
   /** Repay open loans, earliest due first, while the wallet covers them. */
   /** `onlyInWindow`: only loans whose repay window (repayWindow) is open, or past due. */
-  settleLoans(o?: { onlyInWindow?: boolean }): Promise<{ repaid: bigint[]; open: bigint[]; waiting?: Array<{ loanId: bigint; opens: number }>; savings?: SavingsTopUp }>;
+  settleLoans(o?: { onlyInWindow?: boolean }): Promise<{ repaid: bigint[]; open: bigint[]; others: Array<{ loanId: bigint; openedBy: string }>; waiting?: Array<{ loanId: bigint; opens: number }>; savings?: SavingsTopUp }>;
 }
 
 export declare function createPayer(opts: CreatePayerOptions): Payer;
@@ -248,7 +248,7 @@ export declare class PayError extends Error {
   asset?: string;
   constructor(code: string, message: string, details?: Record<string, unknown>);
 }
-export declare function settleLoans(o: { signer: any; pool: string | any; agentId: bigint | number | string; topUp?: (need: bigint) => Promise<SavingsTopUp>; onlyInWindow?: boolean; now?: () => number }): Promise<{ repaid: bigint[]; open: bigint[]; waiting?: Array<{ loanId: bigint; opens: number }>; savings?: SavingsTopUp }>;
+export declare function settleLoans(o: { signer: any; pool: string | any; agentId: bigint | number | string; topUp?: (need: bigint) => Promise<SavingsTopUp>; onlyInWindow?: boolean; now?: () => number; ownerOf?: (agentId: bigint | number | string) => Promise<string> }): Promise<{ repaid: bigint[]; open: bigint[]; others: Array<{ loanId: bigint; openedBy: string }>; waiting?: Array<{ loanId: bigint; opens: number }>; savings?: SavingsTopUp }>;
 export { repayWindow, autopayReserve, defaultCap as autopayDefaultCap } from "./autopay.js";
 
 /** A payer's Priors record as the record gate reads it. */

@@ -1,5 +1,16 @@
 # @priors/mcp changelog
 
+## 0.8.1 (2026-10-10)
+
+- **`repay` pays only loans the agent's owner now took** (GHSA-mmp8-g8jw-7gqp). A loan opened while someone else
+  held the agent (the pool's `Loan.owner` is not the agent's owner now) is refused by `loan_id` and left out by
+  `all: true`, which names it and who opened it; nothing is paid for it.
+- **The agent lookup skips an identity that left the wallet** (GHSA-mmp8-g8jw-7gqp). Without `PRIORS_AGENT_ID`, the
+  wallet's agent is an identity minted to it since the v2 deploy that never left it: one that went to someone else
+  and came back, carrying what they borrowed, now needs `PRIORS_AGENT_ID` like a bought one.
+- **On `@priors/x402` 0.6.3**, whose `repayLoan` refuses such a loan (`NOT_OWNERS_LOAN`) and whose `settleLoans` leaves
+  it unpaid, listed in `others`.
+
 ## 0.8.0 (2026-10-09)
 
 For agents that run on their own (in ElizaOS, OpenClaw, Hermes or their own code) and read untrusted text all day.

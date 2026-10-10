@@ -338,6 +338,67 @@ await check("audit SD-1: priors-v2 takes only an identity minted to the key, nev
   } finally { c.server.close(); }
 });
 
+await check("GHSA-mmp8: priors-v2 drops an identity minted to the key that left it, even once it is back", async () => {
+  const me = ethers.Wallet.createRandom();
+  const T = ethers.id("Transfer(address,address,uint256)");
+  const zero = ethers.zeroPadValue(ethers.ZeroAddress, 32).toLowerCase();
+  const mine = ethers.zeroPadValue(me.address, 32).toLowerCase();
+  const log = (from, to) => ({ address: REG, topics: [T, from, to, ethers.toBeHex(6567, 32)], data: "0x", blockNumber: "0x1", blockHash: "0x" + "00".repeat(32), transactionHash: "0x" + "00".repeat(32), transactionIndex: "0x0", logIndex: "0x0", removed: false });
+  const c = await chain({
+    call: ({ to, data }) => (to.toLowerCase() !== REG ? undefined : data.startsWith(sel("balanceOf(address)")) ? ethers.toBeHex(1, 32) : data.startsWith(sel("ownerOf(uint256)")) ? ethers.zeroPadValue(me.address, 32) : undefined),
+    // #6567 was minted to this key, went to a stranger (who borrowed on it) and came back
+    logs: (f) => { const from = String(f.topics?.[1] ?? "").toLowerCase(); return from === zero ? [log(zero, mine)] : from === mine ? [log(mine, ethers.zeroPadValue("0x" + "ab".repeat(20), 32))] : []; },
+  });
+  try {
+    const r = await run("priors-v2.mjs", ["status"], { PRIORS_KEY: me.privateKey, PRIORS_RPC: c.url });
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stderr, /PRIORS_AGENT_ID/);
+    assert.ok(!/#6567/.test(r.stdout), `the round-tripped agent was taken: ${r.stdout}`);
+  } finally { c.server.close(); }
+});
+
+await check("GHSA-mmp8: priors-v2 repay never pays a loan opened while someone else held the agent", async () => {
+  const me = ethers.Wallet.createRandom();
+  const pool = new ethers.Interface(POOL_V2_ABI);
+  const P = readDeploymentV2(4663).pool.toLowerCase();
+  const STRANGER = "0x" + "ab".repeat(20);
+  const due = Math.floor(Date.now() / 1000) + 86400;
+  // agent #9's one open loan, #14285, was opened by its interim holder
+  const loan = [9n, 1n, 5_000000n, 11_666n, 0n, 0n, 0n, STRANGER, 1n, BigInt(due), BigInt(due + 3 * 86400), 0n, 0n, 1];
+  const c = await chain({
+    call: ({ to, data }) => {
+      if (to.toLowerCase() === REG && data.startsWith(sel("ownerOf(uint256)"))) return ethers.zeroPadValue(me.address, 32);
+      if (to.toLowerCase() !== P) return undefined;
+      if (data.startsWith(sel("loansOf(uint256)"))) return pool.encodeFunctionResult("loansOf", [[14_285n]]);
+      if (data.startsWith(sel("getLoan(uint256)"))) return pool.encodeFunctionResult("getLoan", [loan]);
+      return undefined;
+    },
+  });
+  try {
+    for (const args of [["repay"], ["repay", "--all"]]) {
+      const r = await run("priors-v2.mjs", args, { PRIORS_KEY: me.privateKey, PRIORS_RPC: c.url, PRIORS_AGENT_ID: "9" });
+      assert.match(r.stdout + r.stderr, new RegExp(`loan #14285 .*opened by ${STRANGER}`, "i"), args.join(" "));
+      assert.ok(!/repaid loan #14285/.test(r.stdout), `${args.join(" ")} repaid it: ${r.stdout}`);
+    }
+    assert.ok(!c.seen.some((r) => /send|estimate/i.test(r.method)), `something was sent: ${c.seen.map((r) => r.method)}`);
+  } finally { c.server.close(); }
+});
+
+await check("GHSA-95v6: on a real chain, an addresses file from a .env must keep the published deployBlock, unless the opt-in is exported", async () => {
+  const c = await chain();
+  const dir = inDir("");
+  const file = join(dir, "addresses.json");
+  writeFileSync(file, JSON.stringify({ ...readDeploymentV2(4663), deployBlock: readDeploymentV2(4663).deployBlock - 1 }));
+  writeFileSync(join(dir, ".env"), `PRIORS_ADDRESSES=${file}\n`);
+  try {
+    const key = ethers.Wallet.createRandom().privateKey;
+    const r = await run("priors-v2.mjs", ["repay"], { PRIORS_KEY: key, PRIORS_RPC: c.url }, dir);
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stderr, /differs from the published Robinhood Chain deployment \(deployBlock\)/);
+    assert.ok(!c.seen.some((q) => q.method === "eth_getLogs" || /send|estimate/i.test(q.method)), `it searched or sent: ${c.seen.map((q) => q.method)}`);
+  } finally { c.server.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 await check("audit SD-2: PriorsV2.repay needs the caller's agent, and refuses another agent's loan, or one of an agent the key does not control, before any approval, even when the RPC vouches for it", async () => {
   const me = ethers.Wallet.createRandom();
   const pool = new ethers.Interface(POOL_V2_ABI);

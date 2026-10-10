@@ -14,8 +14,8 @@
 //                          runtime's config. A file anyone else can read is refused and not read (0.8.0)
 //   PRIORS_KEY             the agent wallet's private key (optional: without it only read-only tools work); not both
 //   PRIORS_RPC             JSON-RPC endpoint (default: the public https://rpc.mainnet.chain.robinhood.com)
-//   PRIORS_AGENT_ID        the Priors agent id this wallet acts for (else discovered from the identity registry;
-//                          required with a daily limit, which counts per agent)
+//   PRIORS_AGENT_ID        the Priors agent id this wallet acts for (else discovered from the identity registry: one
+//                          minted to it that never left it; required with a daily limit, which counts per agent)
 //   PRIORS_FACILITATOR     facilitator base URL for find_services (default https://facilitator.priors.trade)
 //   PRIORS_MAX_PRICE_USD   ceiling on pay_url's max_price_usd (default 1.00)
 //   PRIORS_MAX_BORROW_USD  ceiling on borrow's amount_usd and pay_url's max_borrow_usd (default 25)
@@ -677,6 +677,9 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     borrow: (id, amount, term) => C.borrowLine(contracts, wallet, id, amount, term),
     repay: (loanId) => C.repayLoan(contracts, wallet, loanId),
     loanAgent: async (loanId) => (await contracts.pool.getLoan(loanId)).agentId,
+    // who held the agent when the loan was opened (the pool's Loan.owner), and who holds it now
+    loanOwner: async (loanId) => (await contracts.pool.getLoan(loanId)).owner,
+    agentOwner: (id) => contracts.registry.ownerOf(id),
     isController: (id, addr) => contracts.pool.isController(id, addr),
     agentsOf: (addr) => discoverAgents(addr),
     loanDue: async (loanId) => { const l = await contracts.pool.getLoan(loanId); return Number(l.status) === 1 ? l.principal + l.fee : null; },
@@ -751,8 +754,9 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     } catch (e) { lines.push(savingsFailure(e)); }
   }
 
-  // The registry is not enumerable: find identities minted to `addr` since the v2 deploy, keep what it owns. Only a mint
-  // counts: anyone can transfer an identity with an open loan to this wallet, and `repay` would then pay it (own audit).
+  // The registry is not enumerable: find identities minted to `addr` since the v2 deploy that never left it, keep what it
+  // owns. Only a mint counts: anyone can transfer an identity with an open loan to this wallet, and `repay` would then pay
+  // it (own audit); one that left and came back carries what its interim holder borrowed (GHSA-mmp8).
   async function discoverAgents(addr) {
     const T = ethers.id("Transfer(address,address,uint256)");
     const latest = await provider.getBlockNumber();
@@ -761,6 +765,13 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     for (let b = from; b <= latest; b += 50_000) {
       const logs = await provider.getLogs({ address: addresses.registry, topics: [T, ethers.zeroPadValue(ethers.ZeroAddress, 32), ethers.zeroPadValue(addr, 32)], fromBlock: b, toBlock: Math.min(latest, b + 49_999) });
       for (const l of logs) ids.add(BigInt(l.topics[3]));
+    }
+    if (ids.size) {
+      const asked = [...ids].map((id) => ethers.toBeHex(id, 32));
+      for (let b = from; b <= latest; b += 50_000) {
+        const logs = await provider.getLogs({ address: addresses.registry, topics: [T, ethers.zeroPadValue(addr, 32), null, asked], fromBlock: b, toBlock: Math.min(latest, b + 49_999) });
+        for (const l of logs) ids.delete(BigInt(l.topics[3]));
+      }
     }
     const mine = [];
     for (const id of ids) if ((await contracts.registry.ownerOf(id).catch(() => ethers.ZeroAddress)).toLowerCase() === addr.toLowerCase()) mine.push(id);
@@ -779,7 +790,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     const mine = await credit.agentsOf(wallet.address);
     if (mine.length === 1) return (agentCache = mine[0]);
     if (mine.length > 1) throw new ToolError(`This wallet owns several agent identities (${mine.map((i) => "#" + i).join(", ")}). Set PRIORS_AGENT_ID or pass agent_id.`);
-    throw new ToolError("This wallet owns no Priors agent identity minted since the v2 deploy. Set PRIORS_AGENT_ID if it owns an older one, or register first (`npx priors-v2 join`, from a clone of github.com/priors-agents/priors).");
+    throw new ToolError("This wallet owns no Priors agent identity minted to it since the v2 deploy and held ever since. Set PRIORS_AGENT_ID if it owns an older one, or one that left it and came back, or register first (`npx priors-v2 join`, from a clone of github.com/priors-agents/priors).");
   }
 
   function needWallet(action) {
@@ -1201,7 +1212,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
 
   tool("repay", {
     title: "Repay Priors loans",
-    description: "Repay the agent's own Priors loans in full (principal + fee) from the configured wallet's USDG; a loan of another agent is refused. Give either loan_id for one loan, or all: true to repay every open loan, earliest due first, as far as the balance covers. Moves real money: state the amounts (credit_status lists them) to the user and get their go-ahead first. The answer ends with share facts for each loan repaid (the amount, on time or late, the agent's record page), also as structured content with a suggested line; this server never posts anything.",
+    description: "Repay the agent's own Priors loans in full (principal + fee) from the configured wallet's USDG; a loan of another agent, or one opened while someone else held the agent, is refused. Give either loan_id for one loan, or all: true to repay every open loan, earliest due first, as far as the balance covers. Moves real money: state the amounts (credit_status lists them) to the user and get their go-ahead first. The answer ends with share facts for each loan repaid (the amount, on time or late, the agent's record page), also as structured content with a suggested line; this server never posts anything.",
     inputSchema: {
       loan_id: z.number().int().nonnegative().optional().describe("The loan to repay."),
       all: z.boolean().optional().describe("true: repay every open loan of the agent, earliest due first."),
@@ -1216,9 +1227,15 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     // not for others. PRIORS_AGENT_ID alone is not proof: a stale or mistyped id would point at someone else's agent.
     const id = await resolveAgent();
     await needController(id);
+    // Only loans the agent's current owner took: one opened while someone else held the agent is theirs (the pool marks
+    // them if it defaults), and an identity that changed hands can arrive carrying it (GHSA-mmp8).
+    const holder = String(await credit.agentOwner(id)).toLowerCase();
+    const openedBy = async (loanId) => { const o = String(await credit.loanOwner(loanId)); return o.toLowerCase() === holder ? null : o; };
     if (loan_id !== undefined) {
       const owner = BigInt(await credit.loanAgent(BigInt(loan_id)));
       if (owner !== id) throw new ToolError(`loan #${loan_id} belongs to agent #${owner}, not to agent #${id}. This tool only repays the configured agent's own loans.`);
+      const other = await openedBy(BigInt(loan_id));
+      if (other) throw new ToolError(`loan #${loan_id} was opened by ${other}, which held agent #${id} then; its owner now (${holder}) did not take it, so this tool does not repay it. Nothing was paid.`);
       // the due is read inside the savings step: a failed read there never stops the repayment
       if (use_savings) await fromSavings(() => credit.loanDue(BigInt(loan_id)), pre, deadline);
       let r;
@@ -1231,15 +1248,18 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     }
     const s = await credit.status(id);
     if (s.openLoans.length === 0) return `Agent #${id} has no open loan. Nothing was repaid.`;
-    if (use_savings) await fromSavings(s.openLoans.reduce((a, l) => a + l.due, 0n), pre, deadline);
+    const own = [], theirs = [];
+    for (const l of s.openLoans) { const other = await openedBy(l.loanId); if (other) theirs.push({ ...l, other }); else own.push(l); }
+    if (use_savings && own.length) await fromSavings(own.reduce((a, l) => a + l.due, 0n), pre, deadline);
     const done = [], left = [], repaid = [];
     let stop = null;
-    for (const l of s.openLoans) {
+    for (const l of own) {
       if (stop) { left.push(l); continue; }
       try { const r = await credit.repay(l.loanId); done.push(`loan #${r.loanId}: ${usd(r.paid)}, tx ${r.hash}`); repaid.push({ loanId: r.loanId, agentId: r.agentId, paid: r.paid, dueAt: l.dueAt }); } catch (e) { stop = explain(e); left.push(l); }
     }
     const out = [...pre, done.length ? `Repaid for agent #${id}:\n- ${done.join("\n- ")}` : `Nothing was repaid for agent #${id}.`];
     if (left.length) out.push(`Still open: ${left.map((l) => `#${l.loanId} (${usd(l.due)} due ${when(l.dueAt)})`).join(", ")}.${stop ? ` Stopped because: ${stop}` : ""}`);
+    if (theirs.length) out.push(`Not repaid, as the agent's owner now (${holder}) did not take them: ${theirs.map((l) => `#${l.loanId} (${usd(l.due)} due ${when(l.dueAt)}), opened by ${l.other} while it held the agent`).join("; ")}.`);
     if (repaid.length === 0) return out.join("\n");
     const share = await shareOf(repaid, id, deadline);
     out.push(shareText(share));

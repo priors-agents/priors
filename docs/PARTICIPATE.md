@@ -86,8 +86,9 @@ else.
   **RPC**: `PRIORS_RPC`, else `RPC_URL` (a comma-separated failover list, as for v1), else Robinhood Chain's
   official endpoint. On a real chain, an RPC that a `.env` names must be one of the public endpoints `.env.example`
   lists, unless it is exported in the shell or `PRIORS_ALLOW_CUSTOM_RPC=1` is (a `.env` cannot set it).
-- **Identity lookup**: the key's identity minted to it since the v2 deploy is found automatically; an older one (for
-  example a v1 agent), or one transferred to the key, needs `PRIORS_AGENT_ID`.
+- **Identity lookup**: the key's identity minted to it since the v2 deploy, and never sent away since, is found
+  automatically; an older one (for example a v1 agent), one transferred to the key, or one that left it and came back,
+  needs `PRIORS_AGENT_ID`. `repay` pays only loans the agent's owner now took (GHSA-mmp8).
 - **Two seat vaults**: with `seatVaultV4` in the record, `join --seat` takes the staker's offer on the growth seat
   vault (V4) if there is one, else on V3, and `status` reads the seat on whichever vault sponsors the agent.
 - **Exit codes**: 0 done, 1 failed, 2 usage or configuration, 3 waiting on someone else (no seat offer yet).

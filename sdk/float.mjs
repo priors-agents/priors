@@ -328,10 +328,12 @@ export async function resend(url, paymentHeader, { init = {}, fetchImpl = fetch,
 }
 
 /**
- * Repay the agent's open loans, earliest due first, while its USDG balance covers principal + fee.
- * @returns {Promise<{repaid: bigint[], open: bigint[]}>}
+ * Repay the agent's open loans, earliest due first, while its USDG balance covers principal + fee. Only loans the
+ * agent's owner now took: one opened while someone else held the agent stays in `open` and is listed in `others`
+ * with who opened it (GHSA-mmp8). `ownerOf(agentId)` is for tests; by default the pool's registry is asked.
+ * @returns {Promise<{repaid: bigint[], open: bigint[], others: Array<{loanId: bigint, openedBy: string}>}>}
  */
-export async function settleLoans({ signer, pool, agentId }) {
+export async function settleLoans({ signer, pool, agentId, ownerOf }) {
   const poolC = poolContract(pool, signer);
   const me = await signer.getAddress();
   // Only the signer's own agent: a wrong or stale agentId would otherwise pay a stranger's loans.
@@ -340,10 +342,12 @@ export async function settleLoans({ signer, pool, agentId }) {
   const ids = await poolC.loansOf(agentId);
   const loans = (await Promise.all(ids.map(async (id) => ({ id, l: await poolC.getLoan(id) })))).filter((x) => x.l.status === LOAN_ACTIVE);
   loans.sort((a, b) => (a.l.dueAt < b.l.dueAt ? -1 : a.l.dueAt > b.l.dueAt ? 1 : 0));
-  const repaid = [], open = [];
+  const repaid = [], open = [], others = [];
+  const holder = loans.length ? String(ownerOf ? await ownerOf(agentId) : await new ethers.Contract(await poolC.registry(), REGISTRY_OWNER_ABI, signer).ownerOf(agentId)).toLowerCase() : "";
   let balance = await usdg.balanceOf(me);
   const target = await poolC.getAddress();
   for (const { id, l } of loans) {
+    if (String(l.owner).toLowerCase() !== holder) { open.push(id); others.push({ loanId: id, openedBy: l.owner }); continue; }
     const due = l.principal + l.fee;
     if (balance < due) { open.push(id); continue; }
     if ((await usdg.allowance(me, target)) < due) await (await usdg.approve(target, due)).wait();
@@ -351,5 +355,5 @@ export async function settleLoans({ signer, pool, agentId }) {
     balance -= due;
     repaid.push(id);
   }
-  return { repaid, open };
+  return { repaid, open, others };
 }

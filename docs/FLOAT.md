@@ -30,6 +30,8 @@ await priors.settleLoans(agentId);                     // later, once the agent 
 
 The functional form is `pay(url, { signer, pool, agentId, ... })`, `resend(url, paymentHeader)` and
 `settleLoans({ signer, pool, agentId })` from `priors/float`; `priors.resend(url, paymentHeader)` is the same `resend`.
+`settleLoans` repays only loans the agent's owner now took: a loan opened while someone else held the agent stays in
+`open` and is listed in `others` with who opened it (GHSA-mmp8).
 
 ## What `pay()` does
 

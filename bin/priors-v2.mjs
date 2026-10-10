@@ -78,8 +78,9 @@ const when = (t) => new Date(t * 1000).toISOString().replace(".000Z", "Z");
 
 /**
  * The identity this key acts for: PRIORS_AGENT_ID, else the one the invite names if the key owns it, else the one
- * identity it holds that was minted to it since the v2 deploy. null if it holds none. Only a mint counts: anyone can
- * transfer an identity with an open loan to this key, and `repay` would then pay that loan (own audit 2026-10-01).
+ * identity it holds that was minted to it since the v2 deploy and never left it. null if it holds none. Only a mint
+ * counts: anyone can transfer an identity with an open loan to this key, and `repay` would then pay that loan (own
+ * audit 2026-10-01); one that left and came back carries what its interim holder borrowed (GHSA-mmp8).
  */
 async function findAgent(sdk, me, addresses, hint) {
   const reg = await sdk._registry();
@@ -101,11 +102,19 @@ async function findAgent(sdk, me, addresses, hint) {
     const logs = await sdk.provider.getLogs({ address: await reg.getAddress(), topics: [T, ethers.zeroPadValue(ethers.ZeroAddress, 32), ethers.zeroPadValue(me, 32)], fromBlock: b, toBlock: Math.min(latest, b + 49_999) });
     for (const l of logs) ids.add(BigInt(l.topics[3]));
   }
+  // then drop any that left this key since, even if it came back
+  if (ids.size) {
+    const asked = [...ids].map((id) => ethers.toBeHex(id, 32));
+    for (let b = from; b <= latest; b += 50_000) {
+      const logs = await sdk.provider.getLogs({ address: await reg.getAddress(), topics: [T, ethers.zeroPadValue(me, 32), null, asked], fromBlock: b, toBlock: Math.min(latest, b + 49_999) });
+      for (const l of logs) ids.delete(BigInt(l.topics[3]));
+    }
+  }
   const mine = [];
   for (const id of ids) if (await owns(id)) mine.push(Number(id));
   if (mine.length === 1) return mine[0];
   if (mine.length > 1) throw new UsageError(`this key owns identities ${mine.map((i) => "#" + i).join(", ")}: set PRIORS_AGENT_ID to pick one`);
-  throw new UsageError("this key owns an identity that was not minted to it since the v2 deploy (minted earlier, or transferred to it): set PRIORS_AGENT_ID to the id you mean to use, only one you know is yours");
+  throw new UsageError("this key owns an identity that was not minted to it since the v2 deploy and held ever since (minted earlier, transferred to it, or back after leaving it): set PRIORS_AGENT_ID to the id you mean to use, only one you know is yours");
 }
 
 async function needAgent(sdk, me, addresses) {
@@ -186,8 +195,18 @@ async function borrow(pos, flags) {
 async function repay(flags) {
   const { sdk, wallet, addresses } = await config();
   const id = await needAgent(sdk, wallet.address, addresses);
-  const open = (await sdk.openLoans(id)).sort((x, y) => x.dueAt - y.dueAt || x.loanId - y.loanId);
-  if (open.length === 0) { console.log(`agent #${id} has no open loan`); return; }
+  const all = (await sdk.openLoans(id)).sort((x, y) => x.dueAt - y.dueAt || x.loanId - y.loanId);
+  if (all.length === 0) { console.log(`agent #${id} has no open loan`); return; }
+  // Only loans the agent's owner now took: one opened while someone else held the agent is theirs (the pool marks them
+  // if it defaults), and an identity that changed hands can arrive carrying it (GHSA-mmp8).
+  const holder = (await (await sdk._registry()).ownerOf(id)).toLowerCase();
+  const open = [];
+  for (const l of all) {
+    const by = (await sdk.pool.getLoan(l.loanId)).owner;
+    if (by.toLowerCase() === holder) open.push(l);
+    else console.log(`not repaid: loan #${l.loanId} (${usd(l.due)} due ${when(l.dueAt)}) was opened by ${by} while it held agent #${id}, not by its owner now`);
+  }
+  if (open.length === 0) { console.log(`agent #${id} has no open loan its owner now took: nothing repaid`); return; }
   for (const l of flags.all ? open : open.slice(0, 1)) {
     const r = await sdk.repay(l.loanId, { agentId: id }); // the pool refuses a loan that is not this agent's
     console.log(`repaid loan #${l.loanId}: ${usd(r.paid)}, tx ${r.hash}`);

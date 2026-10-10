@@ -201,7 +201,7 @@ Refusals throw a `PayError` with a `code`: `PRICE_ABOVE_MAX_PRICE`, `PRICE_ABOVE
 `UNSUPPORTED_TRANSFER_METHOD` (a requirement that is not EIP-3009), `BAD_NETWORK` (a `networks` entry not in the
 allowlist), `BASE_FLOAT_SHORT` (a Base requirement, and the wallet's USDC on Base, less what `baseReserve()` keeps
 back, is short of the price: nothing was signed; `price`, `balance`, `reserve`, `network` and `asset` on the error),
-`NOT_CONTROLLER` (`repayLoan`, `settleLoans`). The
+`NOT_CONTROLLER` (`repayLoan`, `settleLoans`), `NOT_OWNERS_LOAN` (`repayLoan`, 0.6.3). The
 bridge (below) adds its own codes. The credit helpers add
 `LOAN_SIZE_OUT_OF_RANGE` (`quoteBorrow`, `borrowLine`), `LOAN_NOT_ACTIVE`, `INSUFFICIENT_USDG`, `REPAY_WOULD_REVERT`
 (`repayLoan`) and `NO_STOCK_VAULT` (`stockPosition`, `stockAssets`).
@@ -227,7 +227,9 @@ const fetchWithPay = wrapFetchWithPayment(fetch, createUsdgClient({ signer, maxP
 `borrowLine`, `repayLoan`, `settleLoans`, `balances`, `borrowGap`, plus `poolContract`, `explainRevert` (a revert as
 `Name(args)`), `LOAN_STATUS` and the ABIs (`POOL_ABI`, `LENS_ABI`, `ERC20_ABI`, `STOCK_VAULT_ABI`). `repayLoan` pays
 only a loan of an agent the signer controls (owner or pool delegate); any other loan is refused with `NOT_CONTROLLER`
-before anything is sent.
+before anything is sent. From 0.6.3 it also pays only a loan the agent's owner now took: a loan opened while someone
+else held the agent (`Loan.owner` is another address) is refused with `NOT_OWNERS_LOAN`, and `settleLoans` leaves such
+loans in `open` and lists them in `others` with who opened them (GHSA-mmp8).
 
 Stock lines (the Priors stock vault, `robinhood.stockVault`, backs a line with the agent's own stock tokens;
 `creditContracts` reads it unless `addresses.stockVault` says otherwise): `creditStatus` carries `collateral` {
