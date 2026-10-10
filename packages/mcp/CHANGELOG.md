@@ -1,5 +1,10 @@
 # @priors/mcp changelog
 
+## 0.8.2 (2026-10-10)
+
+- **On `@priors/x402` 0.6.4**, whose merchant-side `recordGate` keeps a bounded cache (GHSA-vjcp-qx2h-gr2q). The MCP
+  server does not use the gate; nothing else changes from 0.8.1.
+
 ## 0.8.1 (2026-10-10)
 
 - **`repay` pays only loans the agent's owner now took** (GHSA-mmp8-g8jw-7gqp). A loan opened while someone else

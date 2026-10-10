@@ -279,6 +279,8 @@ export interface RecordGateOptions {
   tiers?: Array<{ minRepaid: number; price: string }>;
   basePrice?: string | null;
   cacheSeconds?: number;
+  /** At most this many payers' records are kept (default 10,000); then the expired ones go, then the oldest (0.6.4). */
+  cacheMax?: number;
   fetchImpl?: typeof fetch;
   onDecision?: (d: { payer: string; record: PriorsRecord | null; ok: boolean; reason?: string; message?: string }) => void;
 }

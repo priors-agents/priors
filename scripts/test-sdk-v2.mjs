@@ -384,6 +384,32 @@ await check("GHSA-mmp8: priors-v2 repay never pays a loan opened while someone e
   } finally { c.server.close(); }
 });
 
+await check("GHSA-rr73: a PRIORS_AGENT_ID from a .env does not make repay pay a loan the agent's owner now did not take", async () => {
+  const me = ethers.Wallet.createRandom();
+  const pool = new ethers.Interface(POOL_V2_ABI);
+  const P = readDeploymentV2(4663).pool.toLowerCase();
+  const STRANGER = "0x" + "ab".repeat(20);
+  const due = Math.floor(Date.now() / 1000) + 86400;
+  // agent #9, bought by this key, still carries the seller's loan #300
+  const loan = [9n, 1n, 10_000000n, 20_000n, 0n, 0n, 0n, STRANGER, 1n, BigInt(due), BigInt(due + 3 * 86400), 0n, 0n, 1];
+  const c = await chain({
+    call: ({ to, data }) => {
+      if (to.toLowerCase() === REG && data.startsWith(sel("ownerOf(uint256)"))) return ethers.zeroPadValue(me.address, 32);
+      if (to.toLowerCase() !== P) return undefined;
+      if (data.startsWith(sel("loansOf(uint256)"))) return pool.encodeFunctionResult("loansOf", [[300n]]);
+      if (data.startsWith(sel("getLoan(uint256)"))) return pool.encodeFunctionResult("getLoan", [loan]);
+      return undefined;
+    },
+  });
+  const dir = inDir("PRIORS_AGENT_ID=9\n");
+  try {
+    const r = await run("priors-v2.mjs", ["repay", "--all"], { PRIORS_KEY: me.privateKey, PRIORS_RPC: c.url }, dir);
+    assert.match(r.stdout + r.stderr, new RegExp(`loan #300 .*opened by ${STRANGER}`, "i"));
+    assert.ok(!/repaid loan #300/.test(r.stdout), `it repaid: ${r.stdout}`);
+    assert.ok(!c.seen.some((q) => /send|estimate/i.test(q.method)), `something was sent: ${c.seen.map((q) => q.method)}`);
+  } finally { c.server.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 await check("GHSA-95v6: on a real chain, an addresses file from a .env must keep the published deployBlock, unless the opt-in is exported", async () => {
   const c = await chain();
   const dir = inDir("");

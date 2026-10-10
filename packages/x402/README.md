@@ -108,6 +108,7 @@ recordGate({ refuseDefaulted: true, minRepaid: 1 }).attach(server); // then paym
 | `rpc`, `pool` | public RPC, the published pool | for `source: "chain"` |
 | `tiers`, `basePrice` | none | prices by record: `tiers: [{ minRepaid: 3, price: "$0.01" }]`, `basePrice: "$0.02"` |
 | `cacheSeconds` | `60` | how long a payer's record is reused |
+| `cacheMax` | `10000` | (0.6.4) at most this many records kept; then the expired ones go, then the oldest. With `source: "api"` the record is keyed by the payer only, so `X-Priors-Agent` adds no entry |
 | `onDecision` | none | called with `{ payer, record, ok, reason }` for each payment |
 
 A record that cannot be read refuses rather than serves on a guess.

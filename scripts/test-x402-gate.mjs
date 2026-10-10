@@ -142,4 +142,23 @@ await t("a record that cannot be read refuses (never serves on a guess), and rea
   assert.equal(apiCalls - before, 1);
 });
 
+await t("GHSA-vjcp: the cache stays bounded: in API mode X-Priors-Agent does not make a new entry, and cacheMax evicts the oldest", async () => {
+  const gate = recordGate({ fetchImpl });
+  const before = apiCalls;
+  for (let i = 0; i < 1000; i++) {
+    const transportContext = { request: { adapter: { getHeader: (h) => (h === "x-priors-agent" ? String(100000 + i) : undefined) } } };
+    await gate.beforeVerify({ paymentPayload: payment(GOOD, 10_000), requirements: requirements(10_000), transportContext });
+  }
+  assert.equal(apiCalls - before, 1, "one payer, one read, whatever agent the header names");
+  const small = recordGate({ fetchImpl, cacheMax: 3 });
+  const addrs = ["0x" + "a1".repeat(20), "0x" + "a2".repeat(20), "0x" + "a3".repeat(20), "0x" + "a4".repeat(20)];
+  for (const a of addrs) await small.recordOf(a);
+  const n = apiCalls;
+  await small.recordOf(addrs[3]);
+  assert.equal(apiCalls, n, "the newest entry is still cached");
+  await small.recordOf(addrs[0]);
+  assert.equal(apiCalls, n + 1, "the oldest was evicted once the cache held cacheMax entries");
+  assert.throws(() => recordGate({ fetchImpl, cacheMax: 0 }), /cacheMax/);
+});
+
 console.log(`\n${passed} passed`);

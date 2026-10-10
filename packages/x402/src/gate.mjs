@@ -78,10 +78,11 @@ const dollars = (p) => Number(String(p).replace(/^\$/, ""));
  */
 export function recordGate(opts = {}) {
   const { source = "api", checkUrl = CHECK_API, rpc = robinhood.rpcUrl, pool, refuseDefaulted = true, minRepaid = 0, minScore = null,
-    tiers = [], basePrice = null, cacheSeconds = 60, fetchImpl = globalThis.fetch, onDecision = null } = opts;
+    tiers = [], basePrice = null, cacheSeconds = 60, cacheMax = 10_000, fetchImpl = globalThis.fetch, onDecision = null } = opts;
   if (source !== "api" && source !== "chain") throw new TypeError(`recordGate: source must be "api" or "chain" (got ${JSON.stringify(source)})`);
   if (!(Number.isInteger(minRepaid) && minRepaid >= 0)) throw new TypeError("recordGate: minRepaid must be a whole number");
   if (tiers.length && basePrice === null) throw new TypeError("recordGate: tiers need basePrice (the price without a record)");
+  if (!(Number.isInteger(cacheMax) && cacheMax >= 1)) throw new TypeError("recordGate: cacheMax must be a whole number of at least 1");
   const cache = new Map();
   let contracts = null;
 
@@ -105,12 +106,22 @@ export function recordGate(opts = {}) {
     const defaulted = s.defaulted || (await marked(address)) || (await marked(s.owner));
     return { known: s.enrolled || defaulted, agents: [Number(agentId)], defaulted, loansRepaid: Number(s.loansRepaid), score: s.score };
   }
-  /** The record of `address` (and, for the chain source, of the agent it names), cached `cacheSeconds`. */
+  /**
+   * The record of `address` (and, for the chain source, of the agent it names), cached `cacheSeconds`, at most
+   * `cacheMax` entries. The API source reads the address alone, so the agent a caller names is not part of its key:
+   * otherwise each new `X-Priors-Agent` value, unpaid, would add an entry and a read (GHSA-vjcp). When it holds
+   * `cacheMax` entries, the expired ones go, then the oldest.
+   */
   async function recordOf(address, agentId = null) {
-    const key = `${ethers.getAddress(address)}:${agentId ?? ""}`;
+    const named = source === "chain" && agentId !== null && agentId !== undefined ? String(agentId) : "";
+    const key = `${ethers.getAddress(address)}:${named}`;
     const hit = cache.get(key);
-    if (hit && hit.until > Date.now()) return hit.record;
+    const now = Date.now();
+    if (hit && hit.until > now) return hit.record;
     const record = source === "api" ? await readApi(ethers.getAddress(address)) : await readChain(ethers.getAddress(address), agentId);
+    cache.delete(key);
+    if (cache.size >= cacheMax) for (const [k, v] of cache) { if (v.until <= now) cache.delete(k); }
+    while (cache.size >= cacheMax) cache.delete(cache.keys().next().value);
     cache.set(key, { record, until: Date.now() + cacheSeconds * 1000 });
     return record;
   }
