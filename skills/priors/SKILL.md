@@ -92,7 +92,7 @@ npx priors-v2 join --seat <stakerAddress>                             # a staker
 
 Ways it legitimately fails, and what they mean:
 
-- **`EpochCapReached`** — treasury v4 has spent its $25 of new lines for this 7-day epoch. Wait, or find a backer
+- **`EpochCapReached`** — treasury v4 has spent its $100 of new lines for this 7-day epoch. Wait, or find a backer
   or open a stock line (a seat needs 10 repaid loans). Do not retry in a loop.
 - **`NotInvited` / `InviteExpired` / `InviteUsed`** — the code is wrong, stale, or spent. Ask for a new one. There
   is no path around the invite; that is the gate working.
