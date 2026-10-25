@@ -40,6 +40,17 @@ export const TAG1 = "priors-score";
  * force at its block's own time (scripts/verify-attestation.mjs).
  */
 export const LATE_WINDOW_SCHEDULE = Object.freeze([Object.freeze({ version: "2.0.3", from: "2026-11-02T00:00:00Z" })]);
+/** Throws unless each entry's `from` is a real instant later than the entry before it: scheduledWeights takes the last
+ *  entry in force in array order, so an entry out of order would be read wrong. Run on LATE_WINDOW_SCHEDULE at load. */
+export function checkLateWindowSchedule(schedule) {
+  let prev = -Infinity;
+  for (const e of schedule) {
+    const t = Date.parse(e && e.from);
+    if (!(t > prev)) throw new Error(`LATE_WINDOW_SCHEDULE: ${JSON.stringify(e && e.from)} is not a real instant later than the entry before it: entries go strictly in time order`);
+    prev = t;
+  }
+}
+checkLateWindowSchedule(LATE_WINDOW_SCHEDULE);
 /** The weights version LATE_WINDOW_SCHEDULE puts in force at unix time `t` (seconds), or null before its first entry. */
 export function scheduledWeights(t) {
   let v = null;

@@ -5,12 +5,13 @@
 // the contract its v1 citations were checked against, so the attester's key, leaked, could make a fabricated history
 // pass). And a cited repayment is read with the late window of the weights in force at the note's block, by the block's
 // own time (24 hours after the due time from weights 2.0.3, 2026-11-02 00:00 UTC), never wider than the window of the
-// weights the note names. The chain side, against a fork of the real registry, is scripts/test-attest-fork.mjs.
+// weights the note names (none for a version the verifier does not know); the schedule goes strictly in time order. The
+// chain side, against a fork of the real registry, is scripts/test-attest-fork.mjs.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import { ethers } from "ethers";
-import { encodeFile, REPUTATION_REGISTRY, IDENTITY_REGISTRY, ATTESTER, NEW_FEEDBACK, BORROWED, TAG1 } from "../sdk/attestation.mjs";
+import { encodeFile, REPUTATION_REGISTRY, IDENTITY_REGISTRY, ATTESTER, NEW_FEEDBACK, BORROWED, TAG1, LATE_WINDOW_SCHEDULE, checkLateWindowSchedule } from "../sdk/attestation.mjs";
 import DEP from "../deployments/4663.v2.json" with { type: "json" };
 
 let passed = 0;
@@ -218,6 +219,31 @@ try {
     const { r, cited } = await cite({ blockTime: SWITCH_203 + HOUR, weights: "2.0.1", lateBy: HOUR });
     assert.equal(cited?.status, "FAIL", show(r));
     assert.equal(r.code, 1, show(r));
+  });
+
+  await t("a note from 2026-11-02 that names weights this verifier does not know (9.9.9) or a malformed version (foo) gets no window: a repayment 1 hour late fails", async () => {
+    for (const weights of ["9.9.9", "foo"]) {
+      const { r, cited } = await cite({ blockTime: SWITCH_203 + HOUR, weights, lateBy: HOUR });
+      assert.match(line(r, /^late window$/)?.detail || "", /^0 s after the due time/, `${weights}\n${show(r)}`);
+      assert.equal(cited?.status, "FAIL", `${weights}\n${show(r)}`);
+      assert.equal(r.code, 1, `${weights}\n${show(r)}`);
+    }
+  });
+
+  await t("a note from 2026-11-02 that names 9.9.9 and cites a repayment at its due time passes: only the window is withheld", async () => {
+    const { r, cited } = await cite({ blockTime: SWITCH_203 + HOUR, weights: "9.9.9", lateBy: 0 });
+    assert.equal(cited?.status, "ok", show(r));
+    assert.equal(r.code, 0, show(r));
+  });
+
+  await t("LATE_WINDOW_SCHEDULE goes strictly in time order (checked when sdk/attestation.mjs loads): an entry no later than the one before it, or no real instant, throws", () => {
+    assert.doesNotThrow(() => checkLateWindowSchedule(LATE_WINDOW_SCHEDULE));
+    const a = { version: "2.0.3", from: "2026-11-02T00:00:00Z" }, b = { version: "2.0.4", from: "2026-12-01T00:00:00Z" };
+    assert.doesNotThrow(() => checkLateWindowSchedule([a, b]));
+    assert.throws(() => checkLateWindowSchedule([b, a]), /strictly in time order/, "earlier after later");
+    assert.throws(() => checkLateWindowSchedule([a, { ...b, from: a.from }]), /strictly in time order/, "the same instant twice");
+    assert.throws(() => checkLateWindowSchedule([a, { ...b, from: "2026-12-01T25:00:00Z" }]), /strictly in time order/, "no real instant");
+    assert.throws(() => checkLateWindowSchedule([{ version: "2.0.3" }]), /strictly in time order/, "no instant at all");
   });
 } finally {
   server.close();
