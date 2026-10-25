@@ -1,5 +1,17 @@
 # @priors/mcp changelog
 
+## 0.11.1 (2026-10-25)
+
+- **The daily limits count a call that ends while another server checks them.** With `PRIORS_MAX_SPEND_DAY_USD` or
+  `PRIORS_MAX_BORROW_DAY_USD` set and several servers sharing one `PRIORS_STATE_DIR`, a check read the day's entries,
+  then the markers of the calls in flight, in two listings. A call begun before 00:00 UTC that ended between them (its
+  entry moved into the new day, then its marker removed) was in neither, and another server's call could pass the
+  day's limit (50 USDG against 25). The markers are now listed first, so such a call is counted at least once, and at
+  worst twice for that one check: a refusal near the limit, which passes on a retry. `credit_status`'s "Today (UTC)"
+  reads through the same check. A single server was not affected: its money calls run one at a time. 0.8.5 to 0.11.0.
+- **undici 6.29.1** (from 6.29.0): its fixes for an unhandled error on a response with too many content encodings,
+  and for unbounded memory in its EventSource parser.
+
 ## 0.11.0 (2026-10-24)
 
 - **`find_services` lists only the merchants Go mode's Tools lists.** The ones Priors approved, and the ones under review

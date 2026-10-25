@@ -25,9 +25,11 @@
 // it ends, its entry becomes what it did, filed in the day it ended (never in a day before the one it started: a
 // clock set back moves nothing back), and only then does its marker go. So a borrow sent before 00:00 UTC that lands
 // after counts in the new day, and while it is still in flight a call another process makes after midnight already
-// sees it. A process that dies mid-call leaves its entry at its most in the day it started and its marker counted
-// PENDING_DAYS days more, the safe direction. Days before yesterday, and markers older than that count, are deleted as
-// new days begin. A file whose name is not a ledger entry is left alone and not counted.
+// sees it. A reader lists the markers before the day's entries, so a call that ends while another process lists the
+// ledger is counted at least once (0.11.1). A process that dies mid-call leaves its entry at its most in the day it
+// started and its marker counted PENDING_DAYS days more, the safe direction. Days before yesterday, and markers older
+// than that count, are deleted as new days begin. A file whose name is not a ledger entry is left alone and not
+// counted.
 // SHORTCUT: a call still in flight more than PENDING_DAYS days after the day it started stops counting in later days.
 // Ceiling: none on this chain, whose sequencer includes or refuses a transaction within seconds and whose forced
 // inclusion is bounded to 24 h. Upgrade trigger: a money call that can stay in flight longer.
@@ -112,9 +114,12 @@ export function dailyLedger({ stateDir, owners, owner, caps, now = () => Date.no
   /** Takes a call's files back (a refusal, or a ledger that could not be written): best effort, since one left behind
    *  only counts too much, the safe direction. */
   const drop = (files) => { for (const f of files) { try { fs.unlinkSync(join(f.dir, f.name)); } catch (_) { /* counted */ } } };
-  /** What an owner's ledger holds on `day`: that day's entries, and the calls started before it still in flight. */
+  /** What an owner's ledger holds on `day`: that day's entries, and the calls started before it still in flight.
+   *  The markers are listed BEFORE the day's entries (0.11.1): settle() files a call's entry in its new day first and
+   *  only then removes its marker, so a settle that runs between the two listings is seen in one of them, or in both
+   *  (counted twice for this check, the safe direction), never in neither. */
   const totalOn = (o, day) => {
-    const a = sum(join(rootOf(o), day), fs), p = inFlight(join(rootOf(o), PENDING), day, fs);
+    const p = inFlight(join(rootOf(o), PENDING), day, fs), a = sum(join(rootOf(o), day), fs);
     return { signed: a.signed + p.signed, borrowed: a.borrowed + p.borrowed };
   };
   return {
