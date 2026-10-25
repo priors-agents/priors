@@ -25,8 +25,8 @@ is here and the door is open. If you want it to pay rent, it will not.
 | **Medium** | A rule can be bypassed with a privileged key that should not be able to bypass it, or a griefing path that costs others money without profiting you. | **$50** |
 | **Low / Informational** | Wrong behaviour with no path to loss: a misleading view, a revert that should not happen, a documented rule the code does not implement. | public credit and acknowledgement only, no payout |
 
-Paid in USDG on Robinhood Chain, or in whatever else we can agree on. One award per root cause, not per call
-site. Anything below Medium is credited in public, not paid. We would rather say that here than argue about it
+Paid in USDG on Robinhood Chain only, as soon as the amount is agreed, to the address the reporter confirms on the
+advisory. One award per root cause, not per call site. Anything below Medium is credited in public, not paid. We would rather say that here than argue about it
 afterwards. These amounts apply from 2026-10-18; a report received before then keeps the award it was told.
 
 Severity is our judgement, argued in writing with you, not a number we pick in private. If you disagree with
