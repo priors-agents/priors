@@ -6,12 +6,12 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { execFile } from "node:child_process";
-import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { writeFileSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ethers } from "ethers";
 import * as P from "../sdk/credit-profile.mjs";
-import { readCredit, findEntries, openEntry, LIMITS } from "../sdk/credit-reader.mjs";
+import { readCredit, findEntries, openEntry, readManifest, LIMITS } from "../sdk/credit-reader.mjs";
 import { REPUTATION_REGISTRY, REGISTRY_ABI, NEW_FEEDBACK } from "../sdk/attestation.mjs";
 
 let passed = 0;
@@ -148,22 +148,27 @@ const canon = (v) => (v === null || typeof v !== "object" ? JSON.stringify(v) : 
 class Lender {
   constructor(chain, contract, token, start) { Object.assign(this, { chain, contract: ethers.getAddress(contract), token: ethers.getAddress(token), start }); this.loans = new Map(); }
   source(end = null) { return { chainId: CHAIN, contract: this.contract, blocks: [this.start, end], events: EV, fields: { amount: "principal", dueAt: "dueAt" } }; }
-  borrow(loan, agent, principal, block, { dueIn = 100, paid = principal } = {}) {
+  /** `also`: a token whose own contract logs the same transfer in the same transaction (a borrower's contract that
+   *  calls the pool, then makes a token of its own log Transfer(pool, to, amount)). */
+  borrow(loan, agent, principal, block, { dueIn = 100, paid = principal, also = null } = {}) {
     const dueAt = time(block) + dueIn;
     const r = this.chain.tx(block, [
       { address: this.token, ...ERC20.encodeEventLog("Transfer", [this.contract, WALLET, paid]) },
       { address: this.contract, ...LI.encodeEventLog("Borrowed", [loan, agent, principal, dueAt]) },
+      ...(also ? [{ address: also, ...ERC20.encodeEventLog("Transfer", [this.contract, WALLET, paid]) }] : []),
     ]);
     this.loans.set(String(loan), { loan: String(loan), agent: BigInt(agent), principal: String(principal), dueAt, open: { block, tx: r.hash, log: r.logs[1].index } });
   }
   /** `quiet`: the close log with no transfer behind it (a contract can emit loan events with no money moving). */
-  close(loan, block, { defaulted = false, quiet = false } = {}) {
+  close(loan, block, { defaulted = false, quiet = false, also = null } = {}) {
     const L = this.loans.get(String(loan));
     const logs = defaulted || quiet ? [] : [{ address: this.token, ...ERC20.encodeEventLog("Transfer", [WALLET, this.contract, L.principal]) }];
     logs.push({ address: this.contract, ...LI.encodeEventLog(defaulted ? "Defaulted" : "Repaid", [loan, L.agent, L.principal]) });
+    const at = logs.length - 1;
+    if (also) logs.push({ address: also, ...ERC20.encodeEventLog("Transfer", [WALLET, this.contract, L.principal]) });
     const r = this.chain.tx(block, logs);
     const closedAt = time(block);
-    L.leaf = { cls: "unsecured", loan: L.loan, amount: L.principal, dueAt: L.dueAt, closedAt, outcome: P.outcomeOf({ defaulted, closedAt, dueAt: L.dueAt }), block, tx: r.hash, log: r.logs.at(-1).index, openBlock: L.open.block, openTx: L.open.tx, openLog: L.open.log };
+    L.leaf = { cls: "unsecured", loan: L.loan, amount: L.principal, dueAt: L.dueAt, closedAt, outcome: P.outcomeOf({ defaulted, closedAt, dueAt: L.dueAt }), block, tx: r.hash, log: r.logs[at].index, openBlock: L.open.block, openTx: L.open.tx, openLog: L.open.log };
     return L.leaf;
   }
   /** What a statement over [from, to] holds for `agent` at this source: its leaves (as source `src`), opened, outstanding. */
@@ -853,6 +858,50 @@ await t("13. a default entry's source is held to the reader's manifest, events a
   chain.mine(170 + 43_300);
   r = await read(AGENT, { writers: [W1], mode: "full", manifest: man });
   assert.match(probs(r), /loan 9: amount 500000000 on chain, 10000 in the file/);
+});
+
+await t("14. the reader's manifest pins the asset: a Transfer log at a token the writer names, run in the loan's own transactions, ties nothing (GHSA-227q)", async () => {
+  const FAKE0 = ethers.getAddress("0x000000000000000000000000000000000000FA4E"); // the borrower's own contract: decimals() 0, symbol() "USDG"
+  const pinned = (src, o = {}) => ({ [W1]: { sources: [src], asset: assetOf(USDG), decimals: 6, ...o } });
+  /** Four honest loans, then a last one borrowed and repaid through a contract that also makes FAKE0 log both legs. */
+  const run = ({ asset = assetOf(FAKE0), decimals = 0, forged = true } = {}) => {
+    const { chain, A } = world();
+    chain.token(FAKE0, 0, "USDG");
+    for (let i = 1; i <= 4; i++) { A.borrow(i, AGENT, 5_000_000, 100 + i * 10); A.close(i, 105 + i * 10); }
+    const also = forged ? FAKE0 : null;
+    A.borrow(5, AGENT, 5_000_000, 160, { also });
+    A.close(5, 165, { also });
+    const f = P.statementFile({ chainId: CHAIN, identityRegistry: IDR, writer: W1, agentId: AGENT, asset, decimals, sources: [A.source()], seq: 1, prev: null, window: { fromBlock: 100, toBlock: 200, toTime: time(200) }, ...A.window(AGENT, 100, 200), createdAt: time(200) + 10, lender: { name: "Test lender" }, anchors: 1 });
+    chain.postEnc(W1, AGENT, 201, P.encodeFile(f));
+    return A;
+  };
+  // the report's statement: the pool's base units in the borrower's 0-decimal token, its one anchor's legs forged
+  let A = run();
+  for (const mode of ["full", "light"]) {
+    const r = await read(AGENT, { writers: [W1], mode, funds: true, manifest: pinned(A.source()) });
+    assert.equal(r.writers[0].status, "failed", `${mode}: 25 USDG counted as ${JSON.stringify(r.totals?.onTime)} at ${r.totals?.decimals} decimals (problems ${JSON.stringify(r.writers[0].problems)})`);
+    assert.match(probs(r), /asset eip155:4663\/erc20:0x0+FA4E \(0 decimals\) is not the reader's manifest's, eip155:4663\/erc20:0x0+5D01 \(6 decimals\)/i);
+    assert.deepEqual(r.counted, {});
+  }
+  // the asset pin holds with --no-funds too: it needs no transfer to read
+  let r = await read(AGENT, { writers: [W1], mode: "full", funds: false, manifest: pinned(A.source()) });
+  assert.equal(r.writers[0].status, "failed");
+  let c = await withManifest(pinned(A.source()), (f) => cli([String(AGENT), "--writer", W1, "--full", "--sources", f]));
+  assert.equal(c.code, 1, c.out);
+  assert.match(c.out, /is not the reader's manifest's/);
+  // the honest statement, the forged logs present or not: rebuilt and counted in the manifest's asset
+  for (const forged of [false, true]) {
+    A = run({ asset: assetOf(USDG), decimals: 6, forged });
+    r = await read(AGENT, { writers: [W1], mode: "full", funds: true, manifest: pinned(A.source()) });
+    assert.deepEqual([r.writers[0].status, r.totals.asset, r.totals.decimals, r.totals.onTime.amount], ["rebuilt", assetOf(USDG), 6, "25000000"], JSON.stringify(r.writers[0].problems));
+  }
+  // a manifest that pins one of the two, or something other than a CAIP-19 ERC-20 id and a decimals count, is refused
+  await assert.rejects(read(AGENT, { writers: [W1], manifest: pinned(A.source(), { decimals: undefined }) }), /asset and decimals/);
+  await assert.rejects(read(AGENT, { writers: [W1], manifest: pinned(A.source(), { asset: "USDG" }) }), /CAIP-19/);
+  await assert.rejects(read(AGENT, { writers: [W1], manifest: pinned(A.source(), { decimals: 256 }) }), /decimals/);
+  // Priors' published manifest pins USDG at 6 decimals for its writer
+  const priors = readManifest(JSON.parse(readFileSync(new URL("../docs/erc-8004-credit/priors-manifest.json", import.meta.url), "utf8"))).get("0x03af41aeb1eea4da0572bbb6ab1b4c5331f17ac7");
+  assert.deepEqual([priors.asset, priors.decimals], ["eip155:4663/erc20:0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168", 6]);
 });
 
 srv.close();
