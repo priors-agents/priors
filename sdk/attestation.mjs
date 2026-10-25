@@ -32,6 +32,20 @@ export const ABOUT = "https://github.com/priors-agents/priors/blob/main/docs/ATT
 /** The published attester, named by /api/check: only this address's entries are Priors'. Owns no agent. */
 export const ATTESTER = "0x613854463BB854225306b9b18bdb451A78430a73";
 export const TAG1 = "priors-score";
+/**
+ * When Priors' published scores changed how long after its due time a repayment still counts as on time: from `from`
+ * on, the window of weights `version` (sdk/score-v2.mjs lateAfterSeconds), until the next entry; none before the first
+ * (2.0.0 to 2.0.2 count any repayment after its due time as late). docs/SCORE-v2.md announces each switch 7 days ahead,
+ * and a score's version follows from its own timestamp, so the verifier reads a note's citations with the window in
+ * force at its block's own time (scripts/verify-attestation.mjs).
+ */
+export const LATE_WINDOW_SCHEDULE = Object.freeze([Object.freeze({ version: "2.0.3", from: "2026-11-02T00:00:00Z" })]);
+/** The weights version LATE_WINDOW_SCHEDULE puts in force at unix time `t` (seconds), or null before its first entry. */
+export function scheduledWeights(t) {
+  let v = null;
+  for (const e of LATE_WINDOW_SCHEDULE) if (Number(t) >= Date.parse(e.from) / 1000) v = e.version;
+  return v;
+}
 /** The words of a note posted because the agent changed owner (`priors.ownerChanged.note`). */
 export const OWNER_CHANGED = "This agent changed owner since Priors' last note. Its Priors score counts the record from the new owner.";
 

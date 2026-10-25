@@ -13,7 +13,10 @@
 //     repayment and the payment below are read from those two, never from an address in the file;
 //   - each cited repayment (priors.repaid.last): the transaction succeeded before priors.block and carries the pool's
 //     Repaid log (the v1 pool's for an "era": "v1" loan) for that loan and agent; the loan (getLoan, today's state, which
-//     cannot change once repaid) is the agent's, repaid, and closed by its due date;
+//     cannot change once repaid) is the agent's, repaid, and not late: closed by its due date plus the late window of the
+//     weights Priors' scores use at priors.block, by that block's own time (sdk/attestation.mjs LATE_WINDOW_SCHEDULE: 24
+//     hours from weights 2.0.3, 2026-11-02 00:00 UTC; none before), never wider than the window of the weights the note
+//     names (priors.weights, tag2 on chain);
 //   - proofOfPayment: the borrow transaction carries the pool's Borrowed log for priors.paid.loan, from the pool to
 //     toAddress, for priors.paid.usdg;
 //   - the line and backing at priors.block (lens creditReport with blockTag = that block: capacity = line.limit,
@@ -26,7 +29,8 @@
 // them). Exit code 0 when nothing failed, 1 on any failure, 2 when the entry carries no v2 file.
 import { ethers } from "ethers";
 import { readFileSync } from "node:fs";
-import { decodeFeedbackURI, usdg, REPUTATION_REGISTRY, IDENTITY_REGISTRY, CHAIN_ID, ATTESTER as PUBLISHED, TAG1, REGISTRY_ABI, NEW_FEEDBACK, BORROWED } from "../sdk/attestation.mjs";
+import { decodeFeedbackURI, usdg, REPUTATION_REGISTRY, IDENTITY_REGISTRY, CHAIN_ID, ATTESTER as PUBLISHED, TAG1, REGISTRY_ABI, NEW_FEEDBACK, BORROWED, scheduledWeights } from "../sdk/attestation.mjs";
+import { weightsFor, lateAfterSeconds } from "../sdk/score-v2.mjs";
 
 const args = process.argv.slice(2);
 const opt = (f) => { const i = args.indexOf(f); return i < 0 ? null : args.splice(i, 2)[1]; };
@@ -116,6 +120,15 @@ ok(same(P.pool, DEP.pool), "priors.pool is the credit pool of deployments/4663.v
 if (P.v1Pool) ok(same(P.v1Pool, DEP.v1Pool), "priors.v1Pool is the v1 pool of deployments/4663.v2.json", P.v1Pool);
 const v1 = P.v1Pool ? new ethers.Contract(DEP.v1Pool, V1_POOL_ABI, provider) : null;
 
+// The late window each cited repayment is read with: that of the weights Priors' scores use at the note's block, by the
+// block's own timestamp (the schedule is published ahead, docs/SCORE-v2.md), and never wider than that of the weights
+// the note names. The note's word cannot widen it, and a note cannot cite as on time what its own weights count late.
+// A version this verifier does not know has none.
+const windowOf = (v) => { try { return v ? lateAfterSeconds(weightsFor(v)) : 0; } catch (_) { return 0; } };
+const inForce = scheduledWeights(blk ? Number(blk.timestamp) : 0);
+const lateAfter = Math.min(windowOf(inForce), windowOf(P.weights));
+say("info", "late window", `${lateAfter} s after the due time; at the block's time: ${inForce ? `weights ${inForce}` : "no window"}; the note names: ${P.weights}`);
+
 // each cited repayment
 for (const c of P.repaid?.last || []) {
   const isV1 = c.era === "v1";
@@ -126,8 +139,8 @@ for (const c of P.repaid?.last || []) {
   // the v1 pool keeps its loans in an array: getLoan of an id it never issued reverts, which fails the citation
   const l = await c_.getLoan(c.loan).catch((e) => { if (e?.code === "CALL_EXCEPTION") return null; throw e; });
   const good = !!rep && !!l && BigInt(rep.topics[2]) === BigInt(agentId) && rc.blockNumber <= Number(P.block)
-    && Number(l.agentId) === agentId && Number(l.status) === REPAID && Number(l.closedAt) <= Number(l.dueAt);
-  ok(good, `${isV1 ? "v1 " : ""}loan ${c.loan} repaid on time by this agent before the note's block`, !rep ? `no Repaid log for it in ${c.tx}` : !l ? `the pool has no loan ${c.loan} (getLoan reverted)` : `tx block ${rc.blockNumber}, closed ${l.closedAt} <= due ${l.dueAt}, ${usdg(l.principal)} USDG`);
+    && Number(l.agentId) === agentId && Number(l.status) === REPAID && Number(l.closedAt) <= Number(l.dueAt) + lateAfter;
+  ok(good, `${isV1 ? "v1 " : ""}loan ${c.loan} repaid on time by this agent before the note's block`, !rep ? `no Repaid log for it in ${c.tx}` : !l ? `the pool has no loan ${c.loan} (getLoan reverted)` : `tx block ${rc.blockNumber}, closed ${l.closedAt} <= due ${l.dueAt}${lateAfter ? ` + ${lateAfter}` : ""}, ${usdg(l.principal)} USDG`);
 }
 say("info", "totals (from the snapshot, not re-derived)", `on time ${P.repaid?.onTime} (${P.repaid?.usdg} USDG), late ${P.late}, defaults ${P.defaults}`);
 

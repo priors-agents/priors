@@ -3,7 +3,9 @@
 // repayments and its payment from the mock. What it checks: a cited repayment and the payment are read from the pools of
 // deployments/4663.v2.json, never from a contract the note names (GHSA-m5wj-mgcg-x3fv: a note's own priors.v1Pool was
 // the contract its v1 citations were checked against, so the attester's key, leaked, could make a fabricated history
-// pass). The chain side, against a fork of the real registry, is scripts/test-attest-fork.mjs.
+// pass). And a cited repayment is read with the late window of the weights in force at the note's block, by the block's
+// own time (24 hours after the due time from weights 2.0.3, 2026-11-02 00:00 UTC), never wider than the window of the
+// weights the note names. The chain side, against a fork of the real registry, is scripts/test-attest-fork.mjs.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
@@ -17,8 +19,9 @@ const t = async (name, fn) => {
   try { await fn(); passed++; console.log(`ok - ${name}`); } catch (e) { failed.push(name); console.log(`not ok - ${name}\n  ${String(e?.message || e).slice(0, 3000).split("\n").join("\n  ")}`); }
 };
 
-const CHAIN = 4663, AGENT = 7634, SCORE = 42, TAG2 = "rung-2/v2.0.1";
+const CHAIN = 4663, AGENT = 7634, SCORE = 42;
 const BLOCK = 83_100_000, BLOCK_TIME = 1_791_500_400;
+const HOUR = 3600, SWITCH_203 = Date.parse("2026-11-02T00:00:00Z") / 1000; // weights 2.0.3's first second (docs/SCORE-v2.md)
 const POOL = ethers.getAddress(DEP.pool), V1 = ethers.getAddress(DEP.v1Pool);
 const FAKE_V1 = ethers.getAddress("0x00000000000000000000000000000000deaf00f1"); // a contract the note's author deployed
 const FAKE_V2 = ethers.getAddress("0x00000000000000000000000000000000deaf00f2");
@@ -38,18 +41,23 @@ const lc = (a) => String(a || "").toLowerCase();
 // ---- the mock chain: one note, the receipts it cites, and getLoan at the contracts it knows (shape by contract) ----
 const SHAPE = { [lc(POOL)]: "v2", [lc(FAKE_V2)]: "v2", [lc(V1)]: "v1", [lc(FAKE_V1)]: "v1" };
 let W;
-const reset = () => { W = { note: null, receipts: new Map(), loans: new Map() }; };
+/** `blockTime`: the timestamp of the note's block (priors.block), which the chain answers and the file states. */
+const reset = ({ blockTime = BLOCK_TIME } = {}) => { W = { note: null, receipts: new Map(), loans: new Map(), blockTime, tag2: null }; };
 
-const repaidOnTime = (shape, principal = 5_000_000n) => {
-  const issued = BLOCK_TIME - 3 * 86400, due = issued + 7 * 86400, closed = BLOCK_TIME - 60;
+/** A repaid loan: issued 3 days before the note's block, due 4 days after it, repaid a minute before it; with `lateBy`
+ *  (seconds), due 3 days before the block and repaid that long after its due time. */
+const repaidLoan = (shape, { principal = 5_000_000n, lateBy = null } = {}) => {
+  const T = W.blockTime;
+  const issued = lateBy == null ? T - 3 * 86400 : T - 10 * 86400, due = issued + 7 * 86400, closed = lateBy == null ? T - 60 : due + lateBy;
   return shape === "v1"
     ? [AGENT, principal, 0n, issued, due, closed, 2, false, 0n]
     : [AGENT, 6191n, principal, 3800n, 0n, 0n, 0n, OWNER, issued, due, due + 3 * 86400, issued + 7 * 86400, closed, 2];
 };
 const zeroLoan = (shape) => shape === "v1" ? [0n, 0n, 0n, 0n, 0n, 0n, 0, false, 0n] : [0n, 0n, 0n, 0n, 0n, 0n, 0n, ethers.ZeroAddress, 0n, 0n, 0n, 0n, 0n, 0];
-/** A loan the contract at `at` answers for getLoan, repaid on time by AGENT, with its Repaid log in transaction `tx`. */
-function repayment(at, loanId, tx) {
-  W.loans.set(`${lc(at)}:${loanId}`, repaidOnTime(SHAPE[lc(at)]));
+/** A loan the contract at `at` answers for getLoan, repaid by AGENT (on time, or `lateBy` seconds after its due time),
+ *  with its Repaid log in transaction `tx`. */
+function repayment(at, loanId, tx, { lateBy = null } = {}) {
+  W.loans.set(`${lc(at)}:${loanId}`, repaidLoan(SHAPE[lc(at)], { lateBy }));
   addLog(tx, BLOCK - 10, { address: at, topics: [REPAID_TOPIC, ethers.toBeHex(loanId, 32), ethers.toBeHex(AGENT, 32)], data: coder.encode(["uint256", "uint256", "address"], [5_000_000n, 3800n, OWNER]) });
 }
 /** The contract at `at` paying loan `loanId` to OWNER in transaction `tx` (a Borrowed log). */
@@ -64,9 +72,11 @@ function addLog(tx, block, log) {
   W.receipts.set(tx, r);
 }
 
-/** The note's file, in the shape of docs/ATTESTATION-v2.md (sdk/attestation.mjs attestationFile), and its NewFeedback log. */
-function post({ pool = POOL, v1Pool, last, pay }) {
-  const priors = { v: 2, block: BLOCK, blockTime: BLOCK_TIME, pool, ...(v1Pool ? { v1Pool } : {}), score: SCORE, rung: 2, weights: "2.0.1",
+/** The note's file, in the shape of docs/ATTESTATION-v2.md (sdk/attestation.mjs attestationFile), and its NewFeedback log;
+ *  `weights`: the version it names (priors.weights, and tag2 on chain). */
+function post({ pool = POOL, v1Pool, last, pay, weights = "2.0.1" }) {
+  const TAG2 = (W.tag2 = `rung-2/v${weights}`);
+  const priors = { v: 2, block: BLOCK, blockTime: W.blockTime, pool, ...(v1Pool ? { v1Pool } : {}), score: SCORE, rung: 2, weights,
     line: { limit: "0", available: "0", drawn: "0" }, repaid: { onTime: last.length, usdg: String(5 * last.length), late: 0, last }, late: 0, defaults: 0,
     backing: { sponsor: 0, delegatedIn: "0" }, income: { usdg: "0", payers: 0, points: 0 }, ...(pay ? { paid: { loan: pay.loan, usdg: "5" } } : {}),
     about: "https://github.com/priors-agents/priors/blob/main/docs/ATTESTATION-v2.md" };
@@ -82,7 +92,7 @@ function call({ to, data }) {
   const t_ = lc(to), s = String(data || "").slice(0, 10);
   if (t_ === lc(REPUTATION_REGISTRY)) {
     if (s === SEL.getLastIndex) return coder.encode(["uint64"], [W.note ? 1n : 0n]);
-    if (s === SEL.readFeedback) return coder.encode(["int128", "uint8", "string", "string", "bool"], [BigInt(SCORE), 0n, TAG1, TAG2, false]);
+    if (s === SEL.readFeedback) return coder.encode(["int128", "uint8", "string", "string", "bool"], [BigInt(SCORE), 0n, TAG1, W.tag2, false]);
     if (s === SEL.getSummary) return coder.encode(["uint64", "int128", "uint8"], [1n, BigInt(SCORE), 0n]);
   }
   if (s === SEL.getLoan && SHAPE[t_]) {
@@ -101,7 +111,7 @@ function rpc(method, params) {
     case "eth_blockNumber": return hx(BLOCK + 5);
     case "eth_getLogs": return lc(params[0]?.address) === lc(REPUTATION_REGISTRY) && W.note ? [W.note] : [];
     case "eth_getTransactionReceipt": return W.receipts.get(params[0]) || null;
-    case "eth_getBlockByNumber": { const n = Number(params[0]); return { number: hx(n), hash: txh("b" + n), parentHash: txh("b" + (n - 1)), timestamp: hx(BLOCK_TIME + (n - BLOCK)), nonce: "0x0000000000000000", difficulty: "0x0", gasLimit: "0x1c9c380", gasUsed: "0x0", miner: OWNER, extraData: "0x", transactions: [], baseFeePerGas: "0x1", logsBloom: "0x" + "00".repeat(256), sha3Uncles: txh("u"), stateRoot: txh("s"), receiptsRoot: txh("r"), transactionsRoot: txh("t"), uncles: [], mixHash: txh("m") }; }
+    case "eth_getBlockByNumber": { const n = Number(params[0]); return { number: hx(n), hash: txh("b" + n), parentHash: txh("b" + (n - 1)), timestamp: hx(W.blockTime + (n - BLOCK)), nonce: "0x0000000000000000", difficulty: "0x0", gasLimit: "0x1c9c380", gasUsed: "0x0", miner: OWNER, extraData: "0x", transactions: [], baseFeePerGas: "0x1", logsBloom: "0x" + "00".repeat(256), sha3Uncles: txh("u"), stateRoot: txh("s"), receiptsRoot: txh("r"), transactionsRoot: txh("t"), uncles: [], mixHash: txh("m") }; }
     case "eth_call": return call(params[0] || {});
     default: return null;
   }
@@ -167,6 +177,47 @@ try {
     assert.equal(line(r, /^priors\.pool is the credit pool of deployments/)?.status, "FAIL", show(r));
     assert.equal(line(r, /^loan 777 repaid on time/)?.status, "FAIL", `a citation read from the pool the note names:\n${show(r)}`);
     assert.equal(line(r, /^proofOfPayment/)?.status, "FAIL", `a payment from the pool the note names:\n${show(r)}`);
+  });
+
+  // Weights 2.0.3, Priors' scores from 2026-11-02 00:00 UTC, count a repayment within 24 hours of its due time as on
+  // time, so their notes cite such repayments. The window is the schedule's at the note's block, by the block's own time,
+  // never wider than that of the weights the note names: the note's word cannot widen it.
+  const cite = async ({ blockTime, weights, lateBy }) => {
+    reset({ blockTime });
+    repayment(POOL, 21500, txh("repay after due"), { lateBy });
+    post({ last: [{ loan: 21500, tx: txh("repay after due") }], weights });
+    const r = await verify();
+    return { r, cited: line(r, /^loan 21500 repaid on time/) };
+  };
+
+  await t("weights 2.0.3 (a block from 2026-11-02 00:00 UTC): a repayment cited 1 hour after its due time is on time, and the note passes", async () => {
+    const { r, cited } = await cite({ blockTime: SWITCH_203 + HOUR, weights: "2.0.3", lateBy: HOUR });
+    assert.equal(cited?.status, "ok", show(r));
+    assert.equal(r.code, 0, show(r));
+  });
+
+  await t("weights 2.0.3: a repayment cited 25 hours after its due time is late, and the citation fails", async () => {
+    const { r, cited } = await cite({ blockTime: SWITCH_203 + 2 * 86400, weights: "2.0.3", lateBy: 25 * HOUR });
+    assert.equal(cited?.status, "FAIL", show(r));
+    assert.equal(r.code, 1, show(r));
+  });
+
+  await t("weights 2.0.1 (a block before 2026-11-02): a repayment cited 1 hour after its due time is late, and the citation fails", async () => {
+    const { r, cited } = await cite({ blockTime: SWITCH_203 - HOUR, weights: "2.0.1", lateBy: HOUR });
+    assert.equal(cited?.status, "FAIL", show(r));
+    assert.equal(r.code, 1, show(r));
+  });
+
+  await t("a note before 2026-11-02 that names 2.0.3 gets no window: the block's own time decides, not the version the note names", async () => {
+    const { r, cited } = await cite({ blockTime: SWITCH_203 - HOUR, weights: "2.0.3", lateBy: HOUR });
+    assert.equal(cited?.status, "FAIL", show(r));
+    assert.equal(r.code, 1, show(r));
+  });
+
+  await t("a note from 2026-11-02 that names 2.0.1 gets none either: its own weights count the repayment late", async () => {
+    const { r, cited } = await cite({ blockTime: SWITCH_203 + HOUR, weights: "2.0.1", lateBy: HOUR });
+    assert.equal(cited?.status, "FAIL", show(r));
+    assert.equal(r.code, 1, show(r));
   });
 } finally {
   server.close();

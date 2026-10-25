@@ -171,7 +171,11 @@ The RPC is `--rpc`, else `RPC_URL`, else Robinhood Chain's public endpoint; an e
   payment below are read from those two pools, whatever the file names, so a citation of another contract fails
   (GHSA-m5wj-mgcg-x3fv);
 - each cited repayment: the transaction succeeded before `block` and carries the pool's `Repaid` log (the v1 pool's for a v1 loan) for that loan and
-  agent; `getLoan` shows the loan is the agent's, repaid, and closed by its due date;
+  agent; `getLoan` shows the loan is the agent's, repaid, and not `late`: closed by its due date or, from weights
+  2.0.3 (2026-11-02 00:00 UTC), within 24 hours after it. The window is that of the weights Priors' scores use at
+  `block`, read from that block's own timestamp and the published schedule (`LATE_WINDOW_SCHEDULE` in
+  `sdk/attestation.mjs`), never wider than that of the weights the note names, so naming other weights cannot widen
+  it;
 - `proofOfPayment`: the borrow transaction carries the pool's `Borrowed` log for `paid.loan`, to `toAddress`, for
   `paid.usdg`;
 - the line and backing at `block` (lens `creditReport` with that block tag): capacity, principalOut, available,
