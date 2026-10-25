@@ -212,8 +212,10 @@ export function openEntry(entry) {
 
 /**
  * A reader's manifest: the sources it trusts each writer to have, from somewhere other than the writer's files,
- * { "<writer address>": { "sources": [source, ...] } } with sources as files write them (chainId, contract, blocks,
- * events, fields). A Map of lowercase writer address to { sources }. Throws on a malformed manifest.
+ * { "<writer address>": { "sources": [source, ...], "asset"?, "decimals"? } } with sources as files write them
+ * (chainId, contract, blocks, events, fields), and optionally the asset the writer states amounts in (a CAIP-19 ERC-20
+ * id) with its decimals, both or neither. A Map of lowercase writer address to { sources, asset, decimals } (asset and
+ * decimals null when not pinned). Throws on a malformed manifest.
  */
 export function readManifest(manifest) {
   if (manifest == null) return null;
@@ -232,7 +234,18 @@ export function readManifest(manifest) {
       if (p.length) throw new TypeError(p.join("; "));
       return out;
     });
-    out.set(lc(addr), { sources });
+    // the asset, pinned as the sources are: without it, the files' asset is tied to the sources only by the sampled
+    // loans' Transfer logs, and a token the writer names logs whatever its contract chooses
+    let asset = null, decimals = null;
+    if (v.asset !== undefined || v.decimals !== undefined) {
+      if (v.asset === undefined || v.decimals === undefined) throw new TypeError(`manifest ${addr}: pins asset and decimals together, or neither`);
+      const a = P.parseAsset(v.asset);
+      if (!a) throw new TypeError(`manifest ${addr}: asset is not a CAIP-19 ERC-20 id (eip155:<chainId>/erc20:<checksummed address>)`);
+      if (!Number.isInteger(v.decimals) || v.decimals < 0 || v.decimals > 255) throw new TypeError(`manifest ${addr}: decimals is not 0 to 255`);
+      asset = v.asset;
+      decimals = v.decimals;
+    }
+    out.set(lc(addr), { sources, asset, decimals });
   }
   return out;
 }
@@ -476,6 +489,9 @@ async function readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, 
   const chain = good.filter((o) => o.file.tag1 === P.TAG_STATEMENT).sort((a, b) => a.file.credit.seq - b.file.credit.seq);
   const defaults = good.filter((o) => o.file.tag1 === P.TAG_DEFAULTED);
   const ref = chain[0]?.file.credit || defaults[0]?.file.credit || null;
+  // the reader's manifest pins the asset: the files must state it (checkChain and the loop below keep every file of the
+  // chain on ref's), so a token of the writer's choosing, whatever it logs, is never the one counted
+  if (ref && manifest?.asset != null && (ref.asset !== manifest.asset || ref.decimals !== manifest.decimals)) problems.push(`asset ${ref.asset} (${ref.decimals} decimals) is not the reader's manifest's, ${manifest.asset} (${manifest.decimals} decimals)`);
   // one writer, one asset per agent: the default entries too
   for (const d of defaults) {
     const c = d.file.credit;
@@ -510,8 +526,8 @@ async function readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, 
   const checks = [];
   for (const s of chain) for (const x of s.file.credit.anchors) checks.push({ src: s.file.credit.sources[x.src], leaf: x, where: `seq ${s.file.credit.seq}` });
   for (const d of defaults) checks.push({ src: d.file.credit.sources[0], leaf: d.file.credit.leaf, where: `default entry ${d.entry.index}` });
-  // the asset and its decimals are the files' word until a sampled loan shows that token moving at a source (the
-  // manifest pins sources, not the asset): with no anchor and no default entry, any token at any decimals would stand
+  // unless the manifest pins the asset (above), the asset and its decimals are the files' word until a sampled loan
+  // shows that token moving at a source: with no anchor and no default entry, any token at any decimals would stand
   // for the amounts the sources' logs give (GHSA-6rpg)
   if (funds && ref && !checks.length && chain.some((s) => s.file.credit.leaves > 0)) problems.push(`asset ${ref.asset}: its statements close loans but carry no anchor, and there is no default entry: the asset's movement cannot be checked, so the asset and its decimals are not tied to the sources`);
   const res = await pool(checks, 6, (c) => verifyLeaf(ctx, c.src, id, c.leaf, { asset: fundsAsset }).then((p) => p.map((x) => `${c.where}: ${x}`)));

@@ -287,9 +287,11 @@ A reader:
 - SHOULD check that the asset moved for those loans: at least the principal out of the source when the loan opened
   (default leaves too), and at least the principal into it on repayment. A reader that checks funds MUST treat an
   asset that is not an ERC-20 on the sources' chain, or whose `decimals()` is not `decimals`, as a failure, not as a
-  reason to skip the check. Those loans are the only tie between the files' `asset` and `decimals` and the sources (a
-  manifest pins sources, not the asset), so such a reader MUST also fail a chain whose statements close loans but carry
-  no anchor, when the writer has no default entry for the agent;
+  reason to skip the check. Unless the reader's manifest pins the asset (see below), those loans are the only tie
+  between the files' `asset` and `decimals` and the sources, so such a reader MUST also fail a chain whose statements
+  close loans but carry no anchor, when the writer has no default entry for the agent. That tie is weak: a receipt
+  holds the logs of every contract its transaction called, and a borrower (or a repayer) that runs the loan's
+  transactions through a contract can make a token of the writer's choosing log the same transfers;
 - MUST NOT present the totals of a statement it has not rebuilt as checked, nor add them to totals it reports as
   checked. Without a rebuild they are the writer's claims;
 - MUST NOT add a writer's rebuilt totals to totals it reports as checked unless it holds a manifest naming that writer
@@ -336,7 +338,8 @@ block, when a statement leaves out a manifest source whose blocks reach its wind
 the manifest does not list or with other events or fields. A reader with a manifest MUST fail a writer it trusts
 that the manifest does not name (reading that writer's sources as it declares them would drop every manifest check
 without a word), and MUST say of each writer whether the manifest named it. It MAY then scan each source over its
-manifest range only.
+manifest range only. A manifest SHOULD also pin each writer's `asset` and `decimals` (both or neither); a reader
+holding a pinned asset MUST fail a writer whose files state another, and then checks funds at the pinned token only.
 
 ### On-chain manifests, a profile of ERC-8092
 
@@ -522,9 +525,11 @@ The fork test uses the real registry and three real agents.
   manifest (see Readers), and a lender that wants its statements counted publishes one for its writer.
 - **Light checks are samples.** A statement with real anchors and invented totals passes them. A light result is the
   writer's claim, and readers MUST NOT count it as checked.
-- **A lying source contract.** Logs prove what a contract emitted, not that it is honest. The funds check ties the
-  sampled loans to actual transfers of the asset; a contract can still emit loan events with no money behind the
-  others. Readers relying on a source should know its code (verified source, audits), and hold it in a manifest.
+- **A lying source contract.** Logs prove what a contract emitted, not that it is honest. The funds check reads the
+  sampled loans' `Transfer` logs at the asset's address: they are transfers only when that token is the one the
+  reader's manifest pins, since a token the writer names logs whatever its contract chooses. A contract can still emit
+  loan events with no money behind the others. Readers relying on a source should know its code (verified source,
+  audits), and hold it in a manifest.
 - **Reorgs.** A statement over unfinalised blocks can name logs that later disappear. Windows SHOULD end at final
   blocks.
 - **Late versus on time** follows block timestamps, so a loan repaid within a few seconds of `dueAt` can fall either
