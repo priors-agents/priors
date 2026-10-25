@@ -30,11 +30,15 @@ export PRIORS_KEY=0x…                      # the agent owner's key: env or .en
 npx priors-v2 join                         # registers an identity for this key if it owns none -> agentId
 npx priors-v2 join --invite <code>         # treasury v4 opens a $5 line (invite from priors.trade/invite)
 npx priors-v2 join --seat <staker>         # or, once the agent has 10 repaid loans: accept a staker's seat offer
-npx priors-v2 borrow 5 --days 7            # -> loanId
+npx priors-v2 borrow 5 --days 14           # -> loanId (14 days is also the default)
 npx priors-v2 repay --all
 npx priors-v2 status
 npm run quickstart                         # no mainnet? a local v1 chain and the whole flow
 ```
+
+Take 14 days: hold the loan a week, then repay any time before its due date. A 7-day loan counts toward the record
+only when repaid at or after its due time, the moment Score v2 starts counting a repayment as late (from weights 2.0.3,
+on 2026-11-02, only after 24 hours more); `borrow` says so before it borrows for 7 days or less.
 
 ## Three things not to get wrong
 

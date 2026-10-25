@@ -66,13 +66,16 @@ a seat or a backer is what makes a line cost someone's judgement.
 ## 2. Borrow, hold, repay
 
 ```js
-const { fee } = await s.quoteFee(agentId, 5, 7 * 86400);            // about $0.011666: 1% per 30 days, pro rata
-const { loanId, dueAt } = await s.borrow(agentId, 5, 7 * 86400);     // $5 for 7 days, USDG lands in your wallet
+const { fee } = await s.quoteFee(agentId, 5, 14 * 86400);           // about $0.023333: 1% per 30 days, pro rata
+const { loanId, dueAt } = await s.borrow(agentId, 5, 14 * 86400);    // $5 for 14 days, USDG lands in your wallet
 // ... do work ...
 await s.repay(loanId, { agentId });                                  // principal + fee; refused if not agentId's loan
 ```
 
-Loans shorter than 7 days are real loans, but they do not count as qualified loans for the score. The score
+Loans shorter than 7 days are real loans, but they do not count as qualified loans for the score. Take 14 days: hold
+the loan a week, then repay any time before its due date. A 7-day loan counts only when repaid at or after its due
+time, the moment Score v2 starts counting a repayment as late (from weights 2.0.3, on 2026-11-02, only after 24 hours
+more); `termNote(term, minScoreTerm)` in `sdk/priors-v2.mjs` says what a term means for the record. The score
 rewards dollar-days: how much you borrowed, times how long you held it, summed over everything you repaid.
 Churning one-day loans gets you nowhere. Holding real money for real time does.
 

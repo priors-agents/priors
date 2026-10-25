@@ -8,6 +8,9 @@
 //   - a registry that cannot answer (no getAgentWallet, a failed request): the wallet line as before, exit 0.
 // A `join` that registers declares its caller, as the live registry's register() does, and the
 // status after it says this key is declared.
+// `priors-v2 borrow`: 14 days unless --days says otherwise, and, before it borrows, a note on stderr when the term is the
+// pool's minimum scoring term or less (sdk/priors-v2.mjs termNote, minScoreTerm read from the pool's getParams, never a
+// constant; a failed read adds nothing) (priors-agents/priors#16).
 // Offline: a local JSON-RPC stub plays the pool, the registry, USDG, treasury v4 and the seat vault, and applies the one
 // write (register); throwaway keys, the CLI run as a user runs it (its own HOME, the key in the environment only).
 //   node scripts/test-cli-wallet.mjs
@@ -24,7 +27,7 @@ const CLI = new URL("../bin/priors-v2.mjs", import.meta.url).pathname;
 const at = (b) => ethers.getAddress("0x" + b.repeat(20)); // stand-ins: no real address is assumed
 const POOL = at("a1"), REG = at("8e"), USDG = at("c0"), T4 = at("74"), SEAT = at("5e");
 const ADDRESSES = { pool: POOL, registry: REG, usdg: USDG, treasuryV4: T4, seatVault: SEAT };
-const AGENT = 6448n, NEW_ID = 9001n, V4_ROOT = 6574n, SEAT_ROOT = 7000n, U = 1_000_000n, BLOCK = 90_000_000, NOW = 1_800_000_000;
+const AGENT = 6448n, NEW_ID = 9001n, V4_ROOT = 6574n, SEAT_ROOT = 7000n, U = 1_000_000n, BLOCK = 90_000_000, NOW = 1_800_000_000, DAY = 86400n;
 const ZERO = ethers.ZeroAddress;
 const owner = ethers.Wallet.createRandom(), other = ethers.Wallet.createRandom().address;
 const poolI = new ethers.Interface(POOL_V2_ABI), t4I = new ethers.Interface(TREASURY_V4_ABI), seatI = new ethers.Interface(SEAT_VAULT_V2_ABI);
@@ -45,9 +48,11 @@ const agentTuple = (id) => (String(id) === String(AGENT)
  * A JSON-RPC stub for agent #6448 owned by `owner`, on treasury v4's 5 USDG line, its owner holding 20 USDG.
  * `declared`: what getAgentWallet answers (an address, ZERO for none), or "revert" (a registry without it) or
  * "rpc-error" (the request fails). `ids`: the identities and their owners. `asked`: every call as "contract.fn".
+ * `minScoreTerm`: the pool's getParams figure, or "revert" (a pool that does not answer it). `terms`: every term the pool
+ * was asked to quote or borrow for.
  */
-function chain({ declared = owner.address, ids = { [AGENT]: owner.address } } = {}) {
-  const st = { declared: Object.fromEntries(Object.keys(ids).map((id) => [id, declared])), owners: { ...ids }, asked: [], sent: [], receipts: new Map(), nonces: new Map() };
+function chain({ declared = owner.address, ids = { [AGENT]: owner.address }, minScoreTerm = 7n * DAY } = {}) {
+  const st = { declared: Object.fromEntries(Object.keys(ids).map((id) => [id, declared])), owners: { ...ids }, asked: [], sent: [], receipts: new Map(), nonces: new Map(), terms: [] };
   const q = (n) => ethers.toQuantity(n);
   const H = (n) => ethers.zeroPadValue(ethers.toBeHex(n), 32);
   function exec({ to, data, from }, send) {
@@ -61,6 +66,15 @@ function chain({ declared = owner.address, ids = { [AGENT]: owner.address } } = 
     if (c === "pool") switch (f.name) {
       case "getAgent": return ok([agentTuple(x[0])]);
       case "loansOf": return ok([[]]);
+      // CreditPoolV2's params: minLoan, maxLoan, minTerm, maxTerm, grace, minScoreTerm, feeBps, sponsorFeeBps,
+      // protocolFeeBps, minStake, maxUtilizationBps, keeperBounty
+      case "getParams":
+        if (minScoreTerm === "revert") return { revert: "0x" };
+        return ok([[5n * U, 500n * U, DAY, 30n * DAY, 3n * DAY, minScoreTerm, 100n, 2500n, 1500n, 10n * U, 9000n, 0n]]);
+      case "quoteFee": st.terms.push(["quote", x[2]]); return ok([23_333n, 0n, 0n, 0n]);
+      case "borrow":
+        if (send) st.terms.push(["borrow", x[2]]);
+        return ok([7n], [{ address: POOL, ...poolI.encodeEventLog("Borrowed", [7n, x[0], V4_ROOT, x[1], 23_333n, BigInt(NOW) + x[2], x[3]]) }]);
       case "registry": return ok([REG]);
       case "usdg": return ok([USDG]);
     }
@@ -133,8 +147,8 @@ writeFileSync(addrFile, JSON.stringify(ADDRESSES));
 /** The CLI as a user runs it: its own HOME, the key in the environment only; PRIORS_AGENT_ID unless `agentId` is null.
  *  The stub's addresses are not the published ones, so the shell exports PRIORS_ALLOW_CUSTOM_ADDRESSES=1, as a user
  *  pointing priors-v2 at another deployment would. */
-const cli = (args, url, { agentId = AGENT } = {}) => new Promise((done) => {
-  const env = { PATH: process.env.PATH, HOME: home, PRIORS_KEY: owner.privateKey, PRIORS_RPC: url, PRIORS_ADDRESSES: addrFile, PRIORS_ALLOW_CUSTOM_ADDRESSES: "1", ...(agentId == null ? {} : { PRIORS_AGENT_ID: String(agentId) }) };
+const cli = (args, url, { agentId = AGENT, home: h = home } = {}) => new Promise((done) => {
+  const env = { PATH: process.env.PATH, HOME: h, PRIORS_KEY: owner.privateKey, PRIORS_RPC: url, PRIORS_ADDRESSES: addrFile, PRIORS_ALLOW_CUSTOM_ADDRESSES: "1", ...(agentId == null ? {} : { PRIORS_AGENT_ID: String(agentId) }) };
   const p = spawn(process.execPath, [CLI, ...args], { env });
   let out = "";
   p.stdout.on("data", (d) => { out += d; }); p.stderr.on("data", (d) => { out += d; });
@@ -208,6 +222,56 @@ await check("`priors-v2 join` on an identity whose wallet was cleared: the statu
   assert.match(r.out, new RegExp(`^using agent #6448 owned by ${owner.address}\n`));
   assert.equal(walletPart(r), NONE(6448));
   noKey(r);
+});
+
+console.log("priors-v2 borrow: 14 days by default, and the note on a term of the pool's minimum scoring term or less");
+/** A fresh HOME, so each borrow keeps its own record of transactions. */
+const fresh = () => ({ home: mkdtempSync(join(tmpdir(), "priors-cli-borrow-")) });
+// every term the pool was asked for, once each (the CLI quotes, then the SDK quotes again for its maxFee)
+const termsOf = (c) => [...new Set(c.st.terms.map(([k, t]) => `${k} ${Number(t) / 86400}d`))];
+const NOTE = /priors-v2: note: a [\d.]+-day loan/;
+
+await check("no --days: 14 days, past the pool's minimum scoring term (7 days); no note; the loan is borrowed, exit 0", {}, async (c) => {
+  const r = await cli(["borrow", "5"], c.url, fresh());
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(termsOf(c), ["quote 14d", "borrow 14d"]);
+  assert.deepEqual(c.st.sent, ["pool.borrow"]);
+  assert.match(r.out, /borrowed 5\.0 USDG as loan #7 for agent #6448/);
+  assert.doesNotMatch(r.out, NOTE);
+  noKey(r);
+});
+
+await check("--days 7, the pool's minimum scoring term: the note says it counts only when repaid at or after its due time (from 2.0.3, 24 hours more), then it borrows for 7 days", {}, async (c) => {
+  const r = await cli(["borrow", "5", "--days", "7"], c.url, fresh());
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(termsOf(c), ["quote 7d", "borrow 7d"]);
+  assert.match(r.out, /priors-v2: note: a 7-day loan counts toward the record only when repaid at or after its due time, which is when Score v2 starts counting a repayment as late \(from weights 2\.0\.3, 2026-11-02, after 24 hours more\)\. A 14-day term leaves 7 days to repay on time\.\n/);
+  assert.ok(r.out.indexOf("note:") < r.out.indexOf("borrowed "), "said before it borrows");
+  assert.ok(c.st.asked.includes("pool.getParams"), "the term is read from the pool's params");
+});
+
+await check("--days 3, under it: the note says the loan never counts, then it borrows as asked", {}, async (c) => {
+  const r = await cli(["borrow", "5", "--days", "3"], c.url, fresh());
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(termsOf(c), ["quote 3d", "borrow 3d"]);
+  assert.match(r.out, /priors-v2: note: a 3-day loan never counts toward the agent's record: the pool counts a repayment once the loan is held 7 days\. A 14-day term does\.\n/);
+});
+
+await check("the note follows the pool's minScoreTerm, not a constant: at 10 days, --days 10 gets it and --days 14 does not", { minScoreTerm: 10n * DAY }, async (c) => {
+  const a = await cli(["borrow", "5", "--days", "10"], c.url, fresh());
+  assert.equal(a.code, 0, a.out);
+  assert.match(a.out, /note: a 10-day loan counts toward the record only when repaid at or after its due time.*A 20-day term leaves 10 days to repay on time\./);
+  const b = await cli(["borrow", "5", "--days", "14"], c.url, fresh());
+  assert.equal(b.code, 0, b.out);
+  assert.doesNotMatch(b.out, NOTE);
+});
+
+await check("a pool whose params cannot be read: no note, and the borrow goes ahead as asked", { minScoreTerm: "revert" }, async (c) => {
+  const r = await cli(["borrow", "5", "--days", "7"], c.url, fresh());
+  assert.equal(r.code, 0, r.out);
+  assert.ok(c.st.asked.includes("pool.getParams"), "it was asked");
+  assert.deepEqual(termsOf(c), ["quote 7d", "borrow 7d"]);
+  assert.doesNotMatch(r.out, /note:/);
 });
 
 console.log(`\ncli wallet: ${passed} passed, ${failed} failed`);

@@ -9,8 +9,10 @@
 //   - 2.0.1: before the root's 30 days they agree (a young backer fails closed); after, V5's root is someone else's risk;
 //   - 2.0.2 changes no number of 2.0.1, is not the SDK's default, needs the snapshot to name V5's root (else it throws:
 //     no score rather than one a stake moved), counts the retired V5 root too, and keeps the stock vault's rule;
-//   - Priors' scores use 2.0.2 from 2026-11-01 00:00 UTC (announced on the dev log, priors.trade/updates, on 2026-10-23):
-//     until V5's roots are 30 days old, 2.0.1 and 2.0.2 give every agent the same score, so no score moves that day.
+//   - 2.0.2 was announced on the dev log (priors.trade/updates) on 2026-10-23 for Priors' scores from 2026-11-01 00:00
+//     UTC; since 2026-10-25, 2.0.3 takes its place from 2026-11-02 00:00 UTC (2.0.2's rule plus a 24-hour on-time
+//     window, scripts/test-score-v2-late-window.mjs), still before V5's roots are 30 days old: until then 2.0.1 and
+//     2.0.2 give every agent the same score.
 // SDK only, no network: the ledgers are written here; V5's ids come from the deployment record.
 //   node scripts/test-score-v2-priors-stake.mjs
 import assert from "node:assert/strict";
@@ -29,7 +31,7 @@ const V5_ROOT = Number(DEP.seatVaultV5AgentId), V5_ENROLLED = 1791731215;
 const V5_RETIRED = 8641, V5_RETIRED_OWNER = "0xdE29D3A627d77CFA13c5331C1B7B181a4C5B752E", V5_RETIRED_ENROLLED = 1791564294;
 const AGED = V5_ENROLLED + 30 * DAY; // 2026-11-10 15:06:55 UTC
 const RETIRED_AGED = V5_RETIRED_ENROLLED + 30 * DAY; // 2026-11-08 16:44:54 UTC
-const SWITCH = Date.parse("2026-11-01T00:00:00Z") / 1000, TODAY = Date.parse("2026-10-23T12:00:00Z") / 1000;
+const SWITCH = Date.parse("2026-11-02T00:00:00Z") / 1000, TODAY = Date.parse("2026-10-23T12:00:00Z") / 1000;
 const TREASURY = Number(DEP.treasuryV4AgentId), STOCK = Number(DEP.stockVaultAgentId);
 const AGENT = 700, HONEST = 200, OWNER = "0x" + "a7".repeat(20), HONEST_OWNER = "0x" + "c1".repeat(20);
 
@@ -151,7 +153,7 @@ check("2.0.2 keeps the stock vault's rule (its loans are the borrower's own)", (
   assert.deepEqual(othersPart(inputsOf(s, "2.0.2", HONEST)), { backedByOthers: [false, false, false], backingByOthers: 0 });
 });
 
-check("2.0.2 is 2.0.1 plus V5's roots: no number changed; published 2026-10-23, 7+ days before 2026-11-01; not the SDK's default", () => {
+check("2.0.2 is 2.0.1 plus V5's roots: no number changed; published 2026-10-23, 7+ days before the switch; 2.0.3 keeps its rule; not the SDK's default", () => {
   const W201 = weightsFor("2.0.1"), W202 = weightsFor("2.0.2");
   assert.deepEqual(W202.backers.ownCollateralRoots, ["stockVault", "seatVaultV5"]);
   const strip = (w) => { const c = JSON.parse(JSON.stringify(w)); delete c.backers.ownCollateralRoots; delete c.backers.ownCollateralWhy; delete c.version; delete c.published; delete c.notes; return c; };
@@ -160,11 +162,14 @@ check("2.0.2 is 2.0.1 plus V5's roots: no number changed; published 2026-10-23, 
   assert.ok(SWITCH - Date.parse(W202.published) / 1000 >= 7 * DAY, "announced 7 days ahead");
   assert.doesNotMatch(W202.notes, /note on X|not published/, "the notes say how it was announced");
   assert.equal(DEFAULT_WEIGHTS.version, "2.0.0", "DEFAULT_WEIGHTS stays 2.0.0");
-  assert.deepEqual(Object.keys(WEIGHTS_BY_VERSION).sort(), ["2.0.0", "2.0.1", "2.0.2"]);
+  assert.deepEqual(Object.keys(WEIGHTS_BY_VERSION).sort(), ["2.0.0", "2.0.1", "2.0.2", "2.0.3"]);
   assert.equal(scoreV2({ agentId: 1, now: 1, loans: [] }, W202).version, "2.0.2");
+  const W203 = weightsFor("2.0.3");
+  assert.deepEqual(W203.backers.ownCollateralRoots, W202.backers.ownCollateralRoots, "2.0.3 keeps 2.0.2's V5 rule");
+  assert.ok(SWITCH - Date.parse(W203.published) / 1000 >= 7 * DAY, "2.0.3 announced 7 days ahead of the switch");
 });
 
-check("no score moves on 2026-11-01: from today through the switch until V5's roots are 30 days old, 2.0.1 and 2.0.2 give every agent the same score, rung and breakdown", () => {
+check("from today through the switch (2026-11-02) until V5's roots are 30 days old, 2.0.1 and 2.0.2 give every agent the same score, rung and breakdown", () => {
   assert.ok(SWITCH < RETIRED_AGED && SWITCH < AGED, "the switch comes before either root passes 2.0.1's 30-day rule");
   for (const t of [TODAY, SWITCH - 1, SWITCH, RETIRED_AGED - 1, AGED - 1]) {
     const s = ledger(BIG, { from: V5_ENROLLED + DAY, now: t, meta: NAMED });

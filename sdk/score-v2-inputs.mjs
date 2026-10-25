@@ -32,7 +32,7 @@
 // meta.seatVaultV5AgentId, and meta.seatVaultV5RetiredAgentId when named): V5 sizes a line by the owner's own $PRIORS
 // behind the agent and burns 75% of it on a default, so a bigger stake is no more risk someone else took. Fails closed:
 // with "seatVaultV5" and no meta.seatVaultV5AgentId, no inputs are built.
-import { scoreV2, payerWeight, DEFAULT_WEIGHTS } from "./score-v2.mjs";
+import { scoreV2, payerWeight, repaidLate, DEFAULT_WEIGHTS } from "./score-v2.mjs";
 
 const lc = (a) => String(a || "").toLowerCase();
 /** Whether a loan was repaid by the agent's own wallets: `r` is the one address that repaid, or the addresses that paid
@@ -55,6 +55,14 @@ function unionFind() {
   };
   const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra > rb ? ra : rb, ra > rb ? rb : ra); };
   return { find, union, keys: () => [...parent.keys()] };
+}
+
+/** The roots `weights` count as backers from day one besides the pool's own (`backers.dayOneRoots`, 2.0.3): "ethosRoot",
+ *  the Ethos lane's root (meta.ethosRootAgentId, when named; without it, an ordinary backer, as before). */
+export function dayOneRoots(snapshot, weights = DEFAULT_WEIGHTS) {
+  const m = snapshot.meta || {}, keys = weights.backers.dayOneRoots || [], ids = [];
+  if (keys.includes("ethosRoot") && Number(m.ethosRootAgentId) > 0) ids.push(Number(m.ethosRootAgentId));
+  return new Set(ids);
 }
 
 /** The roots whose loans are the borrower's own money under `weights` (`backers.ownCollateralRoots`): "stockVault",
@@ -160,6 +168,8 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
   // the pool's treasury (and treasury v5, once the snapshot names it: a line moved there is the treasury's as before)
   // and seat vaults (V3, and the growth vault V4) count as backers from day one (public ids in the snapshot's meta)
   const protocolBackers = new Set([snapshot.meta?.treasuryAgentId, snapshot.meta?.treasuryV5AgentId, snapshot.meta?.seatVaultAgentId, snapshot.meta?.seatVaultV4AgentId, snapshot.meta?.archive?.treasuryAgentId].filter((x) => x != null).map(Number));
+  // weights 2.0.3 add the Ethos lane's root (dayOneRoots): Priors' own, as the treasury is
+  for (const id of dayOneRoots(snapshot, weights)) protocolBackers.add(id);
   // roots that lend against the borrower's own collateral: never someone else's risk
   const ownRoots = ownCollateralRoots(snapshot, weights);
   // v1 loans predate the loan's own sponsorId: their backer is in the FeeSplit event of the repayment
@@ -254,7 +264,7 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
     const left = inc.map((p) => p.amount * payerWeight(p.payer in payerScores ? payerScores[p.payer] : null, weights));
     const order = raw.map((_, i) => i).filter((i) => {
       const l = raw[i];
-      return l.era !== "v1" && l.status === "repaid" && loans[i].backedByOthers && Number(l.closedAt) <= Number(l.dueAt)
+      return l.era !== "v1" && l.status === "repaid" && loans[i].backedByOthers && !repaidLate(l.closedAt, l.dueAt, weights)
         && Number(l.issuedAt) >= since && repaidByOwn(own, repayers[l.id]);
     }).sort((x, y) => Number(raw[x].closedAt) - Number(raw[y].closedAt) || Number(raw[x].id) - Number(raw[y].id));
     for (const i of order) {

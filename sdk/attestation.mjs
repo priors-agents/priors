@@ -86,14 +86,14 @@ function txIndex(events) {
  * block (lens creditReport `capacity` and `available`, as the site and the API show them), its loans' outcomes, the
  * latest on-time repayments with their transactions, and the backing behind it now. `tx` is txIndex(snap.events).
  */
-export function evidenceOf(snap, a, loansOf, tx, { proofLoans = PROOF_LOANS } = {}) {
+export function evidenceOf(snap, a, loansOf, tx, { proofLoans = PROOF_LOANS, lateAfter = 0 } = {}) {
   const loans = loansOf.get(Number(a.id)) || [];
   let onTime = 0, onTimeBase = 0n, late = 0, defaults = 0;
   const proofs = [];
   for (const l of loans) {
     if (l.status === "defaulted") { defaults++; continue; }
     if (l.status !== "repaid") continue;
-    if (int(l.closedAt) > int(l.dueAt)) { late++; continue; }
+    if (int(l.closedAt) > int(l.dueAt) + lateAfter) { late++; continue; } // late as the score counts it (sdk/score-v2.mjs repaidLate)
     onTime++;
     onTimeBase += BigInt(int(l.principal));
     proofs.push(l);
@@ -127,7 +127,7 @@ export function evidenceOf(snap, a, loansOf, tx, { proofLoans = PROOF_LOANS } = 
 }
 
 /** Evidence for every agent of the snapshot (or only `ids`): { v, block, blockTime, chainId, pool, agents: { [id]: … } }. */
-export function evidenceIndex(snap, { ids = null, proofLoans = PROOF_LOANS } = {}) {
+export function evidenceIndex(snap, { ids = null, proofLoans = PROOF_LOANS, lateAfter = 0 } = {}) {
   const want = ids ? new Set([...ids].map(Number)) : null;
   const loansOf = new Map();
   for (const l of snap.loans || []) {
@@ -140,7 +140,7 @@ export function evidenceIndex(snap, { ids = null, proofLoans = PROOF_LOANS } = {
   const agents = {};
   for (const a of snap.agents || []) {
     if (want && !want.has(Number(a.id))) continue;
-    agents[Number(a.id)] = evidenceOf(snap, a, loansOf, tx, { proofLoans });
+    agents[Number(a.id)] = evidenceOf(snap, a, loansOf, tx, { proofLoans, lateAfter });
   }
   const m = snap.meta || {};
   return { v: EVIDENCE_VERSION, block: Number(m.blockNumber || 0), blockTime: Number(m.timestamp || 0), chainId: Number(m.chainId || CHAIN_ID), pool: m.pool || null, v1Pool: m.v1 || m.archive?.pool || null, agents };

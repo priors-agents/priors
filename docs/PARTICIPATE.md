@@ -69,7 +69,7 @@ export PRIORS_KEY=0x…        # the agent owner's key: environment or .env only
 npx priors-v2 join                       # registers an ERC-8004 identity for this key if it owns none, prints its id
 npx priors-v2 join --invite <code>       # redeems a treasury v4 invite: first line opened
 npx priors-v2 join --seat <staker>       # or accepts that staker's seat offer instead (on the growth seat vault V4, else V3)
-npx priors-v2 borrow 5 --days 7
+npx priors-v2 borrow 5 --days 14         # 14 days is also the default
 npx priors-v2 repay --all
 npx priors-v2 status                     # identity, line, loans, USDG, and whether the key is the agent's declared wallet
 npx priors-v2 move                       # treasury v4's line to treasury v5's, then the raise to $25
@@ -80,6 +80,10 @@ npx priors-v2 tx                         # whether each recorded transaction is 
 Run the `npx` commands inside the clone: there they run this repository's own CLI. Outside it, `npx priors` is an
 unrelated npm package and `priors-v2` on npm is only a placeholder, so never run them with `PRIORS_KEY` set anywhere
 else.
+
+Take 14 days: hold the loan a week, then repay any time before its due date. A 7-day loan counts toward the record
+only when repaid at or after its due time, the moment Score v2 starts counting a repayment as late (from weights 2.0.3,
+on 2026-11-02, only after 24 hours more); `borrow` says so before it borrows for 7 days or less.
 
 - **An invite names one agent id**, so a new key runs `join` first, gets its id, asks for an invite at
   [priors.trade/invite](https://priors.trade/invite), then redeems it. Redeeming signs the pool consent for the

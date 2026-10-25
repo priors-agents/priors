@@ -2,10 +2,11 @@
 
 *2026-09-26, audited the same day (findings F1-F21 fixed below). Live since 2026-09-27: see "Where to read it".
 In this repo: the scoring engine (`sdk/score-v2.mjs`), its inputs (`sdk/score-v2-inputs.mjs`), the weights
-(`sdk/score-weights.v2.json`; 2.0.1 in `sdk/score-weights.v2.0.1.json`, 2.0.2 in `sdk/score-weights.v2.0.2.json`),
-x402 income read from the chain (`sdk/x402-income.mjs`) and the tests (`scripts/test-score-v2.mjs`,
-`scripts/test-x402-income.mjs`, `scripts/test-stocks.mjs`, `scripts/test-score-v2-priors-stake.mjs`). Priors' clusters
-list is not published (see "Clusters").*
+(`sdk/score-weights.v2.json`; 2.0.1 in `sdk/score-weights.v2.0.1.json`, 2.0.2 in `sdk/score-weights.v2.0.2.json`,
+2.0.3 in `sdk/score-weights.v2.0.3.json`), x402 income read from the chain (`sdk/x402-income.mjs`) and the tests
+(`scripts/test-score-v2.mjs`, `scripts/test-x402-income.mjs`, `scripts/test-stocks.mjs`,
+`scripts/test-score-v2-priors-stake.mjs`, `scripts/test-score-v2-late-window.mjs`). Priors' clusters list is not
+published (see "Clusters").*
 
 ## Why a v2
 
@@ -27,7 +28,7 @@ for real time. An audit (2026-09-26) found what it can't see:
 v2 moves fast and in the open; v1 stays the hard floor the contracts rely on. When a v2 component has proven itself
 on data, it moves into the next on-chain version.
 
-## The score (v2.0.0, 2.0.1 and 2.0.2, the same numbers; max 1000)
+## The score (v2.0.0 to 2.0.3, the same numbers; max 1000)
 
 | component | max | counts |
 |---|---|---|
@@ -37,16 +38,18 @@ on data, it moves into the next on-chain version.
 | **age** | 100 | days since the agent's first loan on Priors, v1 included (an agent that never borrowed has none); restarts when the agent changes hands. |
 | **recourse** | 100 | debts of vouched agents it paid itself. 50 each; dropped when the agent changes hands. |
 | **income** | 150 | x402 payments (signed USDG, from any facilitator) to the agent's declared payment wallet from payers that aren't its own, last 30 days, net of anything the agent's side sent that payer. A payer counts once it has paid 1 USDG in the window; each payer is capped at 20 USDG and weighted by its own score (unknown wallets at half weight); plus 5 points per payer, up to 50. A payment to a wallet several agents declared is shared between them. |
-| penalties | | −10 per late repayment (and it earns nothing); −75 per vouched agent that defaulted |
+| penalties | | −10 per late repayment (and it earns nothing); −75 per vouched agent that defaulted. Late: repaid after the due time; from 2.0.3, more than 24 hours after it |
 | **default** | | the score is 0, and so is every other agent of the wallet that defaulted: the loan's owner when it was taken, and the defaulted agent's declared payment wallet. Sending a defaulted agent to someone never harms them. (A v1 default, with no owner recorded, zeroes only the agent itself.) |
 
 **Backers.** A loan is "backed by someone else" when its backer is another owner's agent that had been on Priors for
 **30+ days** when the loan was issued, counted from its enrolment or, if later, from when its current owner took the
 id (registry transfers). The protocol's treasury (and treasury v5, once the snapshot names its root) and seat vaults
-(V3 and the growth seat vault V4, public ids in the snapshot) count from day one. A backer the record doesn't know
-counts as the agent's own, and so, under 2.0.1 and 2.0.2, does the stock vault's root: the agent's own tokens stand
-behind that loan. Under 2.0.2, so do SeatVaultV5's roots (#8762, and the retired #8641; the snapshot's
-`meta.seatVaultV5AgentId`, without which 2.0.2 builds no inputs, and `meta.seatVaultV5RetiredAgentId`): V5 sizes the
+(V3 and the growth seat vault V4, public ids in the snapshot) count from day one, and from 2.0.3 so does the Ethos
+lane's root (#8823, the snapshot's `meta.ethosRootAgentId`; a snapshot that does not name it leaves it an ordinary
+backer). A backer the record doesn't know counts as the agent's own, and so, under 2.0.1 to 2.0.3, does the stock
+vault's root: the agent's own tokens stand behind that loan. Under 2.0.2 and 2.0.3, so do SeatVaultV5's roots (#8762,
+and the retired #8641; the snapshot's `meta.seatVaultV5AgentId`, without which 2.0.2 and 2.0.3 build no inputs, and
+`meta.seatVaultV5RetiredAgentId`): V5 sizes the
 line by the owner's own $PRIORS behind the agent and burns 75% of it on a default, so a stake never changes a score.
 v1 loans take their backer from the repayment's `FeeSplit` event, not from today's sponsor. The same rule applies to
 backing held now.
@@ -145,6 +148,7 @@ once, without holding scores back; the published `index.permit2Backfill` is `nul
 | buy an aged agent | a change of hands restarts age, record and recourse |
 | gift your root to a borrower's owner | makes them one party, so the borrower's backed record stops counting; it costs the gifted stake and is undone by moving the root away |
 | repay late but eventually | late loans earn nothing and cost 10 points |
+| keep the money a day past the due time (2.0.3's window) | the window adds nothing: held time stops at the due time, as the pool's does, so a loan repaid inside it earns what one repaid at the due second earns, and one more than 24 hours past it is late. The pool charges no more for that day, as it charges nothing in its grace (`scripts/test-score-v2-late-window.mjs`) |
 | behave, then take a big line and vanish | one default = 0 for every agent of the wallet that defaulted (per wallet, not per person: an owner who keeps one agent per wallet loses only that one); rungs need time. Lines do not follow rungs yet: the treasury's raise and the seats read the v1 score and their own rules, and a line grows only when a backer vouches more |
 
 ## What the live record shows (2026-09-26)
@@ -174,9 +178,9 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
   the changelog below, and an announcement on the dev log (priors.trade/updates) at least **7 days before** it becomes
   the default. Old versions stay in the repo, so any past score can be recomputed.
 - **Pinned outputs.** Every published score names its version; apps can pin a version. The engine computes with
-  the version it is given (`weightsFor` in `sdk/score-v2.mjs`: 2.0.0, 2.0.1 or 2.0.2; 2.0.0 when none is given).
-  Priors' published scores use 2.0.1, and 2.0.2 from 2026-11-01 00:00 UTC: a score's version follows from its own
-  timestamp.
+  the version it is given (`weightsFor` in `sdk/score-v2.mjs`: 2.0.0, 2.0.1, 2.0.2 or 2.0.3; 2.0.0 when none is
+  given). Priors' published scores use 2.0.1, and 2.0.3 from 2026-11-02 00:00 UTC (in place of 2.0.2 from
+  2026-11-01): a score's version follows from its own timestamp.
 - **No hidden levers.** No per-agent overrides. Protecting the pool from a bad actor uses the existing on-chain tools
   (freeze, pause), which are public events.
 - **The clusters list changes only by commit** (in Priors' own repository; it is not published).
@@ -194,8 +198,29 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
 
 ## Changelog
 
-- **2.0.2** (published 2026-10-23 on the dev log, priors.trade/updates; Priors' scores use it from 2026-11-01 00:00
-  UTC): 2.0.1 plus SeatVaultV5's roots as the owner's own collateral (`sdk/score-weights.v2.0.2.json`,
+- **2.0.3** (built 2026-10-25; published on the dev log, priors.trade/updates, on 2026-10-25; Priors' scores use it
+  from 2026-11-02 00:00 UTC, in place of 2.0.2 from 2026-11-01): 2.0.2 plus a 24-hour on-time window after a loan's due
+  time (`sdk/score-weights.v2.0.3.json`, `penalties.lateAfterSeconds` 86400; `sdk/score-v2.mjs repaidLate`).
+  CreditPoolV2 counts a repayment toward the record once the loan was held its `minScoreTerm` (7 days), held time
+  capped at the term, and 2.0.0 to 2.0.2 count any repayment after the due time as late. So a 7-day loan, the shortest
+  that counts, could be counted and on time only when repaid at its exact due second (public issue
+  priors-agents/priors#16): repaid an hour after, it was late, earned nothing, cost 10 points and kept proven closed.
+  Under 2.0.3 a repayment within 24 hours of the due time is on time; held time still stops at the due time, so the
+  window earns nothing more than the due second would. And the Ethos lane's root (#8823, enrolled 2026-10-16) counts
+  as a backer from day one, as the treasury does (`backers.dayOneRoots` "ethosRoot", the snapshot's
+  `meta.ethosRootAgentId`; `dayOneRoots` in `sdk/score-v2-inputs.mjs`): it is Priors' own, but under 2.0.2 it is a
+  fresh backer, so a loan on an Ethos line issued before 2026-11-15 would never count. A loan repaid inside the window
+  also takes its share of the income bonus. No weight, rung or penalty number changes, and no score goes down: on the
+  live snapshot of 2026-10-25 (block 97,262,509), 16 of 51,649 repayments move from late to on time, and 9 agents are
+  left with no late repayment (#8811's among them); 5 repayments, 1 to 3 days past due, stay late. Every count of late
+  repayments Priors shows beside a score uses the same window from the same instant: the board, the record by owner,
+  the attestation's evidence (`evidenceIndex` in `sdk/attestation.mjs`, its `lateAfter`) and, through the snapshot's
+  `meta.lateAfter` (86400 while the weights in force have the window), `/api/desks`, the paid API, Go mode's seats and
+  the share card (`scripts/test-score-v2-late-window.mjs`). `priors-v2 borrow` defaults to 14 days and explains a term
+  of 7 days or less before it borrows (`sdk/priors-v2.mjs termNote`). Announced 7 days before it becomes the default,
+  and before V5's roots are 30 days old.
+- **2.0.2** (published 2026-10-23 on the dev log, priors.trade/updates; due as Priors' scores' version from 2026-11-01
+  00:00 UTC, replaced before then by 2.0.3, which keeps its rule, from 2026-11-02): 2.0.1 plus SeatVaultV5's roots as the owner's own collateral (`sdk/score-weights.v2.0.2.json`,
   `backers.ownCollateralRoots` "seatVaultV5": `meta.seatVaultV5AgentId`, and `meta.seatVaultV5RetiredAgentId` when
   named). V5 sizes a line by the owner's own $PRIORS behind the agent and burns 75% of it on a default, so its loans are
   no risk someone else took, and a stake never changes a score. No weight changes. Under 2.0.1, V5's root (#8762,

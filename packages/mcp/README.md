@@ -352,7 +352,7 @@ model can call.
 ## Try it
 
 "What's the Priors score of agent 6228?" · "How much USDG does my wallet hold?" · "Find services that sell token
-prices" · "Pay https://api.example.com/report, up to 5 cents" · "Borrow $5 for 7 days, show me the fee first".
+prices" · "Pay https://api.example.com/report, up to 5 cents" · "Borrow $5 for 14 days, show me the fee first".
 
 ## Tests
 

@@ -5,7 +5,8 @@
 //   priors-v2 join                        register an ERC-8004 identity for this key if it owns none; print its id
 //   priors-v2 join --invite <code>        ... then redeem a treasury v4 invite for a first line
 //   priors-v2 join --seat <staker>        ... then accept that staker's seat offer on the agent
-//   priors-v2 borrow <amount> [--days N]  borrow USDG (default 7 days) to the key's address
+//   priors-v2 borrow <amount> [--days N]  borrow USDG (default 14 days) to the key's address; a term of 7 days or
+//                                         less is told what it means for the record first (termNote)
 //   priors-v2 repay [--all]               repay the oldest open loan, or every open loan
 //   priors-v2 status                      identity, sponsor, line, loans, balances, the agent's declared wallet
 //   priors-v2 raise                       raise the agent's treasury line to its second line (25 USDG): treasury v5's;
@@ -73,7 +74,7 @@
 // second `repay` of the same loan cannot pay twice (the pool refuses a loan no longer open, so it reverts); a second
 // `join` while a register is pending registers a second identity.
 import { ethers } from "ethers";
-import { fmtUsdg, sendRawOnce, toUnits } from "../sdk/priors-v2.mjs";
+import { fmtUsdg, sendRawOnce, toUnits, termNote } from "../sdk/priors-v2.mjs";
 import { resolveV2 } from "../sdk/env.mjs";
 import { claimSending, intentAbandoned, keyJournal, listUnconfirmed, loadObservation, lockKey, recordDir, releaseResend, removeIntent, saveObservation, saveUnconfirmed, settleRecord, sweepTombs } from "../sdk/tx-record.mjs";
 import { BLOCKSCOUT_API, blockscoutLookup } from "../sdk/explorer.mjs";
@@ -311,13 +312,18 @@ async function join(flags) {
 async function borrow(pos, flags) {
   if (pos.length !== 1) throw new UsageError("borrow takes one amount, e.g. `priors-v2 borrow 5`");
   const amount = toUnits(pos[0]);
-  const days = flags.days == null ? 7 : Number(flags.days);
+  const days = flags.days == null ? 14 : Number(flags.days);
   if (!Number.isFinite(days) || days <= 0) throw new UsageError("--days must be a positive number");
   const { sdk, wallet, addresses } = await config();
   holdKey(wallet.address);
   refuseWhileUnresolved(wallet.address, "borrow");
   const id = await needAgent(sdk, wallet.address, addresses);
   const term = BigInt(Math.round(days * 86400));
+  // the pool's own minScoreTerm; a failed read says nothing rather than guess
+  let minScoreTerm = 0;
+  try { minScoreTerm = Number((await sdk.pool.getParams()).minScoreTerm); } catch (_) { /* no note */ }
+  const note = termNote(term, minScoreTerm);
+  if (note) console.error(`priors-v2: note: ${note}`);
   const q = await sdk.quoteFee(id, amount, term);
   const r = await sdk.borrow(id, amount, term);
   console.log(`borrowed ${usd(r.principal)} as loan #${r.loanId} for agent #${id}: fee ${usd(r.fee)} (quoted ${usd(q.fee)}), due ${when(r.dueAt)}, tx ${r.hash}`);

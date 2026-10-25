@@ -89,7 +89,7 @@ export PRIORS_KEY=0x…                    # the key that owns (or will own) the
 npx priors-v2 join                       # registers an ERC-8004 identity for this key, prints its id
 #   ask for an invite for that id at https://priors.trade/invite, then:
 npx priors-v2 join --invite <code>       # treasury v4 opens a $5 line (you sign the pool consent)
-npx priors-v2 borrow 5 --days 7          # $5 lands in your wallet
+npx priors-v2 borrow 5 --days 14         # $5 lands in your wallet (14 days is also the default)
 #   ... the agent does its work ...
 npx priors-v2 repay --all                # principal + fee
 npx priors-v2 status                     # line, loans, record
@@ -99,7 +99,12 @@ Run the `npx` commands inside the clone: there they run this repository's own CL
 unrelated npm package and `priors-v2` on npm is only a placeholder that prints these instructions, so never run
 them with `PRIORS_KEY` set anywhere else.
 
-The wallet needs a little native gas, enough USDG to pay the fee (about $0.012 on $5 for 7 days) and, for a
+Take 14 days: hold the loan a week, then repay any time before its due date. A loan held under 7 days does not count
+toward the record, and a 7-day loan counts only when repaid at or after its due time, the moment Score v2 starts
+counting a repayment as late (from weights 2.0.3, on 2026-11-02, only after 24 hours more). `priors-v2 borrow` says
+so before it borrows for 7 days or less.
+
+The wallet needs a little native gas, enough USDG to pay the fee (about $0.023 on $5 for 14 days) and, for a
 self-service invite, the 5 USDG bond (step 2 below). A brand-new agent cannot take a seat:
 `npx priors-v2 join --seat <staker>` takes a staker's seat offer only once the agent has repaid 10 loans (new seats go
 to the growth seat vault; SeatVaultV3's 10 seats were all taken as of 2026-09-29). Without an invite, a first line comes
@@ -240,7 +245,7 @@ moves nothing ([`packages/x402`](packages/x402#merchant-check-who-is-paying-reco
 |---|---|---|
 | **1** | **identity** | `register(uri)` on the ERC-8004 registry, once. Your NFT is your identity. Already have an id? Skip this (set `PRIORS_AGENT_ID` if it predates v2 or was transferred to you). The pool never sees your keys, only the id. |
 | **2** | **a line** | **Treasury invite:** at [priors.trade/invite](https://priors.trade/invite) you post a 5 USDG bond in `InviteBond` from the wallet that owns the agent, prove you own it to the Telegram bot, and the bot signs treasury v4's invite for your id on the spot; you redeem it with your pool consent → $5 (at most $25 of new treasury lines a week). The bond comes back once the agent has repaid 3 qualified loans with none open, or after 4 days if it never gets a line; a default sends it to the Safe, so taking a first line and walking away nets nothing. **Seat:** a staker offers a seat of $PRIORS on your id and you accept it → $50 on the growth seat vault, loans of at most 7 days (your agent needs 10 repaid loans first). **Backer:** a root vouches any size with your signed consent. **Stock line:** you deposit accepted Robinhood stock tokens and the stock vault backs a line against them (see "Stock lines" below). |
-| **3** | **borrow, hold, repay** | `quoteFee` → about $0.011666 for $5 over 7 days. `borrow` → USDG in your wallet. Do work. `repay` → principal + fee. Under 7 days repays fine but does not count: dollar-days are the score. |
+| **3** | **borrow, hold, repay** | `quoteFee` → about $0.023333 for $5 over 14 days. `borrow` → USDG in your wallet. Do work. `repay` → principal + fee. Under 7 days repays fine but does not count: dollar-days are the score. A 7-day loan counts only when repaid at or after its due time (Score v2 counts it late after that; from weights 2.0.3, only after 24 hours more), so 14 days leaves a week to repay on time. |
 | **4** | **grow** | Treasury v5 `raise(agentId)` → $25, after 3 qualified loans, 14 days, score ≥ 100 and a clean record (since 2026-10-14; an agent on a v4 line moves there first with `move`, and its own 5 USDG `InviteBondV2` bond, which stays as long as the line; treasury v4 raises nothing since 2026-10-12). Beyond that, lines grow by finding a bigger backer: v2 has no unbacked "earned" credit. |
 
 ```bash
@@ -261,7 +266,7 @@ published on npm under that name):
 import { resolveV2 } from "priors/env";          // deployments/<chainId>.v2.json, RPC_URL, PRIORS_KEY
 const { priors } = await resolveV2();
 await priors.redeemInvite(agentId, inviteCode);  // priors-invite:<id>:<expiry>:<signature>
-const { loanId } = await priors.borrow(agentId, 5, 7 * 86400);
+const { loanId } = await priors.borrow(agentId, 5, 14 * 86400);
 await priors.repay(loanId, { agentId });
 await priors.status(agentId);
 // x402: pay per call, borrowing only the shortfall from the line (docs/FLOAT.md)
@@ -304,7 +309,7 @@ import { resolveV2 } from "priors/env";
 const { priors } = await resolveV2();                    // the vault's address comes from deployments/4663.v2.json
 await priors.stockAssets();                              // each token's price, whether the vault lends now, its LTV
 await priors.openStockLine(agentId, spyToken, "0.05");   // deposit 0.05 SPY and open the line (signs the consent)
-const { loanId } = await priors.borrow(agentId, 5, 7 * 86400);
+const { loanId } = await priors.borrow(agentId, 5, 14 * 86400);
 await priors.repay(loanId, { agentId });
 await priors.closeStockLine(agentId);                    // every token back to the depositor
 ```

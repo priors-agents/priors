@@ -13,7 +13,7 @@
 //            const { consent, sig } = await p.signConsent({ agentId, sponsorId, maxPremiumBps, deadline })
 //            await p.redeemInvite(agentId, "priors-invite:<id>:<expiry>:<sig>")   // treasury v4 first line
 //            await p.acceptSeat(agentId, staker)                                  // a staker's seat offer
-//            const { loanId } = await p.borrow(agentId, 5, 7 * 86400)             // $5 for 7 days
+//            const { loanId } = await p.borrow(agentId, 5, 14 * 86400)            // $5 for 14 days (termNote)
 //            await p.repay(loanId, { agentId }); await p.openLoans(agentId); await p.status(agentId)
 //   raise    await p.raise(agentId)                    // its treasury's raise to the second line (25 USDG)
 //            await p.moveToTreasuryV5(agentId)         // treasury v4's line -> treasury v5's, then the raise
@@ -289,6 +289,19 @@ export const INVITE_TYPES = { Invite: [{ name: "agentId", type: "uint256" }, { n
 // ---------------------------------------------------------------------------------------------------------------
 // Units
 // ---------------------------------------------------------------------------------------------------------------
+
+/** What a term means for the record, or null: CreditPoolV2 counts a repayment once the loan was held `minScoreTerm`
+ *  (7 days on the live pool), held time capped at the term, and Score v2 counts one after the due time as late (from
+ *  weights 2.0.3, more than 24 hours after it: public issue priors-agents/priors#16). So a shorter term never counts,
+ *  and a term of exactly minScoreTerm counts only when repaid at or after its due time. */
+export function termNote(term, minScoreTerm) {
+  const t = Number(term), m = Number(minScoreTerm);
+  if (!(m > 0)) return null;
+  const d = (s) => `${Math.round((s / 86400) * 100) / 100}-day`;
+  if (t < m) return `a ${d(t)} loan never counts toward the agent's record: the pool counts a repayment once the loan is held ${d(m).replace("-day", " days")}. A ${d(2 * m)} term does.`;
+  if (t === m) return `a ${d(t)} loan counts toward the record only when repaid at or after its due time, which is when Score v2 starts counting a repayment as late (from weights 2.0.3, 2026-11-02, after 24 hours more). A ${d(2 * m)} term leaves ${d(m).replace("-day", " days")} to repay on time.`;
+  return null;
+}
 
 /** USDG: a bigint is raw units; a number or decimal string is whole dollars (6 decimals, exact for strings). */
 export function toUnits(amount) {

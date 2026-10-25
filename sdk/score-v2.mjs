@@ -5,7 +5,7 @@
 // What it adds over the on-chain v1 score (src/libraries/ScoreLib.sol):
 //   - only risk SOMEONE ELSE took counts: loans backed by the agent's own cluster (same owner, or agents and
 //     wallets under common control) build no score;
-//   - late repayments are penalised and earn nothing;
+//   - late repayments are penalised and earn nothing (from 2.0.3, late is more than 24 hours after the due time);
 //   - age runs from the first loan on Priors, v1 included, and restarts when the agent changes hands;
 //   - a default by any agent of the same owner zeroes the owner's other agents too;
 //   - x402 income from distinct payers outside the cluster, each payer capped and weighted by its own record;
@@ -21,6 +21,9 @@ import WEIGHTS_2_0_1 from "./score-weights.v2.0.1.json" with { type: "json" };
 // 2.0.2: 2.0.1 plus SeatVaultV5's roots as the owner's own collateral (a line sized by the owner's own $PRIORS). Its
 // inputs need the snapshot to name V5's root: sdk/score-v2-inputs.mjs refuses to build them without it.
 import WEIGHTS_2_0_2 from "./score-weights.v2.0.2.json" with { type: "json" };
+// 2.0.3: 2.0.2 plus a 24-hour window after the due time (penalties.lateAfterSeconds): a 7-day loan, the pool's minimum
+// score term, held its whole term could only be on time at its exact due second (priors-agents/priors#16).
+import WEIGHTS_2_0_3 from "./score-weights.v2.0.3.json" with { type: "json" };
 
 const DAY = 86400;
 const USDG = 1e6;
@@ -30,7 +33,7 @@ const round1 = (x) => Math.round(x * 10) / 10;
 /** The default weights (2.0.0). A newer version becomes the default only once announced (docs/SCORE-v2.md). */
 export const DEFAULT_WEIGHTS = WEIGHTS;
 /** Every published weights version, so a past score can be recomputed and a new one run before it is the default. */
-export const WEIGHTS_BY_VERSION = Object.freeze({ [WEIGHTS.version]: WEIGHTS, [WEIGHTS_2_0_1.version]: WEIGHTS_2_0_1, [WEIGHTS_2_0_2.version]: WEIGHTS_2_0_2 });
+export const WEIGHTS_BY_VERSION = Object.freeze({ [WEIGHTS.version]: WEIGHTS, [WEIGHTS_2_0_1.version]: WEIGHTS_2_0_1, [WEIGHTS_2_0_2.version]: WEIGHTS_2_0_2, [WEIGHTS_2_0_3.version]: WEIGHTS_2_0_3 });
 /** The weights of `version` (the default when empty); an unknown version throws. */
 export function weightsFor(version) {
   if (version == null || String(version).trim() === "") return DEFAULT_WEIGHTS;
@@ -38,6 +41,12 @@ export function weightsFor(version) {
   if (!w) throw new Error(`score-v2: unknown weights version ${version} (known: ${Object.keys(WEIGHTS_BY_VERSION).join(", ")})`);
   return w;
 }
+
+/** How long after its due time a repayment still counts as on time, in seconds: 0 before 2.0.3. */
+export const lateAfterSeconds = (W = WEIGHTS) => Number((W && W.penalties && W.penalties.lateAfterSeconds) || 0);
+/** Was a repaid loan late under weights `W`: closed more than lateAfterSeconds after its due time. Every count of late
+ *  repayments shown next to a score (the board, the record by owner, the attestation's evidence) uses this rule. */
+export const repaidLate = (closedAt, dueAt, W = WEIGHTS) => Number(closedAt) > Number(dueAt) + lateAfterSeconds(W);
 
 /** How much a payer's USDG counts (0..1): unknown wallets at `unknownPayerWeight`, scored ones by their own score. */
 export function payerWeight(score, W = WEIGHTS) {
@@ -73,7 +82,7 @@ export function scoreV2(input, W = WEIGHTS) {
     const closedAt = num(l.closedAt, "loan.closedAt", id), principal = num(l.principal, "loan.principal", id);
     const share = num(l.incomeShare ?? 0, "loan.incomeShare", id);
     if (share > 1) throw new TypeError(`score-v2: agent ${id}: loan.incomeShare must be at most 1 (got ${share})`);
-    if (closedAt > dueAt) { late++; continue; }
+    if (repaidLate(closedAt, dueAt, W)) { late++; continue; }
     if (!l.backedByOthers) continue;
     const held = Math.max(0, Math.floor(Math.min(closedAt, dueAt) - issuedAt));
     const sharePpm = BigInt(Math.round(share * 1e6));
