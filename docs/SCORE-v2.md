@@ -71,7 +71,8 @@ Each result also has `next` (since 2026-10-16): the next rung and how far the ag
 `backedRepaid` (repayments backed by someone else), `spanDays` (days from the first such repayment to the last) and
 `late` (need 0) for proven; `recordScore` (income left out) and `daysSinceFirst` for earned; `incomePoints` and
 `payers` for income-backed. `blocked` is `"late"` when a late repayment keeps proven closed for good. `next` is null at
-rung 4 and after a default. It changes nothing in the score or the rung.
+rung 4 and after a default. It changes nothing in the score or the rung. Go mode's Scores section and the board's agent
+sheet show it; `/api/board` counts per rung the agents one condition short of it (`near`).
 
 ## Clusters
 
@@ -134,6 +135,7 @@ once, without holding scores back; the published `index.permit2Backfill` is `nul
 | flip hundreds of small loans | risk time counts USDG × days: 300 half-hour loans of 8 USDG earn under 10 points (flips of hundreds of USDG do add up, but that money is really at risk, and flips never make seasoned loans) |
 | many tiny week-long loans | a seasoned loan counts by size: ten 1 USDG loans are worth 4 points, not 200 |
 | back yourself | loans backed by your own owner count for nothing |
+| put more of your own $PRIORS behind your agent's SeatVaultV5 line | 2.0.2's rule, kept in 2.0.3 (Priors' published scores from 2026-11-02 00:00 UTC): V5's roots count as the owner's own collateral, so its loans and its line build nothing, whatever the stake. 2.0.1 (published until then) would not catch it once V5's root is 30 days old, from 2026-11-10 15:06 UTC: a bigger stake opens a bigger line, and its loans count as someone else's risk (`scripts/test-score-v2-priors-stake.mjs`) |
 | back yourself from a fresh second wallet, or buy an aged backer id | a backer counts only after 30 days on Priors, counted from when its current owner took the id (registry transfers); v2.1 adds funding-source clusters |
 | pay yourself to fake income | payers in your cluster (owner, declared wallet, linked agents) are excluded; each payer is capped; unknown payers count half |
 | fund a second wallet, then have it pay you | what your side sent that wallet directly is netted out of its payments; funding it through an intermediary is not caught yet (v2.1) |
@@ -166,7 +168,8 @@ Scores are computed by Priors from public data: the on-chain record and x402 pay
 Live since 2026-09-27:
 
 - `GET https://priors.trade/api/score-v2` (every agent; `?agent=<id>` for one): recomputed at most every 10 minutes;
-  a result older than an hour is not served. Free.
+  a result older than an hour is not served. Free. While a newer weights version is scheduled, each answer also
+  carries `upcoming: { version, from }`: that version, and the UTC instant from which published scores use it.
 - The paid API (`api.priors.trade`, x402): `/v1/score/:id` adds `v2` with the breakdown.
 - The hosted MCP (`mcp.priors.trade`) and the npm `@priors/mcp` (0.1.7 and later): `score_of` adds the v2 line.
 
@@ -181,9 +184,11 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
   the version it is given (`weightsFor` in `sdk/score-v2.mjs`: 2.0.0, 2.0.1, 2.0.2 or 2.0.3; 2.0.0 when none is
   given). Priors' published scores use 2.0.1, and 2.0.3 from 2026-11-02 00:00 UTC (in place of 2.0.2 from
   2026-11-01): a score's version follows from its own timestamp.
-- **No hidden levers.** No per-agent overrides. Protecting the pool from a bad actor uses the existing on-chain tools
+- **No per-agent levers.** No per-agent overrides. Protecting the pool from a bad actor uses the existing on-chain tools
   (freeze, pause), which are public events.
-- **The clusters list changes only by commit** (in Priors' own repository; it is not published).
+- **The clusters list changes only by commit** (in Priors' own repository; it is not published, so a score it touches
+  can't be rebuilt from public data alone). A link can only stop loans and payments from counting between the linked
+  parties; it never adds points.
 
 ## Rollout
 
