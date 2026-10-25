@@ -221,9 +221,9 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
   repayments Priors shows beside a score uses the same window from the same instant: the board, the record by owner,
   the attestation's evidence (`evidenceIndex` in `sdk/attestation.mjs`, its `lateAfter`) and, through the snapshot's
   `meta.lateAfter` (86400 while the weights in force have the window), `/api/desks`, the paid API, Go mode's seats and
-  the share card (`scripts/test-score-v2-late-window.mjs`). `priors-v2 borrow` defaults to 14 days and explains a term
-  of 7 days or less before it borrows (`sdk/priors-v2.mjs termNote`). Announced 7 days before it becomes the default,
-  and before V5's roots are 30 days old.
+  the share card (`scripts/test-score-v2-late-window.mjs`). `priors-v2 borrow` defaults to 14 days (a backer that lends
+  for less keeps its own limit) and explains a term of 7 days or less before it borrows (`sdk/priors-v2.mjs termNote`).
+  Announced 7 days before it becomes the default, and before V5's roots are 30 days old.
 - **2.0.2** (published 2026-10-23 on the dev log, priors.trade/updates; due as Priors' scores' version from 2026-11-01
   00:00 UTC, replaced before then by 2.0.3, which keeps its rule, from 2026-11-02): 2.0.1 plus SeatVaultV5's roots as the owner's own collateral (`sdk/score-weights.v2.0.2.json`,
   `backers.ownCollateralRoots` "seatVaultV5": `meta.seatVaultV5AgentId`, and `meta.seatVaultV5RetiredAgentId` when

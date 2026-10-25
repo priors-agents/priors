@@ -5,8 +5,10 @@
 //   priors-v2 join                        register an ERC-8004 identity for this key if it owns none; print its id
 //   priors-v2 join --invite <code>        ... then redeem a treasury v4 invite for a first line
 //   priors-v2 join --seat <staker>        ... then accept that staker's seat offer on the agent
-//   priors-v2 borrow <amount> [--days N]  borrow USDG (default 14 days) to the key's address; a term of 7 days or
-//                                         less is told what it means for the record first (termNote)
+//   priors-v2 borrow <amount> [--days N]  borrow USDG (default 14 days, or the backer's own cap when it lends for
+//                                         less) to the key's address; a term of 7 days or less is told what it means
+//                                         for the record first (termNote); a --days over the backer's cap is refused,
+//                                         unsent
 //   priors-v2 repay [--all]               repay the oldest open loan, or every open loan
 //   priors-v2 status                      identity, sponsor, line, loans, balances, the agent's declared wallet
 //   priors-v2 raise                       raise the agent's treasury line to its second line (25 USDG): treasury v5's;
@@ -23,6 +25,12 @@
 // names the fix: `priors-mcp link-wallet --agent <id>` (@priors/mcp 0.11.0) signs the registry's AgentWalletSet with
 // this key, and this key, the owner, sends the setAgentWallet call it prints. A read that fails adds nothing: the wallet
 // line is then as before, and the exit code is unchanged.
+//
+// `borrow`'s term: 14 days unless --days says otherwise; on a backer that lends for less, its longest term, said on
+// stderr: the growth seat vault's maxLoanTerm (read on chain, 7 days at deployment), SeatVaultV5's 10 days (a constant
+// of the vault). Either refuses a longer loan (the pool reverts BorrowBlockedByBacker), and on a SeatVaultV5 line the
+// SDK sends V5's refresh or noteDelegate first, so a --days over the cap is refused before anything is sent. Treasuries,
+// SeatVaultV3 and the stock vault have no cap of their own. termNote then reads the term against the pool's minScoreTerm.
 //
 // Environment (the key is never read from argv and never printed; .env is loaded like the v1 tools):
 //   PRIORS_KEY        the agent owner's private key (PRIVATE_KEY is accepted too)
@@ -309,16 +317,49 @@ async function join(flags) {
   await statusAfter(sdk, addresses, id);
 }
 
+/** `borrow`'s term without --days. */
+const DEFAULT_TERM = 14n * 86400n;
+/** SeatVaultV5 lends for at most 10 days (V5Types MAX_LOAN_TERM: a constant of the vault, with no getter). */
+const V5_MAX_TERM = 10n * 86400n;
+const dayText = (s) => { const d = Number(s) / 86400; return `${Number.isInteger(d) ? d : d.toFixed(2)} day${d === 1 ? "" : "s"}`; };
+
+/**
+ * The longest term agent `id`'s backer lends for, in seconds, when it caps terms itself, else null: SeatVaultV5's root
+ * (10 days), or a seat vault with a maxLoanTerm (the growth seat vault). A read that fails gives null: the term stands,
+ * and the backer's refusal, if any, says why.
+ */
+async function backerMaxTerm(sdk, addresses, id) {
+  try {
+    const sponsor = (await sdk.pool.getAgent(id)).sponsor;
+    if (sponsor === 0n) return null;
+    if (Number(addresses.seatVaultV5AgentId) > 0 && sponsor === BigInt(addresses.seatVaultV5AgentId)) return V5_MAX_TERM;
+    for (const v of sdk._vaults()) {
+      if ((await v.agentId()) !== sponsor) continue;
+      const cap = new ethers.Contract(await v.getAddress(), ["function maxLoanTerm() view returns (uint64)"], sdk.provider);
+      const max = await cap.maxLoanTerm().catch(() => 0n); // SeatVaultV3 has none: no cap of its own
+      return max > 0n ? max : null;
+    }
+  } catch (_) { /* the term stands */ }
+  return null;
+}
+
 async function borrow(pos, flags) {
   if (pos.length !== 1) throw new UsageError("borrow takes one amount, e.g. `priors-v2 borrow 5`");
   const amount = toUnits(pos[0]);
-  const days = flags.days == null ? 14 : Number(flags.days);
-  if (!Number.isFinite(days) || days <= 0) throw new UsageError("--days must be a positive number");
+  const days = flags.days == null ? null : Number(flags.days);
+  if (days != null && (!Number.isFinite(days) || days <= 0)) throw new UsageError("--days must be a positive number");
   const { sdk, wallet, addresses } = await config();
   holdKey(wallet.address);
   refuseWhileUnresolved(wallet.address, "borrow");
   const id = await needAgent(sdk, wallet.address, addresses);
-  const term = BigInt(Math.round(days * 86400));
+  let term = days == null ? DEFAULT_TERM : BigInt(Math.round(days * 86400));
+  // the backer's own cap, before anything is sent: on a SeatVaultV5 line the SDK's first step is a transaction
+  const cap = await backerMaxTerm(sdk, addresses, id);
+  if (cap != null && cap < term) {
+    if (days != null) throw new Error(`agent #${id}'s backer lends for at most ${dayText(cap)}: --days ${flags.days} is longer, so it would refuse the loan (BorrowBlockedByBacker); nothing was sent. Borrow for ${dayText(cap)} or less, or leave out --days`);
+    term = cap;
+    console.error(`priors-v2: note: agent #${id}'s backer lends for at most ${dayText(cap)}: borrowing for ${dayText(cap)} (the default is 14 days; --days sets the term)`);
+  }
   // the pool's own minScoreTerm; a failed read says nothing rather than guess
   let minScoreTerm = 0;
   try { minScoreTerm = Number((await sdk.pool.getParams()).minScoreTerm); } catch (_) { /* no note */ }

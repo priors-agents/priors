@@ -94,9 +94,10 @@ Real shape, built from the live snapshot of block 80,894,837 (addresses and hash
 - `line`: the lens' `creditReport` at `block`, the same figures the site, `/api/snapshot` and the API's `availableOf`
   show: `limit` = capacity, `drawn` = principalOut, `available` = the pool's available, capped by the stock vault's
   borrowRoom for a stock line.
-- `repaid`: loans repaid by their due date (v1 era included) and their principal; `last` cites the latest five by loan
-  id and repayment transaction (a v1 loan carries `"era": "v1"` and the file names `v1Pool`). `late`: repaid after the
-  due date. `defaults`: defaulted loans; `defaulted: true` when the agent is.
+- `repaid`: loans repaid on time, every repayment that is not `late` (v1 era included), and their principal; `last`
+  cites the latest five by loan id and repayment transaction (a v1 loan carries `"era": "v1"` and the file names
+  `v1Pool`). `late`: repaid more than 24 hours after the due time from weights 2.0.3 (2026-11-02), after the due time
+  before that. `defaults`: defaulted loans; `defaulted: true` when the agent is.
 - `backing`: the sponsor id and the USDG it delegates; a root's own `stake`; a stock line's `collateral` (token,
   symbol, amount, value).
 - `income`: Score v2's counted x402 income (`detail.incomeUsdg`: payers in the 30-day window, netted, dust left out,
