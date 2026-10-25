@@ -171,7 +171,8 @@ ones:
 - **How first lines are issued.** A treasury v4 invite is signed by the treasury's named inviter after a check that
   the requester owns the agent; redeeming it also needs the owner's pool consent. The invite bot signs
   automatically (self-service mode, on) once the agent's owner has posted a 5 USDG bond in `InviteBond`: the bond
-  comes back once the agent has repaid 3 qualified loans (or holds no line 4 days after the deposit), and goes to
+  comes back once the agent holds no line and no open loan, at least 4 days after the deposit (repaid loans no
+  longer release it since 2026-10-12, when the Safe set treasury v4's `minQualified` to 1,000,000), and goes to
   the Safe if the agent defaults. Without a bond,
   an invite still needs an admin's approval. New treasury lines are capped at $100 a week by treasury v4's
   `epochCap`; one person taking the week's first lines within that cap, bond paid, is a listed residual (AI-1), not
