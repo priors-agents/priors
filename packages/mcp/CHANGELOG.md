@@ -1,5 +1,48 @@
 # @priors/mcp changelog
 
+## 0.12.0 (2026-10-26)
+
+- **A borrow the node took is always counted** (GHSA-rh27-m4c4-p2c7, reported by kevin9327). ethers' default
+  transport sends a JSON-RPC request again after an HTTP 429, and a node that took the first copy of a signed borrow
+  can answer the identical retried bytes "insufficient funds for gas * price + value". `borrow`, `pay_url`,
+  `pay_gateway` and `fund_base`'s loan took that answer as a refusal before anything was sent and gave back what the
+  call had reserved: `PRIORS_MAX_BORROW_TOTAL_USD` let a second borrow through in the same session, and
+  `PRIORS_MAX_BORROW_DAY_USD` after a restart on the same `PRIORS_STATE_DIR` (two loans of 25 USDG against limits of
+  25). `fund_base` also cleared its record of a deposit that may have left, and a savings top-up that may have landed
+  read as "no ETH for gas", so `pay_url` could borrow for money already on its way.
+  - On @priors/x402 0.8.2: that answer is a refusal only while the node does not know the signed transaction's hash.
+    Otherwise a borrow is unconfirmed: counted against both limits, and the answer says it may have opened a loan, with
+    its hash. `fund_base` keeps its record of the deposit, and a top-up is pending (the payment waits for it).
+  - This server's own connection (`PRIORS_RPC`) no longer sends a request carrying `eth_sendRawTransaction` again
+    after a 429: that 429 is the call's answer, unconfirmed like any lost answer. Reads keep ethers' retries.
+  - What is left: behind a load balancer, the hash lookup can reach a backend that has not seen the transaction yet
+    (`docs/SECURITY-v2.md` P-48 in the repository).
+- **`first_line`, with `PRIORS_JOIN=on`: the treasury's first line for the identity `join` registered, with no clone or
+  Telegram** (`docs/growth/mcp-first-line.md` in the repository). For the identity the configured wallet owns, when it
+  has no Priors record, it takes the invite page's steps from the wallet: the invite's 5 USDG bond (USDG's `approve`
+  when the allowance is short, then InviteBond's `deposit`, as the page posts it), the invite bot's browser proof
+  (`POST /prove {agentId}`, then `{n, signature}`, at `PRIORS_BOT_URL`, default `https://priors.trade`), then the pool
+  consent and treasury v4's `firstLine`, as the SDK's `redeemInvite` does. Its answer names the line (the pool's
+  `Vouched` from its receipt) and how the bond comes back.
+  - It signs the bot's proof only when the message is, byte for byte, the bot's own start-page text rebuilt here for
+    that agent, its request and its expiry, and the answer names the wallet as the owner; anything else is refused,
+    judged before the bond, with nothing signed. A bot release that changes that text makes it refuse until this
+    package follows.
+  - Refused before anything is signed: an identity the wallet does not own; one with a Priors record (its state is the
+    answer); too little ETH for the gas, or less USDG than the bond; a `PRIORS_MAX_SPEND_DAY_USD` limit the bond would
+    pass (the bond counts against it); the bot's check (`POST /prove {check: true, owner}`) closed, with its reason and
+    `line_options`' routes, the fourth the quote of the line the owner's own $PRIORS would open.
+  - Every transaction goes through the one-money-call queue, is signed here, kept in `PRIORS_STATE_DIR`
+    (`first-line-<wallet>.json`, under the payments' lock) before its one broadcast, and looked up after a failed one,
+    as `join`'s. One whose receipt is lost answers `TX_UNCONFIRMED` with its hash; every later call, a restart or
+    another session included, sends nothing until it settles, then goes on from there. A bond the wallet already posted
+    for the identity is never posted again.
+  - With `PRIORS_JOIN` off (unset, or `off`, `false`, `0`, `no`, `none`), the tools, the instructions and every answer
+    are 0.11.1's, byte for byte, but for the fix above, and `PRIORS_BOT_URL` is not read. With it on, the instructions
+    gain one sentence on `first_line` after `join`'s.
+- **The routes `join` and `first_line` answer word SeatVaultV5's step rule as the hosted server does:** each of the 3
+  loans is at least half the step's top line (it said "half the line").
+
 ## 0.11.1 (2026-10-25)
 
 - **The daily limits count a call that ends while another server checks them.** With `PRIORS_MAX_SPEND_DAY_USD` or

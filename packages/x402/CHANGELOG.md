@@ -1,5 +1,31 @@
 # @priors/x402 changelog
 
+## 0.8.2 (2026-10-26)
+
+- **A transaction the node took is never read as one it refused** (GHSA-rh27-m4c4-p2c7, reported by kevin9327).
+  ethers 6 sends a JSON-RPC request again after an HTTP 429 (and after a 301/302/307/308), and a node that took the
+  first copy of a signed transaction can answer the identical retried bytes "insufficient funds for gas * price +
+  value". `borrowLine` and `borrowGap` (so `pay()` and `payViaGateway` too) rethrew that `INSUFFICIENT_FUNDS` as a
+  refusal before anything was sent, though the loan was open; `fundBase` answered `NO_GAS` with `moved: false` for a
+  deposit that may have left; `save`, `unsave` and `topUpFromSavings` answered `NO_GAS` for a transaction that may
+  have landed. A caller then counted nothing: @priors/mcp's session and daily borrowing limits let a second loan
+  through.
+  - An `INSUFFICIENT_FUNDS` from the broadcast is now a refusal only while the node does not know the hash of the
+    signed bytes ethers keeps in the error (`getTransaction` on the signer's provider, at most 10 s). One the node
+    knows, a lookup that fails or times out, or no provider to ask, is `BORROW_UNCONFIRMED` (`borrowed`,
+    `unconfirmed: true`), `DEPOSIT_UNCONFIRMED` (`moved: true`) or the savings' `UNCONFIRMED`, each with that `hash`
+    (and the savings' `o.sent`).
+  - Unchanged: a refused estimate (`CALL_EXCEPTION`, or `INSUFFICIENT_FUNDS` with nothing signed) and a mined revert
+    (`CALL_EXCEPTION` with its receipt) are rethrown as before, and a lost answer was already unconfirmed. A
+    `CALL_EXCEPTION` without a receipt after the hash came back, which ethers 6 does not raise, is unconfirmed too.
+  - New in `@priors/x402/credit`: `refusedUnsent(err, runner)` and `refusedTxHash(err)`, the rule above.
+  - What is left: behind a load balancer, the lookup can reach a backend that has not seen the transaction yet, and a
+    transaction that was taken then still reads as refused. Signing first and sending the signed bytes once, as the
+    repository's SDK does, closes that; @priors/mcp 0.12.0 no longer sends its own copy again after a 429.
+- **A 402 that asks for USDG by Permit2 says so.** `NO_USDG_REQUIREMENT` for an exact requirement in USDG on Robinhood
+  Chain whose `extra.assetTransferMethod` is `permit2` now says this payer signs USDG's own EIP-3009 transfer only,
+  instead of "does not accept exact USDG on Robinhood Chain". No merchant text is quoted.
+
 ## 0.8.1 (2026-10-23)
 
 - **Borrowing and repaying both need the agent's owner or its declared ERC-8004 wallet.** CreditPoolV2 lets an owner

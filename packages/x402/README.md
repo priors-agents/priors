@@ -232,7 +232,10 @@ default), `asset` (a USDG address for a fork or test token; default the pool's `
   `maxBorrow` or the pool's `maxLoan`, caps the fee at the pool's quote (or `maxFee`), and simulates the borrow first. A borrow that was
   sent and whose answer was lost (the broadcast's or the receipt's) may have mined: it throws `BORROW_UNCONFIRMED` with
   `borrowed` set, `loanId: null`, `unconfirmed: true` and the tx `hash` when known. Count it, check the agent's loans,
-  and repay before the due date.
+  and repay before the due date. From 0.8.2 the node's "insufficient funds" for a borrow it already holds is one too:
+  ethers sends a request again after an HTTP 429, and a node that took the first copy refuses the identical bytes
+  that way (GHSA-rh27-m4c4-p2c7). `INSUFFICIENT_FUNDS` is thrown as is only for a borrow the node does not know, asked
+  by its hash; a lookup that fails counts as sent.
 - **Term**: 7 days by default, clamped into the pool's range; an explicit `termSeconds` above the pool's maximum is
   refused. The result's `dueAt` is when the loan is due; three days later anyone can mark it defaulted, and the
   agent's record is burnt.
@@ -265,14 +268,15 @@ default), `asset` (a USDG address for a fork or test token; default the pool's `
 
 Refusals throw a `PayError` with a `code`: `PRICE_ABOVE_MAX_PRICE`, `PRICE_ABOVE_MAX_BORROW`,
 `MIN_LOAN_ABOVE_MAX_BORROW`, `ABOVE_MAX_LOAN`, `TERM_OUT_OF_RANGE`, `FEE_TOO_HIGH`, `NO_POOL`, `NO_USDG_REQUIREMENT`
-(no requirement this payer signs: USDG on Robinhood Chain, or USDC on Base when enabled), `BAD_402`,
+(no requirement this payer signs: USDG on Robinhood Chain, or USDC on Base when enabled; from 0.8.2 its message says
+when the 402 asks for USDG by Permit2, which this payer does not sign), `BAD_402`,
 `BORROW_WOULD_REVERT`, `BORROW_UNCONFIRMED` (not a refusal: the borrow was sent, and may have opened a loan),
 `NO_SIGNER`, `NO_PROVIDER` (also: `networks` names Base and no `baseProvider` was given), `NO_FETCH`,
 `UNSUPPORTED_TRANSFER_METHOD` (a requirement that is not EIP-3009), `BAD_NETWORK` (a `networks` entry not in the
 allowlist), `BASE_FLOAT_SHORT` (a Base requirement, and the wallet's USDC on Base, less what `baseReserve()` keeps
 back, is short of the price: nothing was signed; `price`, `balance`, `reserve`, `network` and `asset` on the error),
 `NOT_CONTROLLER` (`repayLoan`, `settleLoans`), `NOT_OWNERS_LOAN` (`repayLoan`, 0.6.3), `NOT_AGENTS_WALLET` (`repayLoan`,
-`settleLoans`, `borrowGap`, `borrowLine`, unreleased). The
+`settleLoans`, `borrowGap`, `borrowLine`, 0.8.1). The
 bridge and `payViaGateway` (below) add their own codes. The credit helpers add
 `LOAN_SIZE_OUT_OF_RANGE` (`quoteBorrow`, `borrowLine`), `LOAN_NOT_ACTIVE`, `INSUFFICIENT_USDG`, `REPAY_WOULD_REVERT`
 (`repayLoan`) and `NO_STOCK_VAULT` (`stockPosition`, `stockAssets`).
@@ -296,13 +300,14 @@ const fetchWithPay = wrapFetchWithPayment(fetch, createUsdgClient({ signer, maxP
 
 `@priors/x402/credit` has the Priors v2 pieces the MCP server uses: `creditContracts`, `creditStatus`, `quoteBorrow`,
 `borrowLine`, `repayLoan`, `settleLoans`, `balances`, `borrowGap`, plus `poolContract`, `explainRevert` (a revert as
-`Name(args)`), `LOAN_STATUS` and the ABIs (`POOL_ABI`, `LENS_ABI`, `ERC20_ABI`, `STOCK_VAULT_ABI`). `repayLoan` pays
+`Name(args)`), (0.8.2) `refusedUnsent` and `refusedTxHash` (whether a failed broadcast sent nothing, by the hash of
+its signed bytes), `LOAN_STATUS` and the ABIs (`POOL_ABI`, `LENS_ABI`, `ERC20_ABI`, `STOCK_VAULT_ABI`). `repayLoan` pays
 only a loan of an agent the signer controls (owner or pool delegate); any other loan is refused with `NOT_CONTROLLER`
 before anything is sent. From 0.6.3 it also pays only a loan the agent's owner now took: a loan opened while someone
 else held the agent (`Loan.owner` is another address) is refused with `NOT_OWNERS_LOAN`, and `settleLoans` leaves such
 loans in `open` and lists them in `others` with who opened them (GHSA-mmp8).
 
-Unreleased, and **breaking for a delegate-only key**: borrowing and repaying both need the signer to be the agent's
+From 0.8.1, and **breaking for a delegate-only key**: borrowing and repaying both need the signer to be the agent's
 current owner or its declared ERC-8004 wallet (`getAgentWallet`). The pool lets an owner name any address its delegate
 with no word from that address, so a delegate that is not the declared wallet is refused with `NOT_AGENTS_WALLET`
 before anything is read or sent — in `repayLoan` and `settleLoans`, and equally in `borrowGap` and `borrowLine`, so
@@ -343,7 +348,8 @@ const { open } = await payer.settleLoans();  // tops up to what all open loans n
   `NOTHING_SAVED`, `MORE_THAN_SAVED` (each deposit is worth one base unit less than paid in), `VAULT_ILLIQUID` (with
   `withdrawable` and `reachable`), `EXIT_FAILED`, `EXIT_BLOCKED`, `DEPOSITS_CLOSED`, `NO_GAS`, `BAD_VAULT`,
   `NOT_USDG`. `VAULT_FULL` comes after the approval, which is then put back (`allowanceReset`). After sending:
-  `REVERTED` (on chain) and `UNCONFIRMED` (sent, confirmation not read; check before retrying), both with the `hash`.
+  `REVERTED` (on chain) and `UNCONFIRMED` (sent, confirmation not read; check before retrying), both with the `hash`;
+  (0.8.2) the node's "insufficient funds" for a transaction it already holds is `UNCONFIRMED` too, not `NO_GAS`.
   A node failure is thrown as is.
 - The in-kind exit uses only markets other than the liquidity market, with a penalty of 0, charged to an address that
   holds nothing: a penalty switched on before the transaction lands makes it revert rather than cost the saver.
@@ -426,7 +432,8 @@ await returnToRobinhood({ signer, amount: 1_000_000n, baseProvider: base }); // 
 - **Errors** (`PayError`, `moved` says whether money may have left): before anything is sent, `BRIDGE_QUOTE_FAILED`,
   `BRIDGE_QUOTE_REFUSED`, `BRIDGE_FEE_TOO_HIGH`, `INSUFFICIENT_USDG`, `BRIDGE_WOULD_REVERT`, `BRIDGE_REVERTED`,
   `NO_GAS`, `NOT_RECORDED`, `RELAY_QUOTE_FAILED`, `RELAY_QUOTE_REFUSED`, `INSUFFICIENT_USDC`; once it may be out,
-  `DEPOSIT_UNCONFIRMED` (the deposit's answer was lost), `BRIDGE_PENDING` (not filled in the time: it may still land,
+  `DEPOSIT_UNCONFIRMED` (the deposit's answer was lost; from 0.8.2 also the node's "insufficient funds" for a deposit it
+  already holds), `BRIDGE_PENDING` (not filled in the time: it may still land,
   or Across refunds it on Robinhood Chain after its fill deadline), `BRIDGE_REFUNDED`, `RETURN_PENDING` and
   `RETURN_FAILED` (the authorization is out until it expires). Never send a transfer again while one may be out.
 
