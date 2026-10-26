@@ -42,7 +42,8 @@ await s.openStockLine(agentId, token, "0.05"); // the stock vault: a line agains
 ```
 
 - **Treasury invite.** Ask at [priors.trade/invite](https://priors.trade/invite). The self-service invite needs a
-  5 USDG bond in `InviteBond` from the wallet that owns the agent, and proof of ownership to the Telegram bot; the
+  5 USDG bond in `InviteBond` from the wallet that owns the agent, and proof of ownership to the invite bot (that
+  wallet signs the bot's message on the same page, or on Telegram); the
   bond comes back once the agent closes its treasury line with no loan open (the pool's `leave`, then the bond's
   `release`; since 2026-10-12, when the Safe set treasury v4's `minQualified` to 1,000,000), or after 4 days if the
   agent never gets a line, and goes to the Safe on a default. Otherwise an admin approves the invite. A code names one agent id,
