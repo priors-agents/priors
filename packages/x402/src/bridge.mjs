@@ -23,7 +23,7 @@
 // Nothing here retries a transfer either: a transfer that may be out is reported (with what identifies it), never sent
 // again. ethers v6.
 import { ethers } from "ethers";
-import { PayError, ERC20_ABI, explainRevert } from "./credit.mjs";
+import { PayError, ERC20_ABI, explainRevert, refusedUnsent, refusedTxHash } from "./credit.mjs";
 import { formatUsdg } from "./robinhood.mjs";
 import { readCapped } from "./payer.mjs";
 import { ACROSS, RELAY, ROBINHOOD_USDG, BASE_USDC } from "./networks.mjs";
@@ -174,7 +174,8 @@ export async function depositStatus({ hash, fetchImpl = globalThis.fetch, timeou
  * Chain. Resolves once Across reports the deposit filled; otherwise throws, and what it throws says whether anything
  * left the wallet:
  *   before the deposit is sent (nothing moved; an exact approval may stay): BRIDGE_QUOTE_REFUSED, BRIDGE_FEE_TOO_HIGH,
- *     BRIDGE_QUOTE_FAILED, INSUFFICIENT_USDG, BRIDGE_WOULD_REVERT, NOT_RECORDED, BRIDGE_REVERTED or NO_GAS (`moved: false`);
+ *     BRIDGE_QUOTE_FAILED, INSUFFICIENT_USDG, BRIDGE_WOULD_REVERT, NOT_RECORDED, BRIDGE_REVERTED or NO_GAS (`moved: false`;
+ *     NO_GAS for the deposit only while the node does not know it);
  *   after (the USDG is out, never send it again; `moved: true`, the `hash` when known): DEPOSIT_UNCONFIRMED (the answer
  *     was lost: it may have mined), BRIDGE_PENDING (mined, not filled within the time: it may still fill, or be
  *     refunded on Robinhood Chain after its fill deadline), BRIDGE_REFUNDED (Across gave it back on Robinhood Chain).
@@ -224,11 +225,15 @@ export async function fundBase({ signer, amount, maxFeeBps = DEFAULT_MAX_FEE_BPS
     if (typeof onDepositSent === "function") { try { await onDepositSent({ ...transfer, hash: tx.hash }); } catch (_) { /* best effort: the record already says a transfer may be out */ } }
     rc = await tx.wait();
   } catch (e) {
-    // A refused estimate before broadcast and a mined revert both raise CALL_EXCEPTION; no gas is refused before it is
-    // sent: nothing moved either way.
-    if (e?.code === "CALL_EXCEPTION") throw new PayError("BRIDGE_REVERTED", `fundBase: the Across deposit reverted (${explainRevert(e, spoke.interface)}); nothing moved`, { moved: false, hash: typeof tx?.hash === "string" ? tx.hash : null, approveHash });
-    if (e?.code === "INSUFFICIENT_FUNDS") throw new PayError("NO_GAS", "fundBase: the wallet has no ETH for gas on Robinhood Chain; nothing was sent", { moved: false, approveHash });
-    const hash = typeof tx?.hash === "string" ? tx.hash : null;
+    // Nothing moved only when the error shows it, as sendBorrow reads a borrow's: a mined revert (CALL_EXCEPTION with its
+    // receipt), or before a hash came back a refused estimate, or the node's "insufficient funds" for a deposit it does
+    // not know (refusedUnsent). Its "insufficient funds" for one it knows answers a copy ethers sent again after the
+    // first was taken (GHSA-rh27-m4c4-p2c7): DEPOSIT_UNCONFIRMED below, with that hash.
+    if (tx ? e?.code === "CALL_EXCEPTION" && e.receipt : await refusedUnsent(e, signer)) {
+      if (e?.code === "CALL_EXCEPTION") throw new PayError("BRIDGE_REVERTED", `fundBase: the Across deposit reverted (${explainRevert(e, spoke.interface)}); nothing moved`, { moved: false, hash: typeof tx?.hash === "string" ? tx.hash : null, approveHash });
+      throw new PayError("NO_GAS", "fundBase: the wallet has no ETH for gas on Robinhood Chain; nothing was sent", { moved: false, approveHash });
+    }
+    const hash = typeof tx?.hash === "string" ? tx.hash : refusedTxHash(e);
     throw new PayError("DEPOSIT_UNCONFIRMED", `fundBase: an Across deposit of ${formatUsdg(amount)} USDG was sent${hash ? ` (tx ${hash})` : ""} and its answer was lost (${e?.shortMessage || e?.message || String(e)}): it may have mined. Do not send it again`,
       { moved: true, unconfirmed: true, hash, amount, outputAmount: q.outputAmount, fillDeadline: q.fillDeadline, cause: e });
   }

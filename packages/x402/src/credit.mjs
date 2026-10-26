@@ -112,12 +112,56 @@ export function explainRevert(err, iface = new ethers.Interface(POOL_ABI)) {
   return err?.shortMessage || err?.reason || err?.message || String(err);
 }
 
+/** How long the node is asked about a refused broadcast's hash before it counts as "may have been sent". */
+const LOOKUP_MS = 10_000;
+
+/**
+ * The hash of the signed transaction a failed broadcast carried, or null. ethers keeps the signed bytes in
+ * `e.transaction` when the node answers eth_sendRawTransaction with an error it names (INSUFFICIENT_FUNDS, NONCE_EXPIRED,
+ * REPLACEMENT_UNDERPRICED); a refused estimate keeps the unsigned request there, which has no hash.
+ */
+export function refusedTxHash(e) {
+  const raw = e?.transaction;
+  return typeof raw === "string" && /^0x(?:[0-9a-fA-F]{2})+$/.test(raw) ? ethers.keccak256(raw) : null;
+}
+
+/**
+ * Whether `e`, thrown before a transaction's hash came back, shows that nothing was sent (GHSA-rh27-m4c4-p2c7).
+ * CALL_EXCEPTION (ethers raises it for a refused estimate, before anything is signed) and INSUFFICIENT_FUNDS without
+ * signed bytes (the estimate's) do. INSUFFICIENT_FUNDS on the broadcast does only while the node does not know the
+ * signed transaction's hash: ethers' default transport sends a request again after an HTTP 429 (and after a redirect),
+ * and a node that took the first copy answers the identical bytes "insufficient funds", so a borrow that went through
+ * looked refused. A lookup that fails or takes over LOOKUP_MS, or no provider to ask (`runner.provider`, or `runner`),
+ * means it may have been sent; so does any other error. A node behind a load balancer may still answer the lookup from
+ * a backend that has not seen the transaction yet: only signing first and sending once closes that (SECURITY-v2 C-13).
+ */
+export async function refusedUnsent(e, runner) {
+  if (e?.code === "CALL_EXCEPTION") return true;
+  if (e?.code !== "INSUFFICIENT_FUNDS") return false;
+  const hash = refusedTxHash(e);
+  if (hash === null) return true;
+  const provider = runner?.provider ?? runner;
+  if (!provider || typeof provider.getTransaction !== "function") return false;
+  let timer;
+  try {
+    const late = new Promise((_, no) => { timer = setTimeout(() => no(new Error("timed out")), LOOKUP_MS); timer.unref?.(); });
+    return (await Promise.race([provider.getTransaction(hash), late])) === null;
+  } catch (_) {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Send a borrow and wait for its receipt. Once the transaction may have left, a lost answer (the broadcast's or the
  * receipt's) may hide a loan that mined: it throws BORROW_UNCONFIRMED carrying the amount as `borrowed` (`loanId` and
  * `dueAt` unknown, `unconfirmed: true`, the tx `hash` when known), for the caller to count and to tell its user to check
- * and repay (GHSA-v9xj). Only CALL_EXCEPTION (ethers raises it for a refused estimate, before anything is sent, and for
- * a mined revert) and INSUFFICIENT_FUNDS (no gas: refused before it was sent) mean nothing was borrowed: rethrown as is.
+ * and repay (GHSA-v9xj). Only a refusal that shows nothing was borrowed is rethrown as is: a mined revert
+ * (CALL_EXCEPTION with its receipt), and before a hash came back what refusedUnsent says was not sent (the estimate's
+ * CALL_EXCEPTION or INSUFFICIENT_FUNDS; the node's "insufficient funds" for a signed borrow it does not know). Its
+ * "insufficient funds" for one it knows answers a copy ethers sent again after the first was taken: BORROW_UNCONFIRMED,
+ * with that hash (GHSA-rh27-m4c4-p2c7).
  */
 async function sendBorrow(poolC, args, amount, prefix) {
   let tx;
@@ -125,8 +169,8 @@ async function sendBorrow(poolC, args, amount, prefix) {
     tx = await poolC.borrow(...args);
     return { tx, rc: await tx.wait() };
   } catch (e) {
-    if (e?.code === "CALL_EXCEPTION" || e?.code === "INSUFFICIENT_FUNDS") throw e;
-    const hash = typeof tx?.hash === "string" ? tx.hash : null;
+    if (tx ? e?.code === "CALL_EXCEPTION" && e.receipt : await refusedUnsent(e, poolC.runner)) throw e;
+    const hash = typeof tx?.hash === "string" ? tx.hash : refusedTxHash(e);
     throw new PayError("BORROW_UNCONFIRMED", `${prefix}a borrow of ${amount} was sent${hash ? ` (tx ${hash})` : ""} and its answer was lost (${e?.shortMessage || e?.message || String(e)}): it may have opened a loan`,
       { borrowed: amount, loanId: null, dueAt: null, unconfirmed: true, hash, cause: e });
   }

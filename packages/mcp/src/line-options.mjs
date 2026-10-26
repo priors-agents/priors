@@ -136,7 +136,7 @@ function backerOf(rec) {
   return { agentId: s, kind, words: words ? `${words} (root #${s})` : `backer #${s}` };
 }
 
-const STEPS_RULE = "A bigger line comes by steps: 3 loans of at least half the line, each for 8 to 10 days, kept a week or more and repaid on time, and 14 days at the line, up to 500.00 USDG.";
+const STEPS_RULE = "A bigger line comes by steps: 3 loans of at least half the step's top line, each for 8 to 10 days, kept a week or more and repaid on time, and 14 days at the line, up to 500.00 USDG.";
 const BURN = "If the agent misses a payment, three quarters of its owner's $PRIORS behind it burns.";
 const QUOTE_ONLY = "This quote moves nothing and touches no score.";
 const RECORD_UNREAD = "its Priors record could not be read just now; agent_record shows it";

@@ -583,7 +583,14 @@ export function createPayer(opts = {}) {
     const req = version === 2 ? pickV2Requirement(paymentRequired.accepts, usdgAddr, { networks: callNetworks }) : version === 1 && callNetworks.includes(robinhood.network) ? pickV1Requirement(paymentRequired.accepts, usdgAddr) : null;
     // Never quote the merchant's value: callers show this message to a model, outside any data fence.
     if (version !== 1 && version !== 2) throw new PayError("BAD_402", `pay: unsupported x402Version (${Number.isSafeInteger(version) ? version : `a ${typeof version}`})`);
-    if (!req) throw new PayError("NO_USDG_REQUIREMENT", `pay: the resource does not accept exact USDG on Robinhood Chain${callNetworks.includes("eip155:8453") ? " or USDC on Base" : ""}`);
+    if (!req) {
+      // USDG on Robinhood Chain all the same, asked for by Permit2: said so, not as another asset (no merchant text quoted)
+      const permit2 = Array.isArray(paymentRequired?.accepts) && paymentRequired.accepts.some((a) => a && typeof a === "object" && a.scheme === "exact"
+        && (a.network === "eip155:4663" || a.network === robinhood.network) && String(a.asset || "").toLowerCase() === String(usdgAddr).toLowerCase()
+        && a.extra && typeof a.extra === "object" && a.extra.assetTransferMethod === "permit2");
+      throw new PayError("NO_USDG_REQUIREMENT", permit2 ? "pay: the resource asks for USDG on Robinhood Chain by Permit2, and this payer signs USDG's own EIP-3009 transfer only"
+        : `pay: the resource does not accept exact USDG on Robinhood Chain${callNetworks.includes("eip155:8453") ? " or USDC on Base" : ""}`);
+    }
     // The network it is paid on, and its token (v1 is Robinhood Chain only): the payer's own values, never the merchant's text.
     const n = version === 2 ? networkOf(req.network) : ROBINHOOD_USDG;
     const onRobinhood = n.network === robinhood.network;
