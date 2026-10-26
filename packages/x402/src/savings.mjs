@@ -19,6 +19,7 @@
 //   moment it is sent.
 import { ethers } from "ethers";
 import { robinhood } from "./robinhood.mjs";
+import { refusedUnsent, refusedTxHash } from "./credit.mjs";
 
 /** Steakhouse USDG (Morpho Vault V2) on Robinhood Chain. */
 export const DEFAULT_SAVINGS_VAULT = "0xBeEff033F34C046626B8D0A041844C5d1A5409dd";
@@ -86,10 +87,11 @@ function explainVaultRevert(e, what) {
 }
 
 /**
- * Estimate, then send with a margin (30% + 50k). `o.signal` can stop it up to the moment it is sent; `o.sent` is set
- * once it is. A failure to confirm after sending is UNCONFIRMED (with the hash): the transaction may have landed.
+ * Estimate, then send with a margin (30% + 50k), from `signer` (the runner `fn` is bound to). `o.signal` can stop it up
+ * to the moment it is sent; `o.sent` is set once it is. A failure to confirm after sending is UNCONFIRMED (with the
+ * hash): the transaction may have landed.
  */
-async function send(fn, args, what, o) {
+async function send(signer, fn, args, what, o) {
   let est;
   try { est = await fn.estimateGas(...args); } catch (e) {
     if (noGas(e)) throw new SavingsError("NO_GAS", `the wallet has no ETH to pay ${what}'s gas`);
@@ -100,9 +102,13 @@ async function send(fn, args, what, o) {
   if (o) o.sending = true; // from here the transaction may reach the node, whatever happens next
   let tx;
   try { tx = await fn(...args, { gasLimit: (est * 13n) / 10n + 50_000n }); } catch (e) {
-    if (noGas(e)) throw new SavingsError("NO_GAS", `the wallet has no ETH to pay ${what}'s gas`);
+    // the node's "insufficient funds" for a signed transaction it knows answers a copy ethers sent again after the first
+    // was taken: a refusal only while the node does not know it (credit.mjs refusedUnsent; GHSA-rh27-m4c4-p2c7)
+    if (noGas(e) && (e?.code !== "INSUFFICIENT_FUNDS" || await refusedUnsent(e, signer))) throw new SavingsError("NO_GAS", `the wallet has no ETH to pay ${what}'s gas`);
     // it may have reached the node before the answer was lost: treated as on its way, never as not sent
-    throw new SavingsError("UNCONFIRMED", `${what} may have been sent (${e?.shortMessage || e?.message || "no answer"}); check the savings before trying again`);
+    const hash = refusedTxHash(e);
+    if (o && hash) o.sent = hash;
+    throw new SavingsError("UNCONFIRMED", `${what} may have been sent${hash ? ` (tx ${hash})` : ""} (${e?.shortMessage || e?.message || "no answer"}); check the savings before trying again`, hash ? { hash } : {});
   }
   if (o) o.sent = tx.hash;
   let rc;
@@ -262,14 +268,14 @@ export async function save(c, signer, amount, o) {
   const usdg = c.usdg.connect(signer), vault = c.vault.connect(signer);
   const before = await usdg.allowance(me, c.address);
   let approved = false;
-  if (before < amount) { await send(usdg.approve, [c.address, amount], "the approval", o); approved = true; }
+  if (before < amount) { await send(signer, usdg.approve, [c.address, amount], "the approval", o); approved = true; }
   try {
-    const r = await send(vault.deposit, [amount, me], "the deposit", o);
+    const r = await send(signer, vault.deposit, [amount, me], "the deposit", o);
     return { hash: r.hash, amount };
   } catch (e) {
     // refused before the deposit was sent (an estimate that reverts has no hash): put the allowance back
     if (approved && e instanceof SavingsError && e.code !== "UNCONFIRMED" && !e.hash) {
-      try { await send(usdg.approve, [c.address, before], "the allowance reset"); e.allowanceReset = true; } catch (_) { e.allowanceReset = false; }
+      try { await send(signer, usdg.approve, [c.address, before], "the allowance reset"); e.allowanceReset = true; } catch (_) { e.allowanceReset = false; }
     }
     throw e;
   }
@@ -304,7 +310,7 @@ export async function unsave(c, signer, { amount, all = false } = {}, o) {
     plainOk = false;
   }
   if (plainOk) {
-    const r = await send(vault[fn], args, "the withdrawal", o);
+    const r = await send(signer, vault[fn], args, "the withdrawal", o);
     return { hash: r.hash, amount: want, inKind: false };
   }
   // in-kind: move what the plain path lacks from the other markets into idle first, in the same transaction. Redeeming
@@ -320,7 +326,7 @@ export async function unsave(c, signer, { amount, all = false } = {}, o) {
     let ok = true;
     try { await vault.multicall.staticCall(calls); } catch (e) { if (!isRevert(e)) throw e; ok = false; }
     if (ok) {
-      const r = await send(vault.multicall, [calls], "the withdrawal", o);
+      const r = await send(signer, vault.multicall, [calls], "the withdrawal", o);
       return { hash: r.hash, amount: want, inKind: true };
     }
   }

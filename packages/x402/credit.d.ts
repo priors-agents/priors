@@ -27,6 +27,14 @@ export interface CreditContracts {
 export declare function creditContracts(o: { runner: any; addresses?: Partial<CreditContracts["addresses"]> }): CreditContracts;
 export declare function poolContract(pool: string | any, runner: any): any;
 export declare function explainRevert(err: unknown, iface?: any): string;
+/** The hash of the signed transaction a failed broadcast carried (ethers keeps the signed bytes in `e.transaction`), or
+ *  null. (0.8.2) */
+export declare function refusedTxHash(err: unknown): string | null;
+/** Whether `err`, thrown before a transaction's hash came back, shows that nothing was sent: a refused estimate
+ *  (CALL_EXCEPTION, or INSUFFICIENT_FUNDS with nothing signed), or the node's "insufficient funds" for a signed
+ *  transaction it does not know (asked through `runner`'s provider). A copy ethers sent again after a 429 can be
+ *  refused that way while the first was taken (GHSA-rh27-m4c4-p2c7). (0.8.2) */
+export declare function refusedUnsent(err: unknown, runner: any): Promise<boolean>;
 
 export interface LoanView { loanId: bigint; agentId: bigint; sponsorId: bigint; principal: bigint; fee: bigint; due: bigint; issuedAt: number; dueAt: number; defaultableAt: number; status: string }
 /** The stock collateral behind a stock line. */

@@ -134,6 +134,37 @@ export async function v5BeforeBorrow({ signer, pool, v5, v5Root, agentId, amount
     { room, readyAt: when, noted: out.noted });
 }
 
+/** The hash of the signed transaction a failed broadcast carried (ethers keeps the signed bytes in `e.transaction`), or
+ *  null; @priors/x402's refusedTxHash. */
+function refusedTxHash(e) {
+  const raw = e?.transaction;
+  return typeof raw === "string" && /^0x(?:[0-9a-fA-F]{2})+$/.test(raw) ? ethers.keccak256(raw) : null;
+}
+/**
+ * Whether `e`, thrown before a transaction's hash came back, shows that nothing was sent; @priors/x402's refusedUnsent,
+ * rule for rule (GHSA-rh27-m4c4-p2c7). CALL_EXCEPTION (a refused estimate) and INSUFFICIENT_FUNDS without signed bytes
+ * (the estimate's) do; INSUFFICIENT_FUNDS on the broadcast does only while the node does not know the signed
+ * transaction's hash (ethers sends a request again after an HTTP 429, and a node that took the first copy refuses the
+ * identical bytes). A lookup that fails or takes over 10 s, or no provider, means it may have been sent.
+ */
+async function refusedUnsent(e, runner) {
+  if (e?.code === "CALL_EXCEPTION") return true;
+  if (e?.code !== "INSUFFICIENT_FUNDS") return false;
+  const hash = refusedTxHash(e);
+  if (hash === null) return true;
+  const provider = runner?.provider ?? runner;
+  if (!provider || typeof provider.getTransaction !== "function") return false;
+  let timer;
+  try {
+    const late = new Promise((_, no) => { timer = setTimeout(() => no(new Error("timed out")), 10_000); timer.unref?.(); });
+    return (await Promise.race([provider.getTransaction(hash), late])) === null;
+  } catch (_) {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Pick the first "exact" USDG-on-Robinhood requirement from a 402 body. */
 export function pickRequirement(body, asset = USDG_MAINNET) {
   const accepts = Array.isArray(body?.accepts) ? body.accepts : [];
@@ -251,11 +282,13 @@ async function payOne(url, { signer, pool, agentId, maxBorrow = 0n, maxPrice = D
     // to = the agent itself: EIP-3009 needs the payer to hold the funds, so the draw lands in the agent's wallet and
     // is spent by the signed authorization below. (A borrow-and-pay router would send it straight to payTo.)
     // A lost answer (the broadcast's or the receipt's) may hide a loan that mined: BORROW_UNCONFIRMED carries the amount
-    // (GHSA-v9xj). Only CALL_EXCEPTION (a refused estimate, or a mined revert) and INSUFFICIENT_FUNDS borrowed nothing.
+    // (GHSA-v9xj). Only a mined revert (CALL_EXCEPTION with its receipt), and before a hash came back what refusedUnsent
+    // says was not sent, borrowed nothing: the node's "insufficient funds" for a borrow it knows answers a copy ethers
+    // sent again after the first was taken (GHSA-rh27-m4c4-p2c7).
     let tx, rc;
     try { tx = await poolC.borrow(agentId, amount, term, me, fee); rc = await tx.wait(); } catch (e) {
-      if (e?.code === "CALL_EXCEPTION" || e?.code === "INSUFFICIENT_FUNDS") throw e;
-      const hash = typeof tx?.hash === "string" ? tx.hash : null;
+      if (tx ? e?.code === "CALL_EXCEPTION" && e.receipt : await refusedUnsent(e, poolC.runner)) throw e;
+      const hash = typeof tx?.hash === "string" ? tx.hash : refusedTxHash(e);
       throw new FloatError("BORROW_UNCONFIRMED", `pay: a borrow of ${amount} was sent${hash ? ` (tx ${hash})` : ""} and its answer was lost (${e?.shortMessage || e?.message || String(e)}): it may have opened a loan`,
         { borrowed: amount, loanId: null, dueAt: null, unconfirmed: true, hash, cause: e });
     }
@@ -308,6 +341,7 @@ async function readCapped(response, max = MAX_BODY_BYTES) {
  */
 function requestInit(init, timeoutMs) {
   const signals = [timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null, init.signal || null].filter(Boolean);
+  // `init.redirect ?? "manual"`, not a spread default: `{ redirect: undefined }` must not turn following back on
   return { ...init, redirect: init.redirect ?? "manual", ...(signals.length ? { signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals) } : {}) };
 }
 const isAbort = (e) => e?.name === "AbortError" || e?.name === "TimeoutError";
