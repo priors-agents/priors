@@ -1,5 +1,19 @@
 # @priors/mcp changelog
 
+## 0.12.1 (2026-10-27)
+
+On @priors/x402 0.8.3 (GHSA-xccq-5ghg-w7mq and GHSA-qcrq-x8xg-25vg, reported by hey-research-lab):
+
+- **`borrow` for more than 10 days on a line SeatVaultV5 backs is refused before anything is sent.** It sent V5's
+  refresh (or this key's `noteDelegate`) first, then the borrow reverted; the refusal names the limit. `pay_url`,
+  `pay_gateway` and `fund_base`'s loan borrow for 7 days, within it.
+- **The agent's key borrows on a V5 line only 24 hours after V5 recorded it, whatever the line's room:** `borrow`
+  records the key (`noteDelegate`) and answers `V5_DELEGATE_WAIT` with when it can borrow, instead of trying a borrow
+  that could only revert.
+- **`credit_status` and `stock_position` say 0 can be drawn, and why, when every loan would be refused:** a default
+  marked on the owner's account (any line), or a stock line whose agent changed hands since its position opened,
+  defaulted or is frozen. They showed the stock vault's `borrowRoom`, or the pool's figure.
+
 ## 0.12.0 (2026-10-26)
 
 - **A borrow the node took is always counted** (GHSA-rh27-m4c4-p2c7, reported by kevin9327). ethers' default
