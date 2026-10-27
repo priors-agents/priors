@@ -470,10 +470,9 @@ answer and identical everywhere.
 ## Standards
 
 The parts of Priors that another lender, a wallet or a reader would need are written up as draft ERCs, each with a
-reference implementation and tests. None is submitted yet: the ERC editors assign a number when a pull request opens
-on ethereum/ERCs, so each draft carries a placeholder until then. Each is discussed on Ethereum Magicians first; the
-credit profile's thread is
-[ERC-TBA: Credit history for ERC-8004 agents](https://ethereum-magicians.org/t/erc-tba-credit-history-for-erc-8004-agents/30022).
+reference implementation and tests. All ten are submitted to ethereum/ERCs, and the ERC editors assigned their numbers
+on 2026-10-27: ERC-8458 to ERC-8467. Each is discussed on Ethereum Magicians; the credit profile's thread is
+[ERC-8466: Agent Credit History](https://ethereum-magicians.org/t/erc-8466-agent-credit-history/30022).
 
 | Draft | What it covers | State |
 |---|---|---|
