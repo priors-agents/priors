@@ -57,10 +57,11 @@ Reviews are cheap to fake. Repaid debt isn't.
 > vault upgrade, and the engines' and SeatVaultV5's timelocked settings. Each one is still public on chain, but there
 > is no time to react before it runs.
 >
-> **Four ways onto the ledger.** A treasury invite (a $5 line from treasury v4, which is funded by $PRIORS creator
-> fees), a **seat** (someone puts about five lines' worth of $PRIORS behind your agent and the growth seat vault
-> backs a $50 line, after 10 repaid loans), a **backer** who stakes USDG and vouches for you directly, or, since
-> 2026-09-28, a **stock line** (you deposit
+> **Five ways onto the ledger.** A treasury invite (a $5 line from treasury v4, which is funded by $PRIORS creator
+> fees, against the owner's 5 USDG bond), the **Ethos lane** (a $25 line for a new agent whose owner proves an Ethos
+> score of 1400 or more, with no bond), the **owner's own $PRIORS** on SeatVaultV5 (collateral only the agent's owner
+> posts, never a return; V5's root backs the line in USDG), a **backer** who stakes USDG and vouches for you directly,
+> or, since 2026-09-28, a **stock line** (you deposit
 > Robinhood stock tokens and the stock vault backs a line against them). Lenders deposit USDG and earn 50% of every
 > fee.
 >
@@ -105,10 +106,10 @@ counting a repayment as late (from weights 2.0.3, on 2026-11-02, only after 24 h
 so before it borrows for 7 days or less.
 
 The wallet needs a little native gas, enough USDG to pay the fee (about $0.023 on $5 for 14 days) and, for a
-self-service invite, the 5 USDG bond (step 2 below). A brand-new agent cannot take a seat:
-`npx priors-v2 join --seat <staker>` takes a staker's seat offer only once the agent has repaid 10 loans (new seats go
-to the growth seat vault; SeatVaultV3's 10 seats were all taken as of 2026-09-29). Without an invite, a first line comes
-from a backer or a stock line.
+self-service invite, the 5 USDG bond (step 2 below). Seats are not a way in: the growth seat vault (SeatVaultV4) takes
+no new seats since 2026-10-09 and SeatVaultV3's 10 seats were all taken as of 2026-09-29, so `join --seat` opens no
+line. Without an invite, a first line comes from the Ethos lane, the owner's own $PRIORS (SeatVaultV5), a backer or a
+stock line.
 
 ### Or watch it on a throwaway local chain first
 
@@ -165,7 +166,7 @@ A record and a credit line are separate things, and a migration carries only the
 is not imported, so after a cutover an agent shows its full history with a `$0` line and no
 sponsor until it asks the treasury for one (`firstLine`, which only the identity's own controller
 can call). That is why a freshly migrated agent reads as `sponsor #0` for a while. On v2 it asks treasury v4 (an
-invite), a staker (a seat) or a backer for a new line.
+invite), its owner's own $PRIORS (SeatVaultV5), a backer or a stock line for a new line.
 
 There is no demo mode in any of that — same contracts, same ERC-8004 registry, same USDG.
 
@@ -244,12 +245,12 @@ moves nothing ([`packages/x402`](packages/x402#merchant-check-who-is-paying-reco
 | | | |
 |---|---|---|
 | **1** | **identity** | `register(uri)` on the ERC-8004 registry, once. Your NFT is your identity. Already have an id? Skip this (set `PRIORS_AGENT_ID` if it predates v2 or was transferred to you). The pool never sees your keys, only the id. |
-| **2** | **a line** | **Treasury invite:** at [priors.trade/invite](https://priors.trade/invite) you post a 5 USDG bond in `InviteBond` from the wallet that owns the agent, prove you own it to the invite bot (that wallet signs the bot's message on the same page, or on Telegram), and the bot signs treasury v4's invite for your id on the spot; you redeem it with your pool consent → $5 (at most $100 of new treasury lines a week). The bond comes back once the agent closes its treasury line with no loan open (`leave`, then `release`; since 2026-10-12, when the Safe set treasury v4's `minQualified` to 1,000,000), or after 4 days if it never gets a line; a default sends it to the Safe, so taking a first line and walking away nets nothing. **Seat:** a staker offers a seat of $PRIORS on your id and you accept it → $50 on the growth seat vault, loans of at most 7 days (your agent needs 10 repaid loans first). **Backer:** a root vouches any size with your signed consent. **Stock line:** you deposit accepted Robinhood stock tokens and the stock vault backs a line against them (see "Stock lines" below). |
+| **2** | **a line** | **Treasury invite:** at [priors.trade/invite](https://priors.trade/invite) you post a 5 USDG bond in `InviteBond` from the wallet that owns the agent, prove you own it to the invite bot (that wallet signs the bot's message on the same page, or on Telegram), and the bot signs treasury v4's invite for your id on the spot; you redeem it with your pool consent → $5 (at most $100 of new treasury lines a week). The bond comes back once the agent closes its treasury line with no loan open (`leave`, then `release`; since 2026-10-12, when the Safe set treasury v4's `minQualified` to 1,000,000), or after 4 days if it never gets a line; a default sends it to the Safe, so taking a first line and walking away nets nothing. **Ethos lane:** a new agent (no Priors record yet) whose owner proves a wallet with an Ethos score of 1400 or more takes a $25 line from the lane's root on Go mode's Start page ([go.priors.trade/start](https://go.priors.trade/start)), with no bond and no invite. **The owner's $PRIORS (SeatVaultV5):** the agent's owner, and only its owner, stakes its own $PRIORS behind the agent in Go mode's Back agents as collateral, never a return; the line is 100% USDG from V5's root, $25 to $50 to start, growing by steps up to $500, loans of at most 10 days, 75% of the stake burnt on a default. Seats are not a way in: the growth seat vault takes no new seats since 2026-10-09. **Backer:** a root vouches any size with your signed consent. **Stock line:** you deposit accepted Robinhood stock tokens and the stock vault backs a line against them (see "Stock lines" below). |
 | **3** | **borrow, hold, repay** | `quoteFee` → about $0.023333 for $5 over 14 days. `borrow` → USDG in your wallet. Do work. `repay` → principal + fee. Under 7 days repays fine but does not count: dollar-days are the score. A 7-day loan counts only when repaid at or after its due time (Score v2 counts it late after that; from weights 2.0.3, only after 24 hours more), so 14 days leaves a week to repay on time. |
 | **4** | **grow** | Treasury v5 `raise(agentId)` → $25, after 3 qualified loans, 14 days, score ≥ 100 and a clean record (since 2026-10-14; an agent on a v4 line moves there first with `move`, and its own 5 USDG `InviteBondV2` bond, which stays as long as the line; treasury v4 raises nothing since 2026-10-12). Beyond that, lines grow by finding a bigger backer: v2 has no unbacked "earned" credit. |
 
 ```bash
-npx priors-v2 join [--invite <code> | --seat <staker>]   # identity, then a line
+npx priors-v2 join [--invite <code>]                      # identity, then a line
 npx priors-v2 borrow <amount> [--days N]
 npx priors-v2 repay [--all]
 npx priors-v2 status
@@ -341,12 +342,13 @@ There is no appeal. That is why the score means something.
 - **Four kinds of backer.** Treasury v4 (root #6228) is funded by $PRIORS creator fees and vouches by rule:
   $5 against an invite, $25 once seasoned, at most $100 of new lines per week, idle lines reclaimed after 30 days.
   The seat vault (SeatVaultV3, root #6234) backs a $5 line behind an agent with 3 repaid loans that a staker puts a seat
-  of $PRIORS on; its 10 seats were all taken as of 2026-09-29, so new seats go to the growth seat vault (below). Stakers earn
+  of $PRIORS on; its 10 seats were all taken as of 2026-09-29. Stakers earn
   the sponsor share of that agent's fees and lose half the seat on a default. The stock vault (StockVault, root
   #6424) backs a line against the agent's own stock tokens and seizes them on a default. Anyone can run a root with
   $10+ of stake and vouch with consent, at a premium of up to 2% per 30 days. The growth seat vault (SeatVaultV4,
-  root #6466) is live since 2026-09-29: the same seats for a $50 line, for agents with 10 repaid loans, on loans of
-  at most 7 days ([`docs/PRIORS-GROWTH-SEATS.md`](docs/PRIORS-GROWTH-SEATS.md)).
+  root #6466) is live since 2026-09-29: the same seats for a $50 line, on loans of at most 7 days
+  ([`docs/PRIORS-GROWTH-SEATS.md`](docs/PRIORS-GROWTH-SEATS.md)). It takes no new seats since 2026-10-09 (`minRepaid` set
+  to the maximum); its open seats run until they close.
 - **One money loop.** Loan fees split 50 / 25 / 25 between lenders, the sponsor, and the reserve.
 - **A score that is a pure function of the record.** `score(agentId)` and `creditReport(agentId)` on
   `CreditLensV2`, the same formula as v1, and every input is an event you can recompute yourself. Score v1 is
@@ -384,7 +386,7 @@ v2 findings.
 | Treasury v4 | first line $5 · $100 of new lines per 7-day epoch · idle after 30 days · raises nothing since 2026-10-12 |
 | Treasury v5 | `move` from v4 with an `InviteBondV2` bond · raise to $25 · $100 of raises per 7-day epoch · no invites |
 | Seats (`SeatVaultV3`, root #6234) | seat ≈ $25 of $PRIORS (12,000 on 2026-09-25, resized with the price by the SeatSizer) · line $5 · 50% burnt on default · agent needs 3 repaid loans · seat expires after 30 idle days · $50 of new lines per 7-day epoch |
-| Growth seats (`SeatVaultV4`, root #6466; live since 2026-09-29) | seat ≈ 5 lines of $PRIORS (120,000 at deployment, resized by its own SeatSizer within [110,000, 20,000,000]) · line $50 · 50% burnt on default · agent needs 10 repaid loans · loans of at most 7 days · 20 open seats · seat expires after 30 idle days · $1,000 of new lines per 7-day epoch · protocol seats closed |
+| Growth seats (`SeatVaultV4`, root #6466; live since 2026-09-29; no new seats since 2026-10-09) | seat ≈ 5 lines of $PRIORS (120,000 at deployment, resized by its own SeatSizer within [110,000, 20,000,000]) · line $50 · 50% burnt on default · `minRepaid` at its maximum since 2026-10-09 (10 repaid loans before), so no agent is seatable · loans of at most 7 days · 20 open seats · seat expires after 30 idle days · $1,000 of new lines per 7-day epoch · protocol seats closed |
 | Stock lines (`StockVault`, root #6424) | 35 stock tokens · line 25-70% of the deposit's value by token, plus up to 15 points for a record of repaid treasury credit, never above 70% · at most $500 a line · $1,000 of new lines per 7-day epoch · $2,000 of open lines per token ($1,000 on CRCL, CRWV, NBIS, SNDK, USAR; $500 on ASML, IONQ, RKLB; none on CLSK, RGTI) · on a default, what is owed plus 20% seized and the rest given back · idle after 30 days (7 if never drawn) |
 | Minimum root stake | $10 |
 | Pool owner | `PoolSteward` since 2026-10-06 (no owner, not upgradeable), which only the `TimelockController` can call (the Safe proposes and executes, no admin; a 48 h delay, none from 2026-10-11 19:49 UTC), within a fixed policy: sponsor ≤ 25%, reserve ≤ 40%, lenders ≥ 35%, fee ≤ 2% per 30 days; the Safe is guardian (pause ≤ 14 days, exits never pause) |

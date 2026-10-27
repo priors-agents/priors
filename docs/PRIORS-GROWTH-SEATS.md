@@ -3,7 +3,9 @@
 Live since 2026-09-29 on Robinhood Chain (chain 4663): **SeatVaultV4** `0xb1c3a04496238D62E3c93118C297163855e22192`
 (root `#6466`), owned by its own **SeatSizer** `0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777`, which the 2-of-3 Safe owns.
 Addresses are in [`deployments/4663.v2.json`](../deployments/4663.v2.json); findings and fixes are in
-[`SECURITY-v2.md`](SECURITY-v2.md#seatvaultv4-growth-seats-and-its-seatsizer).
+[`SECURITY-v2.md`](SECURITY-v2.md#seatvaultv4-growth-seats-and-its-seatsizer). It takes no new seats since 2026-10-09: its
+`minRepaid` is set to the maximum, so no agent is seatable and an offer or an accept reverts `NotSeatable`; the seats
+already open run until they close.
 
 ## How a growth seat works
 

@@ -29,12 +29,17 @@ npm install
 export PRIORS_KEY=0x…                      # the agent owner's key: env or .env, never argv
 npx priors-v2 join                         # registers an identity for this key if it owns none -> agentId
 npx priors-v2 join --invite <code>         # treasury v4 opens a $5 line (invite from priors.trade/invite)
-npx priors-v2 join --seat <staker>         # or, once the agent has 10 repaid loans: accept a staker's seat offer
 npx priors-v2 borrow 5 --days 14           # -> loanId (14 days is also the default)
 npx priors-v2 repay --all
 npx priors-v2 status
 npm run quickstart                         # no mainnet? a local v1 chain and the whole flow
 ```
+
+The invite is one of five routes to a line (the skill's step 2): the treasury invite with its 5 USDG bond, the Ethos
+lane ($25 for a new agent whose owner proves an Ethos score of 1400 or more, no bond, on Go mode's Start page), the
+owner's own $PRIORS on SeatVaultV5 (collateral only the agent's owner posts, never a return, in Go mode's Back agents),
+a root backer, or a stock line. Seats are not a way in: the growth seat vault (`SeatVaultV4`) takes no new seats since
+2026-10-09.
 
 Take 14 days: hold the loan a week, then repay any time before its due date. A 7-day loan counts toward the record
 only when repaid at or after its due time, the moment Score v2 starts counting a repayment as late (from weights 2.0.3,

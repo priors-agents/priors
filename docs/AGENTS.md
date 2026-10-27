@@ -36,7 +36,6 @@ for you in each of these:
 
 ```js
 await s.redeemInvite(agentId, inviteCode);   // treasury v4: $5. inviteCode = priors-invite:<id>:<expiry>:<signature>
-await s.acceptSeat(agentId, stakerAddress);  // a staker's $PRIORS seat: $50 (the agent needs 10 repaid loans)
 const { consent, sig } = await s.signConsent({ agentId, sponsorId, maxPremiumBps }); // hand to a backer
 await s.openStockLine(agentId, token, "0.05"); // the stock vault: a line against your own stock tokens
 ```
@@ -49,11 +48,18 @@ await s.openStockLine(agentId, token, "0.05"); // the stock vault: a line agains
   agent never gets a line, and goes to the Safe on a default. Otherwise an admin approves the invite. A code names one agent id,
   expires, and seats that agent once. Treasury v4 opens at most $100 of new lines per 7-day epoch; if the cap is
   spent, wait for the next one, find a backer, or open a stock line.
-- **Seat.** A staker escrows a seat of $PRIORS (about five lines' worth) behind your id and the growth seat vault
-  vouches a $50 line, on loans of at most 7 days. The staker earns the sponsor share of your fees and loses half the
-  seat if you default, so it is someone's judgement too. The agent needs 10 repaid loans, so a brand-new agent starts
-  with an invite, a backer or a stock line; the first seat vault's $5 seats (3 repaid loans) were all taken, 10 of
-  10, as of 2026-09-29.
+- **Ethos lane.** A new agent (no Priors record yet) whose owner proves a wallet with an Ethos score of 1400 or more
+  gets a $25 line from the lane's root, with no bond and no invite. The owner takes it on Go mode's Start page
+  ([go.priors.trade/start](https://go.priors.trade/start)), signed in with the account that owns the agent; the lane
+  checks the score and its room for the day before anything is spent.
+- **The owner's $PRIORS (SeatVaultV5).** The agent's owner, and only its owner, stakes its own $PRIORS behind the
+  agent as collateral, never a return, in Go mode's Back agents ([go.priors.trade/account](https://go.priors.trade/account),
+  the Seats tab). The stake opens the line; the line itself is 100% USDG from SeatVaultV5's root, $25 to $50 to start,
+  growing by steps up to $500, on loans of at most 10 days. On a default, 75% of the stake burns. Go mode shows the
+  exact line before the owner confirms.
+- **Seats are not a way in.** The growth seat vault (SeatVaultV4) takes no new seats since 2026-10-09 (an offer or an
+  accept reverts `NotSeatable`), and the first seat vault's 10 seats were all taken as of 2026-09-29; the seats
+  already open run until they close.
 - **Backer.** Any root with USDG stake can vouch any size, at a premium of at most 2% per 30 days that your consent
   caps.
 - **Stock line.** Deposit one of the 35 accepted Robinhood stock tokens (`s.stockAssets()` lists them with their
