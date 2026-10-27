@@ -3,7 +3,7 @@
 Pool v2 (`CreditPoolV2`), treasury v4 (`TreasurySponsorV4`) and the seat vault (`SeatVaultV3` since 2026-09-25, replacing `SeatVaultV2`) are **live on Robinhood
 Chain mainnet** (chain 4663) since block 71,702,460. The v1 pool is paused; its record stays readable. The growth seat
 vault, `SeatVaultV4` (`0xb1c3a04496238D62E3c93118C297163855e22192`, $50 lines), is live since
-2026-09-29. Addresses are in [`deployments/4663.v2.json`](../deployments/4663.v2.json), and the SDK and the
+2026-09-29 and takes no new seats since 2026-10-09. Addresses are in [`deployments/4663.v2.json`](../deployments/4663.v2.json), and the SDK and the
 `priors-v2` CLI read them from there, so nothing below needs an address typed by hand.
 
 The same actions are on the site: [priors.trade](https://priors.trade) has a Participate page (deposit, seats,
@@ -12,9 +12,9 @@ roots), [/agent](https://priors.trade/agent) and [/invite](https://priors.trade/
 | Who | How they take part | Entry point |
 |---|---|---|
 | Lender | Deposit USDG into the pool, earn the lenders' share of every fee, withdraw | Participate page · `PriorsV2.deposit/withdraw` |
-| Staker | Put a seat of $PRIORS behind an agent; the seat vault backs it; earn the sponsor share of its fees | Participate page · `PriorsV2.offer/closeSeat/claimSeatFees` |
+| Staker | Put a seat of $PRIORS behind an agent; the seat vault backs it; earn the sponsor share of its fees (no new seats since 2026-10-09: the seats already open run until they close) | Participate page · `PriorsV2.offer/closeSeat/claimSeatFees` |
 | Backer | Run a root: stake USDG, vouch for agents (with their owner's signed consent), earn sponsor fees | Participate page · `PriorsV2.enrollRoot/vouchWithConsent/claimSponsorFees` |
-| Agent | Register, get a line (a treasury invite, a seat, or a stock line against its own stock tokens), borrow and repay, pay x402 APIs on credit | `priors-v2` CLI · `PriorsV2` · [FLOAT.md](FLOAT.md) |
+| Agent | Register, get a line (a treasury invite, the Ethos lane, the owner's own $PRIORS on SeatVaultV5, a backer, or a stock line against its own stock tokens), borrow and repay, pay x402 APIs on credit | `priors-v2` CLI · `PriorsV2` · [FLOAT.md](FLOAT.md) |
 
 ## What changed from v1
 
@@ -54,7 +54,7 @@ Other v2 changes:
 | Treasury v5 (root #8793) | `move` from v4 with the owner's 5 USDG `InviteBondV2` bond (no invite) · raise to $25 after 3 qualified loans, 14 days, score ≥ 100 · $100 of raises per 7-day epoch |
 | Seats V3 (root #6234) | seat ≈ $25 of $PRIORS, resized with the price by the SeatSizer `0xd24B…5E61` within [10,000, 2,000,000] (12,000 on 2026-09-25; 10,000, the floor, on 2026-09-29) · line $5 · 50% of the seat burnt on a default · at most 10 open seats (all 10 open on 2026-09-29) · $50 of new lines per 7-day epoch |
 | Seat gates | the agent has repaid at least 3 loans; a seat idle 30 days can be expired by anyone |
-| Growth seats V4 (root #6466, live since 2026-09-29) | seat ≈ 5 lines of $PRIORS (120,000 at deployment, resized by its own SeatSizer `0x97C4…8777` within [110,000, 20,000,000]) · line $50 · 50% of the seat burnt on a default · agent has repaid at least 10 loans · loans of at most 7 days · 20 open seats · $1,000 of new lines per 7-day epoch · protocol seats closed |
+| Growth seats V4 (root #6466, live since 2026-09-29; no new seats since 2026-10-09) | seat ≈ 5 lines of $PRIORS (120,000 at deployment, resized by its own SeatSizer `0x97C4…8777` within [110,000, 20,000,000]) · line $50 · 50% of the seat burnt on a default · `minRepaid` at its maximum since 2026-10-09 (10 repaid loans before), so no agent is seatable · loans of at most 7 days · 20 open seats · $1,000 of new lines per 7-day epoch · protocol seats closed |
 | Stock lines (`StockVault`, root #6424, since 2026-09-28) | 35 Robinhood stock tokens · line 25-70% of the deposit's Chainlink value by token (`deployments/stock-ltv.4663.json`), plus up to 15 points for a record of repaid treasury credit, never above 70% · at most $500 a line · $2,000 of open lines per token ($1,000 on CRCL, CRWV, NBIS, SNDK, USAR; $500 on ASML, IONQ, RKLB; none on CLSK, RGTI) · $1,000 of new lines per 7-day epoch · on a default, what is owed plus 20% seized and the rest given back (all of it when the price can't be used) · a line idle 30 days (7 if never drawn) can be expired by anyone, tokens back |
 | Invite bond (`InviteBond`) | 5 USDG locked by the agent's owner before the invite bot signs an automatic invite · back once the agent has repaid 3 qualified loans with none open, or after 4 days if it holds no line · forfeited to the Safe on a default |
 
@@ -68,7 +68,6 @@ npm install
 export PRIORS_KEY=0x…        # the agent owner's key: environment or .env only, never argv, never printed
 npx priors-v2 join                       # registers an ERC-8004 identity for this key if it owns none, prints its id
 npx priors-v2 join --invite <code>       # redeems a treasury v4 invite: first line opened
-npx priors-v2 join --seat <staker>       # or accepts that staker's seat offer instead (on the growth seat vault V4, else V3)
 npx priors-v2 borrow 5 --days 14         # 14 days is also the default
 npx priors-v2 repay --all
 npx priors-v2 status                     # identity, line, loans, USDG, and whether the key is the agent's declared wallet
@@ -97,8 +96,9 @@ on 2026-11-02, only after 24 hours more); `borrow` says so before it borrows for
 - **Identity lookup**: the key's identity minted to it since the v2 deploy, and never sent away since, is found
   automatically; an older one (for example a v1 agent), one transferred to the key, or one that left it and came back,
   needs `PRIORS_AGENT_ID`. `repay` pays only loans the agent's owner now took (GHSA-mmp8).
-- **Two seat vaults**: with `seatVaultV4` in the record, `join --seat` takes the staker's offer on the growth seat
-  vault (V4) if there is one, else on V3, and `status` reads the seat on whichever vault sponsors the agent.
+- **Two seat vaults**: neither takes a new seat (V4 since 2026-10-09, V3 full since 2026-09-29), so `join --seat`
+  opens no line; `status` reads the seat on whichever vault sponsors the agent. The Ethos lane and the owner's own
+  $PRIORS (SeatVaultV5) are taken in Go mode (go.priors.trade).
 - **The raise to $25** is treasury v5's (`treasuryV5` in the record). `move` refuses, with nothing sent, unless the
   agent is on treasury v4's line (or v4 lined it once), has no loan open, its record meets v5's raise rules, its
   InviteBond (v1) bond is at least 4 days old and v5 has room for a first line this epoch; then it sends only the
@@ -110,7 +110,7 @@ on 2026-11-02, only after 24 hours more); `borrow` says so before it borrows for
   and whether the key is the agent's declared payment wallet, read from the ERC-8004 registry (`getAgentWallet` on the
   record's `registry`, a read only). Score v2 counts x402 income paid to the declared wallet only
   ([SCORE-v2.md](SCORE-v2.md)). The registry's `register()` declares its caller, so `join` declares the key, and a
-  transfer of the agent clears it. With none declared, a second line gives the fix: `npx -y @priors/mcp@0.12.1
+  transfer of the agent clears it. With none declared, a second line gives the fix: `npx -y @priors/mcp@0.12.2
   link-wallet --agent <id>` signs the registry's `AgentWalletSet` with `PRIORS_KEY`, and the key, the owner, sends the
   `setAgentWallet` call it prints within 4 minutes. If the registry cannot be read, the line is the key's USDG alone,
   and the exit code does not change.
@@ -242,9 +242,10 @@ Without both fields, nothing changes.
 
 ## Stakers: how a seat works
 
-New seats go to the growth seat vault (V4): the agent needs 10 repaid loans, the line is $50 and loans last at most
-7 days. V3 (3 repaid loans, $5 lines) is full (10 of 10 seats open as of 2026-09-29); its open seats run until they
-close. Both vaults work the same way:
+Neither seat vault takes a new seat. The growth seat vault (V4: a $50 line, loans of at most 7 days) takes none since
+2026-10-09: its `minRepaid` is set to the maximum, so no agent is seatable, and an offer or an accept reverts
+`NotSeatable`. V3 (3 repaid loans, $5 lines) is full (10 of 10 seats open as of 2026-09-29). The seats already open on
+either run until they close, and both vaults work the same way:
 
 1. `offer(agentId)` escrows exactly one seat of $PRIORS under the vault's current terms. The offer is bound to
    the agent's owner at that moment (X-1 fix): if the identity is sold, the new owner cannot take it.
@@ -257,7 +258,7 @@ close. Both vaults work the same way:
    the staker (X-2 fix).
 5. On a default, 50% of the seat is burnt and the rest returned.
 
-An agent must have repaid at least 10 loans before it can be seated on V4 (3 on V3, the X-3 gate). That gate filters
+An agent needed at least 10 repaid loans to be seated on V4 (3 on V3, the X-3 gate). That gate filters
 trivial abuse; the seat's market value is what makes a stolen line a losing trade. See [SECURITY-v2.md](SECURITY-v2.md).
 
 ## Backers: running a root
