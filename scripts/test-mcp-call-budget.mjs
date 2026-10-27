@@ -9,6 +9,8 @@
 // PRIORS_MAX_SAVE_TOTAL_USD on a total that leaves it out.
 // Then (GHSA-549m) a PT trade whose broadcast was taken by the node but whose answer was lost: what pt_buy may have
 // spent stays counted against PRIORS_MAX_PT_TOTAL_USD, and the answer says a transaction may have been sent.
+// Then (GHSA-6rfc-64cr-p7v5, P-28) pay_url's max_price_usd and max_borrow_usd: a cap rounds up to the next USDG unit
+// only by the float rounding of the value itself, so 0.0999999999995 signs nothing for a 0.10 USDG price.
 // PRIORS_MCP_SERVER=/path/to/server.mjs runs the same tests against another copy of the server (before/after a fix).
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -452,6 +454,61 @@ await test("GHSA-549m: pt_sell (pt_redeem shares the path) whose transaction was
   const r = await call("pt_sell", { amount_pt: 50 });
   assert.deepEqual(st.sent, ["swap"]);
   assert.ok(r.error && /may have been sent: its answer was lost/.test(r.text) && /Check pt_position and wallet_balance before trying again/.test(r.text), r.text);
+});
+
+// ---- GHSA-6rfc-64cr-p7v5 item 6c (P-28): a cap that would round up to the next USDG unit is refused, but 0.2.6 to
+// 0.12.1 let it round up by as much as 1e-12 USD, kept for float noise, so a max_price_usd of 0.0999999999995 signed a
+// 0.10 USDG payment. What may round up now is the float rounding of the value itself (0.7 + 0.1 = 0.7999999999999999 is
+// 0.80), and never by more than that 1e-12.
+/** The float `k` units in the last place below `x` (x > 0). */
+const ulpsBelow = (x, k) => { const f = new Float64Array([x]); new BigUint64Array(f.buffer)[0] -= BigInt(k); return f[0]; };
+const capServer = (st, m) => payUrlServer(st, m, { PRIORS_MAX_PRICE_USD: "5000", PRIORS_MAX_SPEND_USD: "10000" });
+const at = (path) => `https://merchant.example/${path}`;
+
+await test("GHSA-6rfc-64cr-p7v5: a max_price_usd or max_borrow_usd less than a trillionth of a dollar under 0.10 (0.0999999999995, 0.09999999999999) is refused, not rounded up: nothing signed for a 0.10 USDG price, nothing borrowed", async () => {
+  const st = { balance: 5_000_000n }, m = merchant({ "/a": 100_000n });
+  const call = await capServer(st, m);
+  // the reporter's two values, then two 0.12.1 refused already (1e-12 and 5e-10 under)
+  for (const v of [0.0999999999995, 0.09999999999999, 0.099999999999, 0.0999999995]) {
+    const price = await call("pay_url", { url: at("a"), max_price_usd: v });
+    assert.ok(price.error && /max_price_usd has more than 6 decimals/.test(price.text), `max_price_usd ${v}: ${price.text.slice(0, 160)}`);
+    const borrow = await call("pay_url", { url: at("a"), max_price_usd: 0.1, max_borrow_usd: v });
+    assert.ok(borrow.error && /max_borrow_usd has more than 6 decimals/.test(borrow.text), `max_borrow_usd ${v}: ${borrow.text.slice(0, 160)}`);
+  }
+  assert.deepEqual(m.sent, [], "no payment signed");
+  assert.deepEqual(st.loans, [], "no borrow sent");
+});
+
+await test("GHSA-6rfc-64cr-p7v5: float noise still rounds up: 0.7 + 0.1 (0.7999999999999999) pays a 0.80 USDG price, ten 0.1s summed (0.9999999999999999) a 1.00 price, the float just under 0.1 a 0.10 price", async () => {
+  const st = { balance: 5_000_000n }, m = merchant({ "/a": 800_000n, "/b": 1_000_000n, "/c": 100_000n });
+  const call = await capServer(st, m);
+  const tenth = Array.from({ length: 10 }).reduce((sum) => sum + 0.1, 0);
+  assert.equal(0.7 + 0.1, 0.7999999999999999); assert.equal(tenth, 0.9999999999999999);
+  const a = await call("pay_url", { url: at("a"), max_price_usd: 0.7 + 0.1, max_borrow_usd: 0.7 + 0.1 });
+  assert.ok(!a.error && /Paid 0\.80 USDG/.test(a.text), a.text.slice(0, 200));
+  const b = await call("pay_url", { url: at("b"), max_price_usd: tenth });
+  assert.ok(!b.error && /Paid 1\.00 USDG/.test(b.text), b.text.slice(0, 200));
+  const c = await call("pay_url", { url: at("c"), max_price_usd: ulpsBelow(0.1, 1) });
+  assert.ok(!c.error && /Paid 0\.10 USDG/.test(c.text), c.text.slice(0, 200));
+  assert.deepEqual(m.paid, ["/a", "/b", "/c"]);
+});
+
+await test("GHSA-6rfc-64cr-p7v5, boundaries: a max_borrow_usd of 0 is 0; 0.0000009999995 is refused, the float just under 0.000001 is 0.000001; 999.9999999999997 (float rounding of 1000) is 1000.00; 4999.999999999997 (2.7e-12 under 5000) is refused, as 0.12.1 refused it", async () => {
+  const st = { balance: 10_000_000_000n }, m = merchant({ "/zero": 100_000n, "/micro": 1n, "/k": 1_000_000_000n, "/5k": 5_000_000_000n });
+  const call = await capServer(st, m);
+  const zero = await call("pay_url", { url: at("zero"), max_price_usd: 0.1, max_borrow_usd: 0 });
+  assert.ok(!zero.error && /Paid 0\.10 USDG/.test(zero.text), zero.text.slice(0, 200));
+  const fine = await call("pay_url", { url: at("micro"), max_price_usd: 0.0000009999995 });
+  assert.ok(fine.error && /max_price_usd has more than 6 decimals/.test(fine.text), `0.0000009999995: ${fine.text.slice(0, 160)}`);
+  const micro = await call("pay_url", { url: at("micro"), max_price_usd: ulpsBelow(1e-6, 1) });
+  assert.ok(!micro.error && /Paid 0\.000001 USDG/.test(micro.text), micro.text.slice(0, 200));
+  assert.equal(ulpsBelow(1000, 3), 999.9999999999997);
+  const k = await call("pay_url", { url: at("k"), max_price_usd: ulpsBelow(1000, 3) });
+  assert.ok(!k.error && /Paid 1000\.00 USDG/.test(k.text), k.text.slice(0, 200));
+  // 3 units in the last place under 5000: a tolerance in proportion to the value alone (4 x 5000 x 2^-52) would take it
+  const big = await call("pay_url", { url: at("5k"), max_price_usd: 4999.999999999997 });
+  assert.ok(big.error && /max_price_usd has more than 6 decimals/.test(big.text), `4999.999999999997: ${big.text.slice(0, 160)}`);
+  assert.deepEqual(m.paid, ["/zero", "/micro", "/k"]);
 });
 
 console.log(`\nmcp call budget: ${passed} passed, ${failed} failed`);

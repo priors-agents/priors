@@ -269,8 +269,11 @@ const clean = (s, n) => short(String(s ?? "").replace(/[\u0000-\u0008\u000b\u000
 function dollars(v, what) {
   if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ToolError(`${what} must be a non-negative number of US dollars`);
   const s = v.toFixed(6);
-  // never rounded up: 0.0999999995 is not a cap of 0.10 (own audit 2026-10-01)
-  if (Math.abs(Number(s) - v) > 1e-9 || Number(s) - v > 1e-12) throw new ToolError(`${what} has more than 6 decimals`);
+  // never rounded up: 0.0999999995 is not a cap of 0.10 (own audit 2026-10-01), nor is 0.0999999999995
+  // (GHSA-6rfc-64cr-p7v5). Up only by the float rounding of v itself, a few units in its last place (a computed
+  // 0.7 + 0.1 = 0.7999999999999999 is 0.80), and never by more than 1e-12, which that rounding passes above $1,125.90.
+  const up = Number(s) - v;
+  if (Math.abs(up) > 1e-9 || up > Math.min(4 * v * Number.EPSILON, 1e-12)) throw new ToolError(`${what} has more than 6 decimals`);
   return X.toAtomicUsdg(`$${s}`, what);
 }
 function envDollars(env, name, dflt) {
