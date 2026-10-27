@@ -1441,7 +1441,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       throw e;
     }
     add("borrowed", r.principal);
-    const v5Note = r.v5Refreshed ? " Its SeatVaultV5 line was refreshed first." : r.v5Noted ? ` SeatVaultV5 recorded this key now (tx ${r.v5Noted}): it can raise the line itself 24 hours from now.` : "";
+    const v5Note = r.v5Refreshed ? " Its SeatVaultV5 line was refreshed first." : "";
     return `Borrowed ${usd(r.principal)} for agent #${id}${r.loanId !== null ? ` as loan #${r.loanId}` : ""}: fee ${usd(r.fee)}, so ${usd(r.principal + r.fee)} is due${r.dueAt ? ` by ${when(r.dueAt)}` : ""}. The USDG is in ${wallet.address}. Tx ${r.hash}.${v5Note}`;
   }));
 

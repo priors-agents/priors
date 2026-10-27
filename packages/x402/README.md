@@ -386,9 +386,12 @@ A line backed by SeatVaultV5 has no room until it is refreshed: V5 vouches nothi
 vouch only on `refresh`, by the agent's owner or by the agent's pool delegate that V5 recorded (`noteDelegate`) at least
 24 hours before. With `createPayer({ v5, v5Root })` (and `creditContracts({ addresses: { seatVaultV5,
 seatVaultV5AgentId } })` for `borrowLine`), a borrow on such a line first calls `v5BeforeBorrow`: the owner, or a key
-V5 recorded a day ago, refreshes the line; a key V5 has not recorded is recorded now, and while its 24 hours run the
-borrow goes ahead only within the line's room, else it stops with `V5_DELEGATE_WAIT`, saying when it can borrow (the
-owner can borrow from Go mode meanwhile, which refreshes first).
+V5 recorded a day ago, refreshes the line. V5 lends for at most 10 days: from 0.8.3 `v5BeforeBorrow` takes the loan's
+`term` (required on a V5 line, `V5_TERM_REQUIRED` without it) and refuses a longer one with `V5_TERM_TOO_LONG` before
+anything is sent (GHSA-xccq-5ghg-w7mq). V5 also lends to no caller but the owner until 24 hours after it recorded that
+key, whatever the line's room: a key V5 has not recorded is recorded now, and it, or one recorded under 24 hours ago,
+stops with `V5_DELEGATE_WAIT`, saying when it can borrow (`readyAt`; the owner can borrow from Go mode meanwhile, which
+refreshes first).
 
 ## Paying USDC sellers on Base (`networks`, `@priors/x402/bridge`)
 

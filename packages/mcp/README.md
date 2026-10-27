@@ -33,7 +33,7 @@ repaying.
 | `credit_status(agent_id?)` | line, drawn, available, backer, record, score, open loans and due dates; on a stock line, the stock tokens behind it, and `available` capped by what the stock vault lets it draw | no (with `agent_id`) |
 | `stock_assets(symbol?)` | the stock tokens the Priors stock vault accepts: live Chainlink price, whether it lends against each now (or why not: a sharp price move, a multiplier change, a paused or blocked token), loan-to-value | no |
 | `stock_position(agent_id?)` | the stock tokens behind an agent's stock line: amount, what the vault values them at, loan-to-value, what the line can draw now, any lending hold | no (with `agent_id`) |
-| `borrow(amount_usd, days, dry_run?)` | borrow USDG from the line into the wallet; both amounts required; `dry_run` quotes the fee. (0.10.2) Needs the wallet to be the agent's owner or its declared ERC-8004 wallet, the same rule as `repay`. A borrow sent whose answer is lost is counted and said to be possibly open (check `credit_status`); (0.12.0) so is one the node refused for "insufficient funds" while it holds the signed borrow (a copy sent again after an HTTP 429) | yes |
+| `borrow(amount_usd, days, dry_run?)` | borrow USDG from the line into the wallet; both amounts required; `dry_run` quotes the fee. (0.10.2) Needs the wallet to be the agent's owner or its declared ERC-8004 wallet, the same rule as `repay`. A borrow sent whose answer is lost is counted and said to be possibly open (check `credit_status`); (0.12.0) so is one the node refused for "insufficient funds" while it holds the signed borrow (a copy sent again after an HTTP 429). (0.12.1) On a line SeatVaultV5 backs, a term over 10 days is refused before anything is sent | yes |
 | `repay(loan_id? \| all, use_savings?)` | repay one of the agent's own loans, or all of them earliest due first; another agent's loan is refused, and (0.8.1) so is a loan opened while someone else held the agent; (0.10.2) a wallet that is neither the agent's owner nor its declared ERC-8004 wallet (a pool delegate the owner named) repays nothing — and, symmetrically, borrows nothing, so no loan is drawn that this server would then refuse to repay: the owner declares the agent's key with `priors-mcp link-wallet`. If the wallet is short of what is due, it first takes the difference out of savings (unless `use_savings: false`). From 0.8.0 its answer ends with share facts for each loan repaid (amount, on time or late, the record's page; also as structured content); the server never posts | yes |
 | `savings(address?)` | what the wallet (or any address) has saved in the savings vault, how much can come out right now, and the USDG in the wallet | no (with `address`) |
 | `save(amount_usd)` | move spare USDG from the wallet into the savings vault, where it earns the vault's rate (at most `PRIORS_MAX_SAVE_USD` per call, `PRIORS_MAX_SAVE_TOTAL_USD` per run); needs ETH for gas | yes |
@@ -179,7 +179,7 @@ may spend. Rows marked (0.8.0) take effect from that version; 0.7.x ignores them
 | `PRIORS_MAX_SAVE_USD` | `50` | most one `save` call may move into the vault |
 | `PRIORS_MAX_SAVE_TOTAL_USD` | `200` | most `save` may move in total while the server runs |
 | `PRIORS_AUTOREPAY` | the bundled deployments file's `autoRepay` (AutoRepay v2, `0x72B510AF4e66e5960aB9b975e0BdCf80239e83A0`, deployed 2026-10-20; versions published before then bundle none) | AutoRepay v2's address, for `autopay_on`, `autopay_off` and the Autopay lines of `credit_status`; AutoRepay v1 (retired before use) is refused |
-| `PRIORS_V5`, `PRIORS_V5_ROOT` | the bundled deployments file's `seatVaultV5` and `seatVaultV5AgentId` (none until V5 is deployed) | SeatVaultV5 and its root's agent id: a borrow on a V5 line (the `borrow` tool, `pay_url`) refreshes it first. The agent's key may do so 24 hours after V5 recorded it (`noteDelegate`, sent for it when needed); until then a borrow goes ahead only within the line's room, and the tool says when the key can borrow more |
+| `PRIORS_V5`, `PRIORS_V5_ROOT` | the bundled deployments file's `seatVaultV5` and `seatVaultV5AgentId` (none until V5 is deployed) | SeatVaultV5 and its root's agent id: a borrow on a V5 line (the `borrow` tool, `pay_url`) refreshes it first, for a term of at most 10 days (a longer one is refused before anything is sent). The agent's key may refresh and borrow 24 hours after V5 recorded it (`noteDelegate`, sent for it when needed); until then V5 lends it nothing, whatever the line's room, and the tool says when the key can borrow |
 | `PRIORS_MAX_AUTOPAY_USD` | `25` | the most `autopay_on` enrolls per loan (stage 0) |
 | `PRIORS_AUTOPAY_RESERVE` | on | with Autopay on, `pay_url` keeps back what loans whose window opens in the next 24 h will pull, and says so when a payment would cut into it; `off` turns that off |
 | `PRIORS_PT` | on | `off` (or `false`, `0`, `no`) removes the PT-USDG tools |
@@ -354,7 +354,7 @@ model can call.
 ## Try it
 
 "What's the Priors score of agent 6228?" · "How much USDG does my wallet hold?" · "Find services that sell token
-prices" · "Pay https://api.example.com/report, up to 5 cents" · "Borrow $5 for 14 days, show me the fee first".
+prices" · "Pay https://api.example.com/report, up to 5 cents" · "Borrow $5 for 10 days, show me the fee first".
 
 ## Tests
 

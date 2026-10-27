@@ -1201,7 +1201,9 @@ export class PriorsV2 {
    * Borrow `amount` for `termSeconds`. USDG lands in `to` (default: the signer). `maxFee` defaults to the pool's
    * own quote, so a premium raised between quote and mining reverts (FeeTooHigh) instead of costing more.
    * On a SeatVaultV5 line (`seatVaultV5` and `seatVaultV5AgentId` in the addresses), V5's step first (float.mjs
-   * `v5BeforeBorrow`: the owner's refresh, or the key's noteDelegate); the result then says `v5Refreshed`, `v5Noted`.
+   * `v5BeforeBorrow`: the owner's refresh, or that of a key V5 recorded 24 h ago); the result then says `v5Refreshed`.
+   * A term over V5's 10 days is refused (V5_TERM_TOO_LONG) before anything is sent; a key V5 has not recorded, or
+   * recorded under 24 h ago, is refused with when it can borrow (V5_DELEGATE_WAIT; one not recorded is recorded first).
    * A borrow whose answer was lost (the broadcast's or the receipt's) throws BORROW_UNCONFIRMED with the amount as
    * `borrowed` (`loanId` and `dueAt` null, `unconfirmed: true`, the tx `hash` and `nonce`): the loan may exist, or the
    * transaction may still be pending, so the open loans alone settle nothing. Borrow again only once `txStatus(hash,
@@ -1216,7 +1218,7 @@ export class PriorsV2 {
     await this._needOwnerOrAgentWallet(agentId, "borrowed");
     const fee = maxFee ?? (await this.pool.quoteFee(agentId, units, term)).fee;
     if (this.vaultV5) this._needSigner();
-    const v5 = await v5BeforeBorrow({ signer: this.signer, pool: this.pool, v5: this.vaultV5, v5Root: this.addresses.seatVaultV5AgentId ?? null, agentId, amount: units });
+    const v5 = await v5BeforeBorrow({ signer: this.signer, pool: this.pool, v5: this.vaultV5, v5Root: this.addresses.seatVaultV5AgentId ?? null, agentId, term });
     const recipient = to || (await this.me());
     try {
       return await sendChecked(this.pool, "borrow", [agentId, units, term, recipient, fee], this._ifaces, (rc) => {

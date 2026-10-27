@@ -231,10 +231,11 @@ addresses, which the deployment record names once V5 is live, `borrow`, `pay` an
 whose sponsor is V5's root take that step first (`v5BeforeBorrow` in `sdk/float.mjs`). The owner's key, or a key V5
 recorded 24 hours ago, refreshes the line, and the borrow follows. A key V5 has not recorded yet is recorded now with
 `noteDelegate` (it must control the agent on the pool, else `NOT_CONTROLLER`) and does not refresh, because a refresh
-V5 may not raise on can lower the vouch. Until its 24 hours have run, such a key borrows only within the line's
-current room; beyond it, `V5_DELEGATE_WAIT` says when it can (`readyAt`), and the owner can borrow before then. A
-refresh that would revert stops with `V5_REFRESH_WOULD_REVERT` before anything is sent. Without both fields, nothing
-changes.
+V5 may not raise on can lower the vouch. V5 lends to no caller but the owner until 24 hours after it recorded that key,
+whatever the line's room, so such a key, or one recorded under 24 hours ago, stops with `V5_DELEGATE_WAIT`, which says
+when it can borrow (`readyAt`); the owner can borrow before then. V5 lends for at most 10 days: a longer term stops with
+`V5_TERM_TOO_LONG`, and a refresh that would revert with `V5_REFRESH_WOULD_REVERT`, both before anything is sent.
+Without both fields, nothing changes.
 
 **Reading records.** `CreditLensV2` exposes v1-shaped views on the v2 pool: `score(id)`, `creditReport(id)` and
 `available(id)`. The v1 CLI (`npx priors score|report|loans`) still reads the v1 pool's history.
