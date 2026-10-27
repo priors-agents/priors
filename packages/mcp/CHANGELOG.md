@@ -1,5 +1,16 @@
 # @priors/mcp changelog
 
+## 0.12.2 (2026-10-27)
+
+Still on @priors/x402 0.8.3.
+
+- **A dollar amount rounds up to the next USDG unit only by the float rounding of its own value** (GHSA-6rfc-64cr-p7v5,
+  reported by Leonardiae). Since 0.2.6 a `max_price_usd`, `max_borrow_usd` or other dollar amount that would round up
+  is refused as having more than 6 decimals, but the check let it round up by as much as 1e-12 USD, kept for float
+  noise: a `max_price_usd` of 0.0999999999995 or 0.09999999999999 signed a 0.10 USDG payment, an excess of at most a
+  millionth of one USDG unit. An amount now rounds up only by a few units in the last place of its own value, and never
+  by more than 1e-12: a computed 0.7 + 0.1 (0.7999999999999999) still reads as 0.80, and both values above are refused.
+
 ## 0.12.1 (2026-10-27)
 
 On @priors/x402 0.8.3 (GHSA-xccq-5ghg-w7mq and GHSA-qcrq-x8xg-25vg, reported by hey-research-lab):
