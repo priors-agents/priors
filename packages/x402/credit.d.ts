@@ -10,8 +10,10 @@ export declare const STOCK_VAULT_ABI: string[];
 export declare const STOCK_HOLDS: readonly string[];
 /** SeatVaultV5's refresh, noteDelegate and delegateOf (a borrow on its line, v5BeforeBorrow). */
 export declare const V5_ABI: string[];
-/** How long after V5 records the agent's key (noteDelegate) that key may raise the line: 24 h. */
+/** How long after V5 records the agent's key (noteDelegate) that key may raise the line and borrow on it: 24 h. */
 export declare const V5_DELEGATE_WAIT_S: number;
+/** The longest term SeatVaultV5 lends for: 10 days, in seconds (V5's MAX_LOAN_TERM). Since 0.8.3. */
+export declare const V5_MAX_TERM_S: number;
 
 export interface CreditContracts {
   addresses: { pool: string; lens: string; usdg: string; registry: string; stockVault: string | null; seatVaultV5?: string | null; seatVaultV5AgentId?: bigint | number | string | null };
@@ -46,12 +48,17 @@ export interface StockCollateral {
   /** What the vault prices the tokens at, USDG base units; null while it will not price them for new loans. */
   value: bigint | null;
   ltvBps: bigint;
-  /** What the line can draw now, USDG base units. */
+  /** What the line can draw now, USDG base units: the vault's borrowRoom, or 0 when `refused` says why no loan can be
+   *  drawn (since 0.8.3). */
   borrowRoom: bigint;
+  /** "", or why no loan can be drawn whatever the vault's figure: the agent defaulted or frozen, its owner unread, the
+   *  agent in other hands than the position's, or a default marked on its owner's account (not a custodian). 0.8.3. */
+  refused: string;
   /** 0, or why new loans wait (STOCK_HOLDS). */
   hold: number; holdReason: string; status: string; closing: boolean;
 }
-export declare function stockCollateral(c: CreditContracts, id: bigint | number | string, sponsor: bigint | number | string): Promise<StockCollateral | null>;
+/** `known`: the caller's reads of the pool's getAgent and the registry's ownerOf (null owner: unread), reused. */
+export declare function stockCollateral(c: CreditContracts, id: bigint | number | string, sponsor: bigint | number | string, known?: { agent: any; owner: string | null } | null): Promise<StockCollateral | null>;
 export interface StockPosition extends StockCollateral { agentId: bigint; symbol: string | null; decimals: number | null; line: bigint; depositor: string; openedAt: number }
 export declare function stockPosition(c: CreditContracts, id: bigint | number | string, assets?: Array<{ symbol: string; token: string; decimals: number }>): Promise<StockPosition | null>;
 export interface StockAssetView { symbol: string; name: string; token: string; answer: bigint | null; price: number | null; updatedAt: number | null; usable: boolean; hold: number | null; holdReason: string; ltvBps: bigint }
@@ -59,8 +66,11 @@ export declare function stockAssets(c: CreditContracts, assets: Array<{ symbol: 
 export interface CreditStatus {
   agentId: bigint; owner: string | null; enrolled: boolean; isRoot: boolean; defaulted: boolean; frozen: boolean;
   sponsor: bigint; premiumBps: bigint; line: bigint; drawn: bigint;
-  /** What can be drawn now: the pool's figure, capped by the stock vault's borrowRoom on a stock line. */
+  /** What can be drawn now: the pool's figure, capped by the stock vault's borrowRoom on a stock line; 0 when
+   *  `refused` says why no loan can be drawn (since 0.8.3, on every line: a default marked on the owner's account). */
   available: bigint;
+  /** "", or why no loan can be drawn whatever the line's room (see StockCollateral.refused). Since 0.8.3. */
+  refused: string;
   /** The stock tokens behind a stock line; null for any other line. */
   collateral: StockCollateral | null;
   loansRepaid: bigint; qualifiedRepaid: bigint; volumeRepaid: bigint; feesPaid: bigint; enrolledAt: number;
@@ -76,7 +86,9 @@ export declare function borrowLine(c: CreditContracts, signer: any, agentId: big
 export declare function repayLoan(c: CreditContracts, signer: any, loanId: bigint | number | string): Promise<{ hash: string; loanId: bigint; agentId: bigint; paid: bigint }>;
 export declare function balances(c: CreditContracts, provider: any, address: string): Promise<{ address: string; usdg: bigint; native: bigint }>;
 export declare function borrowGap(o: { signer: any; pool: any; agentId?: bigint | number | string; price: bigint; balance: bigint; maxBorrow: bigint; termSeconds?: bigint | number; maxFee?: bigint; me?: string; v5?: string | any | null; v5Root?: bigint | number | string | null; ownerOf?: (id: bigint) => Promise<string>; agentWalletOf?: (id: bigint) => Promise<string> }): Promise<{ borrowed: bigint; loanId: bigint | null; dueAt: bigint | null; fee: bigint; term: bigint }>;
-/** Before a borrow on a SeatVaultV5 line: its refresh, by the owner or by the agent's key V5 recorded 24 h ago; a key
- *  V5 has not recorded is recorded (noteDelegate), and while its 24 h run the borrow goes ahead only within the line's
- *  room, else PayError V5_DELEGATE_WAIT says when it can. Nothing for any other line, or with no `v5`. */
-export declare function v5BeforeBorrow(o: { signer: any; pool: any; v5?: string | any | null; v5Root?: bigint | number | string | null; agentId: bigint | number | string; amount: bigint; now?: () => number; ownerOf?: (id: bigint) => Promise<string> }): Promise<{ v5: boolean; refreshed: boolean; noted: string | null }>;
+/** Before a borrow on a SeatVaultV5 line: its refresh, by the owner or by the agent's key V5 recorded 24 h ago. `term`
+ *  (seconds) is required there: one over V5's 10 days is refused (PayError V5_TERM_TOO_LONG; V5_TERM_REQUIRED without
+ *  one) before anything is sent. A key V5 has not recorded is recorded (noteDelegate), and it, or one recorded under
+ *  24 h ago, gets PayError V5_DELEGATE_WAIT with when it can borrow (`readyAt`): V5 lends to no other caller than the
+ *  owner before then. Nothing for any other line, or with no `v5`. `amount` was replaced by `term` in 0.8.3. */
+export declare function v5BeforeBorrow(o: { signer: any; pool: any; v5?: string | any | null; v5Root?: bigint | number | string | null; agentId: bigint | number | string; term: bigint | number; now?: () => number; ownerOf?: (id: bigint) => Promise<string> }): Promise<{ v5: boolean; refreshed: boolean; noted: null }>;

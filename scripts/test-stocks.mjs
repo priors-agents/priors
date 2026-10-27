@@ -1,6 +1,7 @@
 // Stock lines in the SDK and the packages, with no network: Score v2 2.0.1 counts the stock vault's loans as the
 // borrower's own money; every surface that reports what an agent can draw reports min(available, borrowRoom) for a
-// stock line; @priors/x402 and @priors/mcp read the vault.
+// stock line, and 0 when the vault or the pool refuses every loan whatever those views say (GHSA-qcrq-x8xg-25vg);
+// @priors/x402 and @priors/mcp read the vault.
 //   node scripts/test-stocks.mjs
 import assert from "node:assert/strict";
 import { ethers } from "ethers";
@@ -75,11 +76,11 @@ const COL = { token: SPY.token, symbol: "SPY", decimals: 18, amount: 5n * 10n **
 
   // @priors/x402 creditStatus
   const agent = (sponsor) => ({ enrolledAt: 1n, isRoot: false, defaulted: false, frozen: false, sponsor, premiumBps: 0n, delegatedIn: 25_000_000n, principalOut: 0n, loansRepaid: 0n, qualifiedRepaid: 0n, volumeRepaid: 0n, feesPaid: 0n });
-  const vault = { agentId: async () => 9000n, getPosition: async () => ({ token: SPY.token, amount: 5n * 10n ** 16n, status: 1n, closing: false, line: 19_280_316n, depositor: "0x1", openedAt: 1n }), valueOf: async () => [true, 38_560_633n], borrowRoom: async () => 19_280_316n, lendStatus: async () => 0n, ltvOf: async () => { throw new Error("no ltvOf yet"); }, params: async () => ({ ltvBps: 5000n }) };
-  const c = (sponsor, sv = vault) => ({ pool: { getAgent: async () => agent(sponsor), loansOf: async () => [] }, lens: { score: async () => 0n }, registry: { ownerOf: async () => "0x1" }, stockVault: sv });
+  const vault = { agentId: async () => 9000n, getPosition: async () => ({ token: SPY.token, amount: 5n * 10n ** 16n, status: 1n, closing: false, line: 19_280_316n, depositor: "0x1", owner: "0x1", openedAt: 1n }), valueOf: async () => [true, 38_560_633n], borrowRoom: async () => 19_280_316n, lendStatus: async () => 0n, ltvOf: async () => { throw new Error("no ltvOf yet"); }, params: async () => ({ ltvBps: 5000n }) };
+  const c = (sponsor, sv = vault) => ({ pool: { getAgent: async () => agent(sponsor), loansOf: async () => [], ownerDefaults: async () => 0n, custodian: async () => false }, lens: { score: async () => 0n }, registry: { ownerOf: async () => "0x1" }, stockVault: sv });
   const st = await credit.creditStatus(c(9000n), 100);
   assert.equal(st.available, 19_280_316n);
-  assert.deepEqual({ ...st.collateral }, { token: SPY.token, amount: 5n * 10n ** 16n, value: 38_560_633n, ltvBps: 5000n, borrowRoom: 19_280_316n, hold: 0, holdReason: "", status: "open", closing: false });
+  assert.deepEqual({ ...st.collateral }, { token: SPY.token, amount: 5n * 10n ** 16n, value: 38_560_633n, ltvBps: 5000n, borrowRoom: 19_280_316n, refused: "", hold: 0, holdReason: "", status: "open", closing: false });
   const other = await credit.creditStatus(c(10n), 200);
   assert.equal(other.collateral, null); assert.equal(other.available, 25_000_000n);
   const none = await credit.creditStatus(c(9000n, null), 100);
@@ -99,11 +100,13 @@ const COL = { token: SPY.token, symbol: "SPY", decimals: 18, amount: 5n * 10n **
     borrowRoom: async () => 1_000_000n, lendStatus: async () => 0n, ltvOf: async () => 5000n, params: async () => ({ ltvBps: 5000n }),
   });
   const { stockPosition: sdkPosition, stockPositions: sdkPositions } = await import("../sdk/stock-vault.mjs");
-  const short = await sdkPosition(fakeVault(BAL), 100);
+  // the pool's and the registry's reads (drawRefusal): an agent in good standing, its owner the position's
+  const reads = { pool: { getAgent: async () => agent(9000n), ownerDefaults: async () => 0n, custodian: async () => false }, registry: { ownerOf: async () => pos.owner } };
+  const short = await sdkPosition(fakeVault(BAL), 100, reads);
   assert.equal(short.amount, DEP, "amount stays what was deposited");
   assert.equal(short.payout, PAID, "payout: what the vault would pay it now");
   assert.equal(short.value, px(PAID), "valued on what it would be paid");
-  const whole = await sdkPosition(fakeVault(HELD), 100);
+  const whole = await sdkPosition(fakeVault(HELD), 100, reads);
   assert.equal(whole.payout, undefined, "no shortfall: no payout field, nothing changes");
   assert.equal(whole.value, px(DEP));
   // many positions in one Multicall3-shaped read (here one by one, on a fake provider)
@@ -123,13 +126,74 @@ const COL = { token: SPY.token, symbol: "SPY", decimals: 18, amount: 5n * 10n **
   assert.equal(collateralOf(whole).payout, undefined);
   ok("SDK: after an issuer burn, stockPosition and stockPositions value what the position would be paid and carry it as `payout`; no shortfall, no change");
 
-  const xs = await credit.stockPosition({ stockVault: fakeVault(BAL) }, 100, [{ symbol: "SPY", token: SPY.token, decimals: 18 }]);
+  const xs = await credit.stockPosition({ stockVault: fakeVault(BAL), ...reads }, 100, [{ symbol: "SPY", token: SPY.token, decimals: 18 }]);
   assert.equal(xs.payout, PAID); assert.equal(xs.value, px(PAID)); assert.equal(xs.amount, DEP);
-  const xc = await credit.creditStatus(c(9000n, fakeVault(BAL)), 100);
+  const cp = (sv) => ({ ...c(9000n, sv), registry: reads.registry });
+  const xc = await credit.creditStatus(cp(fakeVault(BAL)), 100);
   assert.equal(xc.collateral.payout, PAID); assert.equal(xc.collateral.value, px(PAID));
-  assert.equal((await credit.creditStatus(c(9000n, fakeVault(HELD)), 100)).collateral.payout, undefined);
+  assert.equal((await credit.creditStatus(cp(fakeVault(HELD)), 100)).collateral.payout, undefined);
   assert.ok(/Backed by 0\.08 SPY, of 0\.2 deposited: an issuer burn left the vault short/.test(collateralText(xs)), collateralText(xs));
   ok("@priors/x402 and @priors/mcp: stockPosition and creditStatus value the payout after an issuer burn, and the text says so");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// GHSA-qcrq-x8xg-25vg (hey-research-lab): StockVault.borrowRoom, the lens's `available` and the pool's own figure
+// quote room where every loan is refused: the agent changed hands since its position opened (the vault's canBorrow
+// binds the owner who opened it), the agent defaulted or is frozen (AgentDefaulted, IsFrozen), or a default is marked on
+// its owner's account (OwnerDefaulted, every line; a custodian holding others' agents is exempt). The readers show 0
+// there and say why (`refused`); the contract keeps its figure until the next StockVault implementation.
+// ---------------------------------------------------------------------------------------------------------------
+{
+  const OWNER = "0x00000000000000000000000000000000000000a1", BUYER = "0x00000000000000000000000000000000000000b2";
+  const ROOM = 150_000_000n; // the vault's borrowRoom in the report's three tests: a $150 line, nothing drawn
+  const agentOf = (o = {}) => ({ enrolledAt: 1n, isRoot: false, defaulted: false, frozen: false, sponsor: 9000n, premiumBps: 0n, delegatedIn: ROOM, principalOut: 0n, loansRepaid: 0n, qualifiedRepaid: 0n, volumeRepaid: 0n, feesPaid: 0n, ...o });
+  /** The chain for one agent: `holder` the registry's owner now, `marks` the pool's ownerDefaults, `custodian`. */
+  const world = ({ holder = OWNER, agent = {}, marks = 0n, custodian = false, sponsor = 9000n } = {}) => {
+    const pos = { depositor: OWNER, owner: OWNER, token: SPY.token, openedAt: 1n, closing: false, status: 1n, line: ROOM, amount: 10n ** 18n };
+    const stockVault = { agentId: async () => 9000n, getPosition: async () => pos, valueOf: async () => [true, 2n * ROOM], borrowRoom: async () => ROOM, lendStatus: async () => 0n, ltvOf: async () => 5000n, params: async () => ({ ltvBps: 5000n }), held: async () => 0n };
+    const pool = { getAgent: async () => agentOf({ sponsor, ...agent }), loansOf: async () => [], ownerDefaults: async (o) => (o === holder ? marks : 0n), custodian: async (o) => o === holder && custodian };
+    const registry = { ownerOf: async () => holder };
+    return { c: { pool, lens: { score: async () => 0n }, registry, stockVault }, stockVault, pool, registry };
+  };
+  const cases = [
+    ["the agent changed hands since its position opened (case 1)", { holder: BUYER }, /changed hands since its stock position opened/],
+    ["the agent defaulted with another loan open (case 2)", { agent: { defaulted: true } }, /the agent defaulted/],
+    ["the line is frozen", { agent: { frozen: true } }, /the line is frozen/],
+    ["a default is marked on its owner's account (case 3)", { marks: 1n }, /a default is marked on its owner's account/],
+  ];
+  const { stockPosition: sdkPosition } = await import("../sdk/stock-vault.mjs");
+  for (const [what, over, why] of cases) {
+    const w = world(over);
+    const st = await credit.creditStatus(w.c, 100);
+    assert.equal(st.collateral.borrowRoom, 0n, `x402 creditStatus collateral.borrowRoom, ${what}`);
+    assert.equal(st.available, 0n, `x402 creditStatus available, ${what}`);
+    assert.match(st.refused, why); assert.equal(st.collateral.refused, st.refused);
+    const xp = await credit.stockPosition(w.c, 100, [{ symbol: "SPY", token: SPY.token, decimals: 18 }]);
+    assert.equal(xp.borrowRoom, 0n, `x402 stockPosition borrowRoom, ${what}`); assert.match(xp.refused, why);
+    assert.match(collateralText(xp), new RegExp(`: 0\\.00 USDG can be drawn now\\. No new loans: [^.]*${why.source}`), `the MCP's text, ${what}: ${collateralText(xp)}`);
+    const sp = await sdkPosition(w.stockVault, 100, { pool: w.pool, registry: w.registry });
+    assert.equal(sp.borrowRoom, 0n, `SDK stockPosition borrowRoom, ${what}`); assert.match(sp.refused, why);
+    assert.equal(borrowable(ROOM, collateralOf(sp)), 0n, `SDK borrowable, ${what}`);
+  }
+  ok("GHSA-qcrq: a stock line whose agent changed hands, defaulted, is frozen, or whose owner has a default reads 0 to draw in @priors/x402 (creditStatus, stockPosition), the MCP's text and the SDK (stockPosition, borrowable), saying why");
+
+  // controls: in good standing, and an owner the pool marked but holds as a custodian (its marks are skipped)
+  for (const over of [{}, { marks: 2n, custodian: true }]) {
+    const w = world(over);
+    const st = await credit.creditStatus(w.c, 100);
+    assert.equal(st.available, ROOM); assert.equal(st.collateral.borrowRoom, ROOM); assert.equal(st.refused, "");
+    assert.equal((await sdkPosition(w.stockVault, 100, { pool: w.pool, registry: w.registry })).borrowRoom, ROOM);
+  }
+  // every line, not only stock lines: a default marked on the owner zeroes a treasury line's available too
+  const t = world({ sponsor: 6228n, marks: 1n });
+  const ts = await credit.creditStatus(t.c, 100);
+  assert.equal(ts.collateral, null); assert.equal(ts.available, 0n); assert.match(ts.refused, /a default is marked on its owner's account/);
+  assert.equal((await credit.creditStatus(world({ sponsor: 6228n, marks: 1n, custodian: true }).c, 100)).available, ROOM, "a custodian's marks are skipped");
+  // an owner that can't be read is never "no mark": nothing to draw, and why
+  const unread = world({ sponsor: 6228n }); unread.c.registry = { ownerOf: async () => { throw new Error("rpc down"); } };
+  const us = await credit.creditStatus(unread.c, 100);
+  assert.equal(us.available, 0n); assert.match(us.refused, /owner couldn't be read/);
+  ok("GHSA-qcrq: the owner-default rule on every line (a treasury line too), a custodian exempt, an unread owner refused; in good standing nothing changes");
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -179,6 +243,11 @@ const COL = { token: SPY.token, symbol: "SPY", decimals: 18, amount: 5n * 10n **
   const { call: c2 } = await mcp(onStock);
   const cs = await c2("credit_status", { agent_id: 7 });
   assert.ok(!cs.error && /available 19\.280316 USDG/.test(cs.text) && /not priced for new loans right now/.test(cs.text) && /New loans wait: the price moved sharply\./.test(cs.text), cs.text);
+  // GHSA-qcrq: a line the pool refuses (a default on its owner's account) says why beside its 0 available
+  const marked = { ...base, status: async (id) => ({ ...(await base.status(id)), available: 0n, refused: "a default is marked on its owner's account, and the pool lends to none of that owner's agents" }) };
+  const { call: c3 } = await mcp(marked);
+  const ms = await c3("credit_status", { agent_id: 7 });
+  assert.ok(!ms.error && /available 0\.00 USDG\. No new loans: a default is marked on its owner's account/.test(ms.text), ms.text);
   ok("@priors/mcp: stock_assets and stock_position read the vault (read-only tools); credit_status shows a stock line's collateral and hold");
 }
 

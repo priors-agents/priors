@@ -1,5 +1,33 @@
 # @priors/x402 changelog
 
+## 0.8.3 (2026-10-27)
+
+- **A borrow on a SeatVaultV5 line for more than 10 days is refused before anything is sent** (GHSA-xccq-5ghg-w7mq,
+  reported by hey-research-lab). SeatVaultV5 lends for at most 10 days (its `MAX_LOAN_TERM`, a constant), while the
+  pool takes up to 30, but `v5BeforeBorrow` did not know the term: `borrowGap` (so `pay()` and `payViaGateway`) and
+  `borrowLine` sent V5's `refresh` (the owner's) or `noteDelegate` (the agent's key's) and only then simulated the
+  borrow, which reverted `BorrowBlockedByBacker`: a transaction signed and paid for on a loan that could not be made,
+  where `borrowGap` says every refusal comes before any transaction.
+  - `v5BeforeBorrow` takes the loan's `term` (seconds) instead of `amount`. On a V5 line it is required
+    (`V5_TERM_REQUIRED` without it), and a term over 10 days throws `V5_TERM_TOO_LONG` (`term`, `maxTerm`), naming the
+    limit, before V5 is asked anything. `borrowGap` and `borrowLine` pass theirs. New in `@priors/x402/credit`:
+    `V5_MAX_TERM_S`.
+- **The agent's key borrows nothing on a V5 line until 24 hours after V5 recorded it, whatever the line's room** (found
+  while fixing the above). V5's `canBorrow` refuses any caller but the owner until then, and the pool asks it with the
+  borrower as the caller, but `v5BeforeBorrow` let such a key's borrow go ahead "within the line's room", where it
+  could only revert. A key V5 has not recorded is recorded (`noteDelegate`, which starts its 24 hours) and, like a key
+  recorded under 24 hours ago, gets `V5_DELEGATE_WAIT` with `readyAt` (and `noted`); nothing else is sent, and the
+  error no longer carries `room`. A borrow that goes through now always has `v5Noted: null`.
+- **What a line can draw reads 0 when every loan would be refused** (GHSA-qcrq-x8xg-25vg, reported by
+  hey-research-lab). `creditStatus`, `stockCollateral` and `stockPosition` gave the stock vault's `borrowRoom`, and
+  `creditStatus` the pool's own figure, where the vault or the pool refuses every loan: the agent changed hands since
+  its stock position opened (the vault lends only to the owner who opened it), the agent defaulted with another loan
+  still open, or a default is marked on its owner's account (the pool's `ownerDefaults`, a custodian's skipped), this
+  last on any line. Those figures are now 0 there, as for a frozen agent or an owner that can't be read, and the new
+  `refused` (on `creditStatus` and on the stock collateral) says why. `stockCollateral` takes the caller's reads of the
+  pool's agent and its owner as an optional fourth argument. The vault's own `borrowRoom` keeps its figure until its
+  next implementation.
+
 ## 0.8.2 (2026-10-26)
 
 - **A transaction the node took is never read as one it refused** (GHSA-rh27-m4c4-p2c7, reported by kevin9327).

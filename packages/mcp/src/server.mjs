@@ -258,8 +258,9 @@ export function collateralText(c, symbol = c.symbol, decimals = c.decimals) {
   const what = c.payout !== undefined && c.payout !== null
     ? `${symbol ? `${tokens(c.payout, decimals)} ${symbol}` : `${c.payout} base units of ${c.token}`}, of ${symbol ? tokens(c.amount, decimals) : c.amount} deposited: an issuer burn left the vault short,`
     : held;
+  // `refused`: why no loan can be drawn whatever the vault's borrowRoom (@priors/x402 0.8.3, GHSA-qcrq-x8xg-25vg)
   return `Backed by ${what}${c.value !== null ? ` worth ${usd(c.value)} to the vault` : " (not priced for new loans right now)"}, at ${Number(c.ltvBps) / 100}% loan-to-value: ${usd(c.borrowRoom)} can be drawn now.`
-    + (c.hold ? ` New loans wait: ${c.holdReason || "a lending hold"}.` : "") + (c.closing ? " Closing: no new loans." : "");
+    + (c.refused ? ` No new loans: ${c.refused}.` : "") + (c.hold ? ` New loans wait: ${c.holdReason || "a lending hold"}.` : "") + (c.closing ? " Closing: no new loans." : "");
 }
 const short = (s, n) => (s.length > n ? `${s.slice(0, n)}… (${s.length - n} more characters cut)` : s);
 const clean = (s, n) => short(String(s ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ""), n);
@@ -1278,7 +1279,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     const lines = [
       `Agent #${id}${s.owner ? ` (owner ${s.owner})` : ""}${s.defaulted ? " — DEFAULTED" : ""}${s.frozen ? " — frozen" : ""}${s.isRoot ? " — a backer (root)" : ""}`,
       s.sponsor === 0n ? "Backed by: nobody yet, so no line." : `Backed by: root #${s.sponsor}${s.premiumBps > 0n ? `, premium ${Number(s.premiumBps) / 100}%` : ""}.`,
-      `Line ${usd(s.line)}: drawn ${usd(s.drawn)}, available ${usd(s.available)}.`,
+      `Line ${usd(s.line)}: drawn ${usd(s.drawn)}, available ${usd(s.available)}.${s.refused && !s.collateral && !s.defaulted && !s.frozen ? ` No new loans: ${s.refused}.` : ""}`,
       ...(s.collateral ? [collateralText(s.collateral)] : []),
       `Record: ${s.loansRepaid} loans repaid (${s.qualifiedRepaid} qualified), ${usd(s.volumeRepaid)} repaid in total, ${usd(s.feesPaid)} in fees.${s.score !== null ? ` Score ${s.score}/1000.` : ""}`,
     ];
@@ -1441,7 +1442,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       throw e;
     }
     add("borrowed", r.principal);
-    const v5Note = r.v5Refreshed ? " Its SeatVaultV5 line was refreshed first." : r.v5Noted ? ` SeatVaultV5 recorded this key now (tx ${r.v5Noted}): it can raise the line itself 24 hours from now.` : "";
+    const v5Note = r.v5Refreshed ? " Its SeatVaultV5 line was refreshed first." : "";
     return `Borrowed ${usd(r.principal)} for agent #${id}${r.loanId !== null ? ` as loan #${r.loanId}` : ""}: fee ${usd(r.fee)}, so ${usd(r.principal + r.fee)} is due${r.dueAt ? ` by ${when(r.dueAt)}` : ""}. The USDG is in ${wallet.address}. Tx ${r.hash}.${v5Note}`;
   }));
 

@@ -46,7 +46,8 @@ The functional form is `pay(url, { signer, pool, agentId, ... })`, `resend(url, 
    7 days, clamped into the pool's range; `r.dueAt` is the deadline to have `settleLoans()` run by. On a line
    sponsored by SeatVaultV5 (the `v5` and `v5Root` options, which `priors.pay` takes from the deployment record's
    `seatVaultV5` and `seatVaultV5AgentId` once V5 is live), V5's step comes just before the borrow: the owner's
-   `refresh(agentId)`, or a new key's `noteDelegate` and a borrow within the line's room ([PARTICIPATE.md](PARTICIPATE.md),
+   `refresh(agentId)`, or that of a key V5 recorded 24 hours ago; a new key's `noteDelegate`, then `V5_DELEGATE_WAIT`
+   until its 24 hours have run; a term over V5's 10 days is refused before anything is sent ([PARTICIPATE.md](PARTICIPATE.md),
    "A line sponsored by SeatVaultV5").
 5. Signs an EIP-3009 `TransferWithAuthorization` on USDG's `Global Dollar` v1 domain, valid for at most 600 s
    whatever the merchant asks, and retries with it in `X-PAYMENT`.

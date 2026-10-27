@@ -43,7 +43,7 @@ import { ethers } from "ethers";
 import { parseInvite, explainRevert } from "./priors.mjs";
 import { pay as floatPay, resend as floatResend, settleLoans as floatSettleLoans, v5BeforeBorrow, SEAT_VAULT_V5_ABI } from "./float.mjs";
 import { PT_USDG, ptQuote, ptBuy, ptSell, ptRedeem, ptPosition, ptListing } from "./pt-usdg.mjs";
-import { STOCK_VAULT_ABI, stockAssets as readStockAssets, stockPosition as readStockPosition, collateralOf, borrowable } from "./stock-vault.mjs";
+import { STOCK_VAULT_ABI, stockAssets as readStockAssets, stockPosition as readStockPosition, collateralOf, borrowable, drawRefusal, ownerMarkOf } from "./stock-vault.mjs";
 
 export { parseInvite, explainRevert, SEAT_VAULT_V5_ABI };
 
@@ -1201,7 +1201,9 @@ export class PriorsV2 {
    * Borrow `amount` for `termSeconds`. USDG lands in `to` (default: the signer). `maxFee` defaults to the pool's
    * own quote, so a premium raised between quote and mining reverts (FeeTooHigh) instead of costing more.
    * On a SeatVaultV5 line (`seatVaultV5` and `seatVaultV5AgentId` in the addresses), V5's step first (float.mjs
-   * `v5BeforeBorrow`: the owner's refresh, or the key's noteDelegate); the result then says `v5Refreshed`, `v5Noted`.
+   * `v5BeforeBorrow`: the owner's refresh, or that of a key V5 recorded 24 h ago); the result then says `v5Refreshed`.
+   * A term over V5's 10 days is refused (V5_TERM_TOO_LONG) before anything is sent; a key V5 has not recorded, or
+   * recorded under 24 h ago, is refused with when it can borrow (V5_DELEGATE_WAIT; one not recorded is recorded first).
    * A borrow whose answer was lost (the broadcast's or the receipt's) throws BORROW_UNCONFIRMED with the amount as
    * `borrowed` (`loanId` and `dueAt` null, `unconfirmed: true`, the tx `hash` and `nonce`): the loan may exist, or the
    * transaction may still be pending, so the open loans alone settle nothing. Borrow again only once `txStatus(hash,
@@ -1216,7 +1218,7 @@ export class PriorsV2 {
     await this._needOwnerOrAgentWallet(agentId, "borrowed");
     const fee = maxFee ?? (await this.pool.quoteFee(agentId, units, term)).fee;
     if (this.vaultV5) this._needSigner();
-    const v5 = await v5BeforeBorrow({ signer: this.signer, pool: this.pool, v5: this.vaultV5, v5Root: this.addresses.seatVaultV5AgentId ?? null, agentId, amount: units });
+    const v5 = await v5BeforeBorrow({ signer: this.signer, pool: this.pool, v5: this.vaultV5, v5Root: this.addresses.seatVaultV5AgentId ?? null, agentId, term });
     const recipient = to || (await this.me());
     try {
       return await sendChecked(this.pool, "borrow", [agentId, units, term, recipient, fee], this._ifaces, (rc) => {
@@ -1356,7 +1358,9 @@ export class PriorsV2 {
   }
 
   /** Where an agent stands: identity, sponsor (which kind), line, loans, seat, stock collateral, and the owner's USDG.
-   *  For a stock line `available` is capped by the vault's borrowRoom (collateralOf). */
+   *  For a stock line `available` is capped by the vault's borrowRoom (collateralOf). `available` is 0, and `refused`
+   *  says why, when no loan can be drawn whatever the line's room (stock-vault.mjs drawRefusal: the agent defaulted or
+   *  frozen, its owner marked by a default on any line, a stock position opened by another owner; GHSA-qcrq-x8xg-25vg). */
   async status(agentId) {
     const reg = await this._registry();
     const owner = await reg.ownerOf(agentId).catch(() => null);
@@ -1369,14 +1373,16 @@ export class PriorsV2 {
     const sponsorKind = sponsor === 0n ? "none" : sponsor === tRoot ? "treasury v4" : sponsor === t5Root ? "treasury v5" : onSeat ? "seat vault" : onStock ? "stock vault" : "backer";
     // the seat vault that sponsors it, else the one holding an open seat for it, else where new seats go
     const seatVault = vs.length ? (onSeat ? vs[vRoots.indexOf(sponsor)] : await this._seatVaultOf(agentId)) : null;
-    const collateral = onStock ? collateralOf(await readStockPosition(this.stockVault, agentId)) : null;
-    const available = borrowable(a.delegatedIn > a.principalOut ? a.delegatedIn - a.principalOut : 0n, collateral);
+    const collateral = onStock ? collateralOf(await readStockPosition(this.stockVault, agentId, { pool: this.pool, registry: reg })) : null;
+    // no line, or a stock line (its position read the same reason): nothing more to read
+    const refused = sponsor === 0n ? "" : collateral ? collateral.refused : drawRefusal({ agent: a, owner, ...(await ownerMarkOf(this.pool, owner)) });
+    const available = refused ? 0n : borrowable(a.delegatedIn > a.principalOut ? a.delegatedIn - a.principalOut : 0n, collateral);
     const seat = seatVault ? this._seat(await seatVault.getSeat(agentId)) : null;
     const usdg = await this._usdg();
     return {
       agentId: Number(agentId), owner, enrolled: a.enrolled, isRoot: a.isRoot, defaulted: a.defaulted, frozen: a.frozen,
       sponsor: Number(sponsor), sponsorKind, seatVault: onSeat ? await seatVault.getAddress() : null, premiumBps: Number(a.premiumBps),
-      line: a.delegatedIn, principalOut: a.principalOut, available, activeLoans: Number(a.activeLoans),
+      line: a.delegatedIn, principalOut: a.principalOut, available, refused, activeLoans: Number(a.activeLoans),
       loansRepaid: Number(a.loansRepaid), qualifiedRepaid: Number(a.qualifiedRepaid), volumeRepaid: a.volumeRepaid, feesPaid: a.feesPaid,
       openLoans: await this.openLoans(agentId),
       seat: seat && seat.status !== "none" ? { ...seat, seatVault: await seatVault.getAddress() } : null,
@@ -1391,7 +1397,7 @@ export class PriorsV2 {
   async stockAssets() { return readStockAssets(this.provider, await this._need(this.stockVault, "stockVault").getAddress()); }
 
   /** Agent `agentId`'s stock position (the tokens behind its line, their value, the line's room), or null. */
-  async stockPosition(agentId) { return readStockPosition(this._need(this.stockVault, "stockVault"), agentId); }
+  async stockPosition(agentId) { return readStockPosition(this._need(this.stockVault, "stockVault"), agentId, { pool: this.pool, registry: await this._registry() }); }
 
   /** `amount` of `token` in its own units: a bigint is raw, a number or decimal string is whole tokens. */
   async _tokenUnits(token, amount) {

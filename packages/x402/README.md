@@ -319,7 +319,11 @@ Stock lines (the Priors stock vault, `robinhood.stockVault`, backs a line with t
 `token`, `amount`, `value` (what the vault prices them at, null while it will not), `ltvBps`, `borrowRoom`, `hold`
 (0, or why new loans wait: `STOCK_HOLDS`), `holdReason`, `status`, `closing` } for a stock line (null for any other),
 and its `available` is the smaller of the pool's figure and `borrowRoom` (`stockCollateral(c, id, sponsor)` reads that
-object on its own). `stockPosition(c, id, assets?)` and
+object on its own). From 0.8.3 (GHSA-qcrq-x8xg-25vg) `available` and `borrowRoom` are 0, and `refused` says why, when
+no loan can be drawn whatever the vault's or the lens's figure: the agent defaulted or is frozen, its owner can't be
+read, it changed hands since its stock position opened (the vault lends only to the owner who opened it), or a default
+is marked on its owner's account (the pool's `ownerDefaults`, a custodian's skipped), this last on every line.
+`stockPosition(c, id, assets?)` and
 `stockAssets(c, assets)` read one position and the accepted tokens (price, whether the vault lends now, LTV).
 
 ## Savings (`@priors/x402/savings`)
@@ -386,9 +390,12 @@ A line backed by SeatVaultV5 has no room until it is refreshed: V5 vouches nothi
 vouch only on `refresh`, by the agent's owner or by the agent's pool delegate that V5 recorded (`noteDelegate`) at least
 24 hours before. With `createPayer({ v5, v5Root })` (and `creditContracts({ addresses: { seatVaultV5,
 seatVaultV5AgentId } })` for `borrowLine`), a borrow on such a line first calls `v5BeforeBorrow`: the owner, or a key
-V5 recorded a day ago, refreshes the line; a key V5 has not recorded is recorded now, and while its 24 hours run the
-borrow goes ahead only within the line's room, else it stops with `V5_DELEGATE_WAIT`, saying when it can borrow (the
-owner can borrow from Go mode meanwhile, which refreshes first).
+V5 recorded a day ago, refreshes the line. V5 lends for at most 10 days: from 0.8.3 `v5BeforeBorrow` takes the loan's
+`term` (required on a V5 line, `V5_TERM_REQUIRED` without it) and refuses a longer one with `V5_TERM_TOO_LONG` before
+anything is sent (GHSA-xccq-5ghg-w7mq). V5 also lends to no caller but the owner until 24 hours after it recorded that
+key, whatever the line's room: a key V5 has not recorded is recorded now, and it, or one recorded under 24 hours ago,
+stops with `V5_DELEGATE_WAIT`, saying when it can borrow (`readyAt`; the owner can borrow from Go mode meanwhile, which
+refreshes first).
 
 ## Paying USDC sellers on Base (`networks`, `@priors/x402/bridge`)
 

@@ -1,11 +1,14 @@
 // SeatVaultV5 lines in the SDK, network-free. V5 vouches nothing when it opens a line, and raises the pool's vouch only
 // on refresh(agentId) from the agent's owner, or from the pool delegate V5 recorded (noteDelegate) at least 24 h before.
 // PriorsV2.borrow (and so `priors-v2 borrow`), float pay() and PriorsV2.pay take float.mjs's v5BeforeBorrow step when,
-// and only when, the addresses name V5 (seatVaultV5 and seatVaultV5AgentId) and V5's root sponsors the agent: the owner,
-// or a key recorded 24 h ago, refreshes; a controlling key V5 has not recorded is recorded now (noteDelegate) and
-// borrows only within the line's room; a key recorded under 24 h ago never refreshes. A local JSON-RPC stub plays the
-// pool, the registry, USDG and V5, and keeps every transaction sent; nothing reaches a real chain.
-// When @priors/x402 has its own v5BeforeBorrow, the two are run side by side on the same cases.
+// and only when, the addresses name V5 (seatVaultV5 and seatVaultV5AgentId) and V5's root sponsors the agent: a term
+// over V5's 10 days is refused before anything is sent (GHSA-xccq-5ghg-w7mq); the owner, or a key recorded 24 h ago,
+// refreshes; a controlling key V5 has not recorded is recorded now (noteDelegate) and, like a key recorded under 24 h
+// ago, borrows nothing until 24 h after it was recorded, whatever room the line has (V5's canBorrow refuses it). A
+// local JSON-RPC stub plays the pool (with V5's canBorrow rule for a V5 line: src/v5/V5View.sol, asked with the
+// borrower as the caller), the registry, USDG and V5, and keeps every transaction sent; nothing reaches a real chain.
+// @priors/x402's v5BeforeBorrow is run side by side with the SDK's on the same cases, and its borrowGap and borrowLine
+// (the MCP's borrow, pay_url, pay_gateway and fund_base) on the term and the delegate's wait.
 //
 //   node scripts/test-v5-line.mjs
 import assert from "node:assert/strict";
@@ -39,6 +42,8 @@ const BLOCK = 80_000_000;
 const REFRESH_GAS = 200_000n, NOTE_GAS = 60_000n, BORROW_GAS = 300_000n;
 const WITH_V5 = { ...NO_V5, seatVaultV5: V5, seatVaultV5AgentId: Number(V5_ROOT) };
 const nowS = () => Math.floor(Date.now() / 1000);
+const DAY = 86_400n;
+const V5_MAX_TERM = 10n * DAY; // src/v5/V5Types.sol MAX_LOAN_TERM
 
 const owner = ethers.Wallet.createRandom();
 const delegate = ethers.Wallet.createRandom();
@@ -84,6 +89,11 @@ function chain(w) {
         case "isController": return ok([same(f.args[1], w.owner) || same(f.args[1], w.poolDelegate)]);
         case "borrow": {
           const [id, amount, term, recipient] = f.args;
+          // V5's canBorrow on its line, which the pool asks with msg.sender as the caller (CreditPoolV2 _askBacker): a term
+          // over 10 days, or a caller other than the owner before 24 h after V5 recorded that key, whatever the room
+          const v5Refuses = w.sponsor === V5_ROOT && (term > V5_MAX_TERM
+            || (!same(from, w.owner) && (!same(from, w.noted[0]) || nowS() < Number(w.noted[1]) + V5_DELEGATE_WAIT_S)));
+          if (v5Refuses) return { revert: poolI.encodeErrorResult("BorrowBlockedByBacker", [w.sponsor]) };
           const avail = w.delegatedIn > w.principalOut ? w.delegatedIn - w.principalOut : 0n;
           if (amount > avail) return { revert: poolI.encodeErrorResult("InsufficientCapacity", [id, amount, avail]) };
           if (!send) return ok([BigInt(loans + 1)]);
@@ -235,38 +245,59 @@ await check("a key V5 recorded 24 h ago or more: it refreshes like the owner, th
     assert.equal(r.v5Refreshed, true);
   }));
 
-await check("a controlling key V5 never recorded, the line has room: noteDelegate now, then the borrow, never a refresh (v5Noted)", () =>
-  onChain({ delegatedIn: 5_000000n }, async (c) => {
-    const r = await borrow5(c, delegate);
-    assert.deepEqual(asSent(c), ["v5.noteDelegate", "pool.borrow"]);
-    assert.equal(r.v5Refreshed, false);
-    assert.equal(r.v5Noted, c.sent[0].hash);
-  }));
+// V5's canBorrow refuses any caller but the owner until 24 h after V5 recorded that key (src/v5/V5View.sol), and the
+// pool asks it with the borrower as the caller: room on the line changes nothing, so a key not recorded 24 h ago never
+// reaches the pool's borrow.
+for (const room of [0n, 5_000000n]) {
+  await check(`a controlling key V5 never recorded, ${room ? "the line has room" : "no room"}: noteDelegate now, then V5_DELEGATE_WAIT 24 h on; no refresh, no borrow`, () =>
+    onChain({ delegatedIn: room }, async (c) => {
+      const t0 = nowS();
+      const e = await rejectsWith(borrow5(c, delegate), "V5_DELEGATE_WAIT", /SeatVaultV5, which lends only to the agent's owner, or to the agent's key from 24 hours after V5 recorded it \(recorded now, tx 0x[0-9a-f]{64}\)\. This key can borrow from \d{4}-\d\d-\d\d \d\d:\d\d UTC; before then, the owner can borrow from Go mode/);
+      assert.deepEqual(asSent(c), ["v5.noteDelegate"]);
+      assert.equal(e.noted, c.sent[0].hash);
+      assert.ok(e.readyAt >= t0 + V5_DELEGATE_WAIT_S && e.readyAt <= nowS() + V5_DELEGATE_WAIT_S, `readyAt ${e.readyAt}`);
+      assert.ok(!c.asked.includes("pool.borrow"), `the borrow was simulated: ${c.asked}`);
+    }));
+}
 
-await check("a controlling key V5 never recorded, no room: noteDelegate now, then V5_DELEGATE_WAIT 24 h on; no refresh, no borrow", () =>
-  onChain({}, async (c) => {
-    const t0 = nowS();
-    const e = await rejectsWith(borrow5(c, delegate), "V5_DELEGATE_WAIT", /SeatVaultV5, which raises it only for the agent's owner, or for the agent's key 24 hours after V5 recorded it \(recorded now, tx 0x[0-9a-f]{64}\)\. The line has room for 0 atomic USDG now\. This key can borrow more from \d{4}-\d\d-\d\d \d\d:\d\d UTC; before then, the owner can borrow from Go mode/);
-    assert.deepEqual(asSent(c), ["v5.noteDelegate"]);
-    assert.equal(e.noted, c.sent[0].hash);
-    assert.equal(e.room, 0n);
-    assert.ok(e.readyAt >= t0 + V5_DELEGATE_WAIT_S && e.readyAt <= nowS() + V5_DELEGATE_WAIT_S, `readyAt ${e.readyAt}`);
-  }));
-
-await check("a key V5 recorded under 24 h ago: within the room, the borrow only; beyond it, V5_DELEGATE_WAIT at its recording + 24 h, nothing sent", async () => {
+await check("a key V5 recorded under 24 h ago, with or without room: V5_DELEGATE_WAIT at its recording + 24 h, nothing sent", async () => {
   const at = nowS() - 3600;
-  await onChain({ noted: [delegate.address, BigInt(at)], delegatedIn: 5_000000n }, async (c) => {
-    const r = await borrow5(c, delegate);
-    assert.deepEqual(asSent(c), ["pool.borrow"]);
-    assert.equal(r.v5Refreshed, false);
-    assert.equal(r.v5Noted, null);
+  for (const room of [5_000000n, 3_000000n, 0n]) {
+    await onChain({ noted: [delegate.address, BigInt(at)], delegatedIn: room }, async (c) => {
+      const e = await rejectsWith(borrow5(c, delegate), "V5_DELEGATE_WAIT", /This key can borrow from \d{4}-\d\d-\d\d \d\d:\d\d UTC/);
+      assert.equal(e.readyAt, at + V5_DELEGATE_WAIT_S);
+      assert.equal(e.noted, null);
+      assert.doesNotMatch(e.message, /recorded now/);
+      assert.deepEqual(c.sent, []);
+    });
+  }
+});
+
+// GHSA-xccq-5ghg-w7mq: V5 lends for at most 10 days (MAX_LOAN_TERM), and its refresh or noteDelegate is a transaction:
+// a longer term is refused before either is sent, and before V5 is asked anything.
+await check("a term over V5's 10 days: V5_TERM_TOO_LONG naming the limit, nothing sent and V5 not asked (the owner, a key recorded 24 h ago, a key never recorded)", async () => {
+  for (const [key, over] of [[owner, {}], [delegate, { noted: [delegate.address, BigInt(nowS() - V5_DELEGATE_WAIT_S - 60)] }], [delegate, {}]]) {
+    for (const days of [14, 10.5, 30]) {
+      await onChain(over, async (c) => {
+        const e = await rejectsWith(sdk(c, key).borrow(AGENT, 5, Math.round(days * 86400)), "V5_TERM_TOO_LONG",
+          new RegExp(`agent #77's line is on SeatVaultV5, which lends for at most 10 days: a term of ${days === 10.5 ? "10.50 days" : `${days} days`} would be refused \\(BorrowBlockedByBacker\\), so nothing was sent`));
+        assert.equal(e.maxTerm, V5_MAX_TERM);
+        assert.deepEqual(c.sent, []);
+        noV5Asked(c);
+      });
+    }
+  }
+});
+
+await check("10 days exactly, V5's longest: the owner refreshes and borrows; another root's line takes a longer term", async () => {
+  await onChain({}, async (c) => {
+    const r = await sdk(c).borrow(AGENT, 5, Number(V5_MAX_TERM));
+    refreshThenBorrow(c);
+    assert.equal(r.v5Refreshed, true);
   });
-  await onChain({ noted: [delegate.address, BigInt(at)], delegatedIn: 3_000000n }, async (c) => {
-    const e = await rejectsWith(borrow5(c, delegate), "V5_DELEGATE_WAIT", /room for 3000000 atomic USDG now/);
-    assert.equal(e.readyAt, at + V5_DELEGATE_WAIT_S);
-    assert.equal(e.noted, null);
-    assert.doesNotMatch(e.message, /recorded now/);
-    assert.deepEqual(c.sent, []);
+  await onChain({ sponsor: OTHER_ROOT, delegatedIn: 5_000000n }, async (c) => {
+    await sdk(c).borrow(AGENT, 5, 14 * 86400);
+    assert.deepEqual(asSent(c), ["pool.borrow"]);
   });
 });
 
@@ -313,6 +344,14 @@ await check("pay() with a controlling key V5 never recorded and no room: noteDel
     assert.deepEqual(asSent(c), ["v5.noteDelegate"]);
     assert.equal(fetchImpl.signed, 0);
   }));
+await check("pay() with a term over V5's 10 days (termSeconds 14 days): V5_TERM_TOO_LONG, nothing sent, nothing signed, V5 not asked", () =>
+  onChain({}, async (c) => {
+    const fetchImpl = merchantFetch();
+    await rejectsWith(pay("https://m.example/x", payOpts(c, { v5: V5, v5Root: V5_ROOT, termSeconds: 14 * 86400, fetchImpl })), "V5_TERM_TOO_LONG", /lends for at most 10 days: a term of 14 days/);
+    assert.deepEqual(c.sent, []);
+    assert.equal(fetchImpl.signed, 0);
+    noV5Asked(c);
+  }));
 await check("pay() without v5, or on a line another root sponsors: the borrow only", async () => {
   await onChain({ delegatedIn: 5_000000n }, async (c) => {
     await pay("https://m.example/x", payOpts(c));
@@ -345,25 +384,90 @@ if (typeof credit.v5BeforeBorrow !== "function") {
 } else {
   await check("sdk/float.mjs and @priors/x402 v5BeforeBorrow agree case by case: the same transactions, results and error codes", async () => {
     const t = nowS();
+    const week = 7n * DAY, twoWeeks = 14n * DAY;
     const cases = [
-      [{}, owner], [{ sponsor: OTHER_ROOT }, owner], [{ sponsor: 0n }, owner], [{ refreshRevert: "BookNotOpen" }, owner],
-      [{}, delegate], [{ delegatedIn: 5_000000n }, delegate], [{}, stranger],
-      [{ noted: [delegate.address, BigInt(t - 100)] }, delegate], [{ noted: [delegate.address, BigInt(t - 100)], delegatedIn: 5_000000n }, delegate],
-      [{ noted: [delegate.address, BigInt(t - V5_DELEGATE_WAIT_S)] }, delegate],
+      [{}, owner, week], [{ sponsor: OTHER_ROOT }, owner, week], [{ sponsor: 0n }, owner, week], [{ refreshRevert: "BookNotOpen" }, owner, week],
+      [{}, delegate, week], [{ delegatedIn: 5_000000n }, delegate, week], [{}, stranger, week],
+      [{ noted: [delegate.address, BigInt(t - 100)] }, delegate, week], [{ noted: [delegate.address, BigInt(t - 100)], delegatedIn: 5_000000n }, delegate, week],
+      [{ noted: [delegate.address, BigInt(t - V5_DELEGATE_WAIT_S)] }, delegate, week],
+      // GHSA-xccq-5ghg-w7mq: over 10 days, or no term, on a V5 line; another root's line takes any term, or none
+      [{}, owner, twoWeeks], [{ noted: [delegate.address, BigInt(t - V5_DELEGATE_WAIT_S)] }, delegate, twoWeeks], [{}, delegate, twoWeeks], [{}, stranger, twoWeeks],
+      [{}, owner, V5_MAX_TERM], [{}, owner, V5_MAX_TERM + 1n], [{}, owner, undefined], [{ sponsor: OTHER_ROOT }, owner, twoWeeks], [{ sponsor: OTHER_ROOT }, owner, undefined],
     ];
-    for (const [over, key] of cases) {
+    for (const [over, key, term] of cases) {
       const runs = [];
       for (const fn of [v5BeforeBorrow, credit.v5BeforeBorrow]) {
         runs.push(await onChain(over, async (c) => {
-          const out = await fn({ signer: key.connect(c.provider), pool: POOL, v5: V5, v5Root: V5_ROOT, agentId: AGENT, amount: 5_000000n, now: () => t })
-            .then((r) => ({ v5: r.v5, refreshed: r.refreshed, noted: r.noted ? "tx" : null }), (e) => ({ code: e.code, readyAt: e.readyAt, room: e.room }));
-          return { out, sent: c.sent.map((s) => `${s.to}.${s.fn}@${s.gasLimit}`) };
+          const out = await fn({ signer: key.connect(c.provider), pool: POOL, v5: V5, v5Root: V5_ROOT, agentId: AGENT, term, now: () => t })
+            .then((r) => ({ v5: r.v5, refreshed: r.refreshed, noted: r.noted }), (e) => ({ code: e.code, readyAt: e.readyAt, noted: e.noted ? "tx" : e.noted, term: e.term, maxTerm: e.maxTerm, message: e.message.replace(/0x[0-9a-f]{64}/g, "0x(hash)") }));
+          return { out, sent: c.sent.map((s) => `${s.to}.${s.fn}@${s.gasLimit}`), v5Asked: c.asked.filter((a) => a.startsWith("v5.")) };
         }));
       }
-      assert.deepEqual(runs[1], runs[0], `case ${JSON.stringify(over, (_k, v) => (typeof v === "bigint" ? String(v) : v))} with ${key === owner ? "the owner" : key === delegate ? "the delegate" : "a stranger"}`);
+      assert.deepEqual(runs[1], runs[0], `case ${JSON.stringify(over, (_k, v) => (typeof v === "bigint" ? String(v) : v))} with ${key === owner ? "the owner" : key === delegate ? "the delegate" : "a stranger"}, term ${term}`);
+    }
+  });
+
+  await check("both v5BeforeBorrow: no term on a V5 line is V5_TERM_REQUIRED and over 10 days V5_TERM_TOO_LONG, before V5 is asked or anything sent", async () => {
+    for (const fn of [v5BeforeBorrow, credit.v5BeforeBorrow]) {
+      for (const [term, code] of [[undefined, "V5_TERM_REQUIRED"], [null, "V5_TERM_REQUIRED"], [V5_MAX_TERM + 1n, "V5_TERM_TOO_LONG"], [Number(30n * DAY), "V5_TERM_TOO_LONG"]]) {
+        await onChain({}, async (c) => {
+          const e = await rejectsWith(fn({ signer: owner.connect(c.provider), pool: POOL, v5: V5, v5Root: V5_ROOT, agentId: AGENT, term }), code, /SeatVaultV5, which lends for at most 10 days/);
+          if (code === "V5_TERM_TOO_LONG") assert.deepEqual([e.term, e.maxTerm], [BigInt(term), V5_MAX_TERM]);
+          assert.deepEqual(c.sent, []);
+          noV5Asked(c);
+        });
+      }
     }
   });
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+console.log("@priors/x402 borrowGap and borrowLine (the MCP's pay_url, pay_gateway and fund_base; its borrow)");
+const ccOf = (c) => credit.creditContracts({ runner: c.provider, addresses: { pool: POOL, lens: POOL, usdg: USDG, registry: REG, stockVault: null, seatVaultV5: V5, seatVaultV5AgentId: V5_ROOT } });
+const gap = (c, key, termSeconds) => credit.borrowGap({ signer: key.connect(c.provider), pool: POOL, agentId: AGENT, price: 1_000000n, balance: 0n, maxBorrow: 5_000000n, termSeconds, me: key.address, v5: V5, v5Root: V5_ROOT });
+const line = (c, key, term) => credit.borrowLine(ccOf(c), key.connect(c.provider), AGENT, 5_000000n, term);
+
+await check("borrowGap and borrowLine over V5's 10 days (14 days; the MCP's borrow takes days up to 365): V5_TERM_TOO_LONG, nothing sent, V5 not asked", async () => {
+  for (const run of [(c, k) => gap(c, k, 14 * 86400), (c, k) => line(c, k, 14n * DAY)]) {
+    for (const [key, over] of [[owner, {}], [delegate, {}], [delegate, { noted: [delegate.address, BigInt(nowS() - V5_DELEGATE_WAIT_S - 60)] }]]) {
+      await onChain(over, async (c) => {
+        await rejectsWith(run(c, key), "V5_TERM_TOO_LONG", /agent #77's line is on SeatVaultV5, which lends for at most 10 days: a term of 14 days would be refused \(BorrowBlockedByBacker\), so nothing was sent/);
+        assert.deepEqual(c.sent, []);
+        noV5Asked(c);
+      });
+    }
+  }
+});
+
+await check("borrowGap (its default term, 7 days) and borrowLine (10 days) on a V5 line: the owner's refresh, then the borrow", async () => {
+  await onChain({}, async (c) => {
+    const g = await gap(c, owner, undefined);
+    refreshThenBorrow(c);
+    assert.equal(g.term, 7n * DAY);
+  });
+  await onChain({}, async (c) => {
+    const r = await line(c, owner, V5_MAX_TERM);
+    refreshThenBorrow(c);
+    assert.equal(r.v5Refreshed, true);
+  });
+});
+
+await check("borrowGap and borrowLine with a key V5 never recorded, the line with room: noteDelegate, then V5_DELEGATE_WAIT, no borrow; recorded an hour ago: V5_DELEGATE_WAIT, nothing sent", async () => {
+  for (const run of [(c, k) => gap(c, k, undefined), (c, k) => line(c, k, 7n * DAY)]) {
+    await onChain({ delegatedIn: 5_000000n }, async (c) => {
+      const e = await rejectsWith(run(c, delegate), "V5_DELEGATE_WAIT", /\(recorded now, tx 0x[0-9a-f]{64}\)\. This key can borrow from /);
+      assert.deepEqual(asSent(c), ["v5.noteDelegate"]);
+      assert.equal(e.noted, c.sent[0].hash);
+      assert.ok(!c.asked.includes("pool.borrow"), `the borrow was simulated: ${c.asked}`);
+    });
+    const at = nowS() - 3600;
+    await onChain({ delegatedIn: 5_000000n, noted: [delegate.address, BigInt(at)] }, async (c) => {
+      const e = await rejectsWith(run(c, delegate), "V5_DELEGATE_WAIT");
+      assert.equal(e.readyAt, at + V5_DELEGATE_WAIT_S);
+      assert.deepEqual(c.sent, []);
+    });
+  }
+});
 
 console.log(failed ? `\ntest-v5-line: ${failed} failed, ${passed} passed` : `\ntest-v5-line: all ${passed} good`);
 process.exit(failed ? 1 : 0);

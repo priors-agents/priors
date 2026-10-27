@@ -93,7 +93,9 @@ Real shape, built from the live snapshot of block 80,894,837 (addresses and hash
 - Amounts are USDG as exact decimal strings (6 decimals); times are unix seconds, except the spec's `createdAt`.
 - `line`: the lens' `creditReport` at `block`, the same figures the site, `/api/snapshot` and the API's `availableOf`
   show: `limit` = capacity, `drawn` = principalOut, `available` = the pool's available, capped by the stock vault's
-  borrowRoom for a stock line.
+  borrowRoom for a stock line, and 0 when the pool or the vault refuses every loan whatever those figures say: a
+  default marked on the owner's account (a custodian's skipped), or a stock line whose agent changed hands since its
+  position opened (GHSA-qcrq-x8xg-25vg).
 - `repaid`: loans repaid on time, every repayment that is not `late` (v1 era included), and their principal; `last`
   cites the latest five by loan id and repayment transaction (a v1 loan carries `"era": "v1"` and the file names
   `v1Pool`). `late`: repaid more than 24 hours after the due time from weights 2.0.3 (2026-11-02), after the due time
