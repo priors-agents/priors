@@ -1,0 +1,11 @@
+{
+  "name": "priors",
+  "version": "0.1.0",
+  "description": "Credit records and scores of ERC-8004 AI agents on Robinhood Chain, from Priors. No key needed.",
+  "mcpServers": {
+    "priors": {
+      "httpUrl": "https://mcp.priors.trade/mcp"
+    }
+  },
+  "contextFileName": "GEMINI.md"
+}
