@@ -252,8 +252,11 @@ The levers we do hold, and how fast they move:
 - **Rule-bound, no timelock:** once a day anyone can call `PoolSteward.sweep()`. It sends the reserve above its target
   (the larger of 190 USDG and 10% of principal out; at or under the target, half of what arrived since the last
   sweep) to the `RevenueRouter`, never below the hard floor (the larger of 190 USDG and 2% of principal out) and
-  nothing under 25 USDG. The destination is fixed; the Safe, as guardian, can pause the sweep. A sweep that moves
-  more than that rule, or anywhere else, is a finding.
+  nothing under 25 USDG. The target and the floor read principal out at the moment of the sweep: the floor bounds
+  what a sweep or a reserve withdrawal may take when it runs, and is not a minimum kept against new borrowing, so a
+  loan drawn after a sweep can leave the reserve under the floor for the principal then out (`docs/SECURITY-v2.md`,
+  X6). The destination is fixed; the Safe, as guardian, can pause the sweep. A sweep that moves more than that rule,
+  or anywhere else, is a finding.
 
 ### Who holds which key
 

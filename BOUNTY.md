@@ -118,6 +118,9 @@ meant to hold.
   scheduled until 2026-10-11 19:49 UTC, in one block from then), which leaves its policy by design. The steward's
   daily `sweep()`, which anyone can call with no timelock, is in scope the other way round: a sweep that moves more
   than its rule (the reserve above its target, never below the hard floor, only to the `RevenueRouter`) is a finding.
+  The target and the floor read principal out at the moment of the sweep: the floor bounds what a sweep or a reserve
+  withdrawal may take when it runs, and is not a minimum the reserve keeps against new borrowing
+  (`docs/SECURITY-v2.md`, X6).
 - **The Robinhood stock tokens, their issuer's powers** (pause, block, burn, upgrade) **and Chainlink's price feeds.**
   Not ours. How the stock vault copes with them (its price and pause holds, a burn shared pro rata) is in scope.
 - **USDG, the $PRIORS token and the ERC-8004 identity registry.** Not ours; how our contracts handle them is in scope.
