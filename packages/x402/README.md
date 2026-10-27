@@ -319,7 +319,11 @@ Stock lines (the Priors stock vault, `robinhood.stockVault`, backs a line with t
 `token`, `amount`, `value` (what the vault prices them at, null while it will not), `ltvBps`, `borrowRoom`, `hold`
 (0, or why new loans wait: `STOCK_HOLDS`), `holdReason`, `status`, `closing` } for a stock line (null for any other),
 and its `available` is the smaller of the pool's figure and `borrowRoom` (`stockCollateral(c, id, sponsor)` reads that
-object on its own). `stockPosition(c, id, assets?)` and
+object on its own). From 0.8.3 (GHSA-qcrq-x8xg-25vg) `available` and `borrowRoom` are 0, and `refused` says why, when
+no loan can be drawn whatever the vault's or the lens's figure: the agent defaulted or is frozen, its owner can't be
+read, it changed hands since its stock position opened (the vault lends only to the owner who opened it), or a default
+is marked on its owner's account (the pool's `ownerDefaults`, a custodian's skipped), this last on every line.
+`stockPosition(c, id, assets?)` and
 `stockAssets(c, assets)` read one position and the accepted tokens (price, whether the vault lends now, LTV).
 
 ## Savings (`@priors/x402/savings`)

@@ -5,7 +5,9 @@
 //
 // A stock line's `available` is the smaller of the pool's figure (delegatedIn - principalOut, what the on-chain lens
 // reports) and the vault's `borrowRoom`: the vault refuses a draw beyond its loan-to-value, and during a lending hold
-// (a price jump, a multiplier change, a paused or blocked token) it refuses every new draw.
+// (a price jump, a multiplier change, a paused or blocked token) it refuses every new draw. Neither view sees every
+// refusal (GHSA-qcrq-x8xg-25vg): the readers here take 0 when `drawRefusal` names one (the agent defaulted or frozen,
+// in other hands than the position's, or its owner marked by a default and not a custodian).
 import { ethers } from "ethers";
 import STOCKS from "../deployments/stock-assets.4663.json" with { type: "json" };
 
@@ -28,6 +30,7 @@ export const STOCK_VAULT_ABI = [
   "function held(address token) view returns (uint256)",
   "function epochRoom() view returns (uint256)",
   `function getPosition(uint256 id) view returns (${POSITION_T})`,
+  "function pool() view returns (address)", "function registry() view returns (address)",
   `function open(uint256 id, address token, uint256 amount, ${CONSENT_T} c, bytes sig) returns (uint256)`,
   "function addCollateral(uint256 id, uint256 amount)",
   "function close(uint256 id)",
@@ -43,6 +46,10 @@ export const STOCK_VAULT_ABI = [
   "error NotIdle(uint256 agentId)", "error LendingHeld(address token, uint8 reason)", "error LoanOpen(uint256 agentId)",
   "error NotSent(uint256 agentId)", "error TokensOwed(uint256 agentId)", "error TokenCapReached(address token, uint256 wanted, uint256 left)", "error Shortfall(address token)",
 ];
+// the pool's and the registry's reads drawRefusal takes (CreditPoolV2 getAgent, ownerDefaults, custodian; ownerOf)
+const AGENT_T = "tuple(bool enrolled,bool isRoot,bool defaulted,bool frozen,bool importedFromV1,uint64 enrolledAt,uint64 lastBorrowAt,uint64 lastRepayAt,uint256 sponsor,uint256 delegatedIn,uint256 delegatedOut,uint256 principalOut,uint256 activeLoans,uint256 premiumBps,uint256 premiumCap,uint256 loansRepaid,uint256 volumeRepaid,uint256 feesPaid,uint256 recourseHonored,uint256 childrenDefaulted,uint256 qualifiedRepaid,uint256 dollarSecondsRepaid)";
+const POOL_READ_ABI = [`function getAgent(uint256) view returns (${AGENT_T})`, "function ownerDefaults(address) view returns (uint256)", "function custodian(address) view returns (bool)"];
+const REGISTRY_READ_ABI = ["function ownerOf(uint256) view returns (address)"];
 const FEED_ABI = ["function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)"];
 const MULTICALL_ABI = ["function aggregate3((address target, bool allowFailure, bytes callData)[] calls) payable returns ((bool success, bytes returnData)[] returnData)"];
 
@@ -79,6 +86,30 @@ async function payoutRead(vault, p) {
     const [held, balance] = await Promise.all([vault.held(p.token), new ethers.Contract(p.token, BALANCE_ABI, vault.runner).balanceOf(at)]);
     return payoutOf(p.amount, held, balance);
   } catch (_) { return BigInt(p.amount); }
+}
+
+/**
+ * Why no loan can be drawn on a line now, whatever room the pool's figure, the lens's `available` or the stock vault's
+ * `borrowRoom` shows, or "" (GHSA-qcrq-x8xg-25vg: those views do not say). From reads the caller made: `agent` (the
+ * pool's getAgent), `owner` (the registry's ownerOf; null when it could not be read: refused, never "no mark"),
+ * `ownerDefaults` and `custodian` (the pool's, for that owner), and on a stock line `position` (the vault's
+ * getPosition). The pool refuses a defaulted or frozen agent (AgentDefaulted, IsFrozen) and every agent of an owner
+ * marked by a default who is not a custodian (OwnerDefaulted); the vault lends only to the owner who opened the position.
+ */
+export function drawRefusal({ agent, owner, ownerDefaults = 0n, custodian = false, position = null }) {
+  if (agent.defaulted) return "the agent defaulted";
+  if (agent.frozen) return "the line is frozen";
+  if (!owner) return "its owner couldn't be read just now";
+  if (position && lc(owner) !== lc(position.owner)) return "the agent changed hands since its stock position opened, and the vault lends only to the owner who opened it";
+  if (BigInt(ownerDefaults) !== 0n && !custodian) return "a default is marked on its owner's account, and the pool lends to none of that owner's agents";
+  return "";
+}
+
+/** The pool's mark on `owner` for drawRefusal: { ownerDefaults, custodian } (nothing read for a null owner). */
+export async function ownerMarkOf(pool, owner) {
+  if (!owner) return { ownerDefaults: 0n, custodian: false };
+  const [ownerDefaults, custodian] = await Promise.all([pool.ownerDefaults(owner), pool.custodian(owner)]);
+  return { ownerDefaults: BigInt(ownerDefaults), custodian: !!custodian };
 }
 
 /** The stock vault as a contract on `runner`; a string address or a Contract. */
@@ -130,21 +161,27 @@ export const ltvOfResult = (data) => BigInt(vaultIface.decodeFunctionResult("ltv
  * `value`, `line` and `borrowRoom` in USDG base units (6 decimals). `value` is null while the vault will not price the
  * token for new credit (a stale price, a paused oracle or a lending hold: `hold`). After an issuer burn from the vault
  * the position carries `payout`, what the vault would pay it now (less than `amount`), and `value` prices that.
+ * `borrowRoom` is the vault's figure, or 0 when `refused` names why no loan can be drawn (drawRefusal), read from
+ * `pool` and `registry` (contracts; default: the vault's own).
  */
-export async function stockPosition(vault, agentId, { assets = STOCK_ASSETS } = {}) {
+export async function stockPosition(vault, agentId, { assets = STOCK_ASSETS, pool, registry } = {}) {
   const p = await vault.getPosition(BigInt(agentId));
   const status = Number(p.status);
   if (status === 0) return null;
   const token = ethers.getAddress(p.token);
   const asset = assets.find((a) => lc(a.token) === lc(token)) || null;
   const payout = await payoutRead(vault, { token, amount: p.amount });
-  const [[ok, value], borrowRoom, hold, ltvBps] = await Promise.all([
+  const poolC = pool ?? new ethers.Contract(await vault.pool(), POOL_READ_ABI, vault.runner);
+  const regC = registry ?? new ethers.Contract(await vault.registry(), REGISTRY_READ_ABI, vault.runner);
+  const [[ok, value], borrowRoom, hold, ltvBps, agent, owner] = await Promise.all([
     vaultValueOf(vault, token, payout), vault.borrowRoom(BigInt(agentId)), vault.lendStatus(token).then(Number).catch(() => 0), ltvOf(vault, token, agentId),
+    poolC.getAgent(BigInt(agentId)), regC.ownerOf(BigInt(agentId)).catch(() => null),
   ]);
+  const refused = drawRefusal({ agent, owner, ...(await ownerMarkOf(poolC, owner)), position: p });
   return {
     agentId: BigInt(agentId), depositor: p.depositor, owner: p.owner, token, symbol: asset ? asset.symbol : null,
     decimals: asset ? asset.decimals : null, amount: p.amount, ...(payout < BigInt(p.amount) ? { payout } : {}), value: ok ? value : null, ltvBps,
-    line: BigInt(p.line), borrowRoom: BigInt(borrowRoom), hold, holdReason: HOLD_REASONS[hold] || (hold ? `hold ${hold}` : ""),
+    line: BigInt(p.line), borrowRoom: refused ? 0n : BigInt(borrowRoom), refused, hold, holdReason: HOLD_REASONS[hold] || (hold ? `hold ${hold}` : ""),
     status, statusName: POSITION_STATUS[status] || `status ${status}`, closing: p.closing, openedAt: Number(p.openedAt),
   };
 }
@@ -152,7 +189,7 @@ export async function stockPosition(vault, agentId, { assets = STOCK_ASSETS } = 
 /** The collateral block of a credit report (creditStatus, /v1/report, the MCP): what backs a stock line. */
 export function collateralOf(pos) {
   if (!pos) return null;
-  return { token: pos.token, symbol: pos.symbol, decimals: pos.decimals, amount: pos.amount, ...(pos.payout !== undefined ? { payout: pos.payout } : {}), value: pos.value, ltvBps: pos.ltvBps, borrowRoom: pos.borrowRoom, hold: pos.hold, holdReason: pos.holdReason, status: pos.statusName, closing: pos.closing };
+  return { token: pos.token, symbol: pos.symbol, decimals: pos.decimals, amount: pos.amount, ...(pos.payout !== undefined ? { payout: pos.payout } : {}), value: pos.value, ltvBps: pos.ltvBps, borrowRoom: pos.borrowRoom, ...(pos.refused !== undefined ? { refused: pos.refused } : {}), hold: pos.hold, holdReason: pos.holdReason, status: pos.statusName, closing: pos.closing };
 }
 
 /** What a line can draw: the pool's `available`, capped by the stock vault's `borrowRoom` for a stock line. */
@@ -200,7 +237,9 @@ export async function stockAssets(provider, vaultAddress, { assets = STOCK_ASSET
 
 /**
  * Stock positions of `agentIds` in one Multicall3 round (for many agents at once; `stockPosition` is the one-agent
- * form): { [agentId]: position | null }, positions as stockPosition returns them.
+ * form): { [agentId]: position | null }, positions as stockPosition returns them, but for `borrowRoom`, the vault's own
+ * figure here, and no `refused`: a caller that shows what a line can draw applies drawRefusal with what it knows of
+ * each agent (the pool's getAgent, the registry's owner, the pool's mark on that owner) and the position's `owner`.
  */
 export async function stockPositions(provider, vaultAddress, agentIds, { assets = STOCK_ASSETS, multicall = MULTICALL3, blockTag, defaultLtv } = {}) {
   const v = ethers.getAddress(vaultAddress);

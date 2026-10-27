@@ -89,6 +89,9 @@ function chain({ declared = owner.address, ids = { [AGENT]: owner.address }, min
         return ok([7n], [{ address: POOL, ...poolI.encodeEventLog("Borrowed", [7n, x[0], sponsor, x[1], 23_333n, BigInt(NOW) + x[2], x[3]]) }]);
       case "registry": return ok([REG]);
       case "usdg": return ok([USDG]);
+      // status's available: no default marked on the owner's account (GHSA-qcrq-x8xg-25vg)
+      case "ownerDefaults": return ok([0n]);
+      case "custodian": return ok([false]);
     }
     if (c === "registry") switch (f.name) {
       case "ownerOf": {

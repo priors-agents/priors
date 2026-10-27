@@ -256,7 +256,7 @@ async function printStatus(sdk, addresses, id) {
   const lines = [
     `agent #${s.agentId}  owner ${s.owner}`,
     `  sponsor   ${s.sponsor ? `#${s.sponsor} (${kind})${s.premiumBps ? `, premium ${s.premiumBps} bps` : ""}` : "none: no line yet"}${s.frozen ? " [frozen]" : ""}${s.defaulted ? " [DEFAULTED]" : ""}`,
-    `  line      ${usd(s.line)}  (drawn ${usd(s.principalOut)}, available ${usd(s.available)})`,
+    `  line      ${usd(s.line)}  (drawn ${usd(s.principalOut)}, available ${usd(s.available)})${s.refused && !s.defaulted && !s.frozen ? `: no new loans, ${s.refused}` : ""}`,
     `  record    ${s.loansRepaid} repaid (${s.qualifiedRepaid} qualified), volume ${usd(s.volumeRepaid)}, fees ${usd(s.feesPaid)}`,
   ];
   if (s.seat) lines.push(`  seat      ${s.seat.status}${s.seat.closing ? " (closing)" : ""}, staker ${s.seat.staker}`);

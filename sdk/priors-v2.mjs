@@ -43,7 +43,7 @@ import { ethers } from "ethers";
 import { parseInvite, explainRevert } from "./priors.mjs";
 import { pay as floatPay, resend as floatResend, settleLoans as floatSettleLoans, v5BeforeBorrow, SEAT_VAULT_V5_ABI } from "./float.mjs";
 import { PT_USDG, ptQuote, ptBuy, ptSell, ptRedeem, ptPosition, ptListing } from "./pt-usdg.mjs";
-import { STOCK_VAULT_ABI, stockAssets as readStockAssets, stockPosition as readStockPosition, collateralOf, borrowable } from "./stock-vault.mjs";
+import { STOCK_VAULT_ABI, stockAssets as readStockAssets, stockPosition as readStockPosition, collateralOf, borrowable, drawRefusal, ownerMarkOf } from "./stock-vault.mjs";
 
 export { parseInvite, explainRevert, SEAT_VAULT_V5_ABI };
 
@@ -1358,7 +1358,9 @@ export class PriorsV2 {
   }
 
   /** Where an agent stands: identity, sponsor (which kind), line, loans, seat, stock collateral, and the owner's USDG.
-   *  For a stock line `available` is capped by the vault's borrowRoom (collateralOf). */
+   *  For a stock line `available` is capped by the vault's borrowRoom (collateralOf). `available` is 0, and `refused`
+   *  says why, when no loan can be drawn whatever the line's room (stock-vault.mjs drawRefusal: the agent defaulted or
+   *  frozen, its owner marked by a default on any line, a stock position opened by another owner; GHSA-qcrq-x8xg-25vg). */
   async status(agentId) {
     const reg = await this._registry();
     const owner = await reg.ownerOf(agentId).catch(() => null);
@@ -1371,14 +1373,16 @@ export class PriorsV2 {
     const sponsorKind = sponsor === 0n ? "none" : sponsor === tRoot ? "treasury v4" : sponsor === t5Root ? "treasury v5" : onSeat ? "seat vault" : onStock ? "stock vault" : "backer";
     // the seat vault that sponsors it, else the one holding an open seat for it, else where new seats go
     const seatVault = vs.length ? (onSeat ? vs[vRoots.indexOf(sponsor)] : await this._seatVaultOf(agentId)) : null;
-    const collateral = onStock ? collateralOf(await readStockPosition(this.stockVault, agentId)) : null;
-    const available = borrowable(a.delegatedIn > a.principalOut ? a.delegatedIn - a.principalOut : 0n, collateral);
+    const collateral = onStock ? collateralOf(await readStockPosition(this.stockVault, agentId, { pool: this.pool, registry: reg })) : null;
+    // no line, or a stock line (its position read the same reason): nothing more to read
+    const refused = sponsor === 0n ? "" : collateral ? collateral.refused : drawRefusal({ agent: a, owner, ...(await ownerMarkOf(this.pool, owner)) });
+    const available = refused ? 0n : borrowable(a.delegatedIn > a.principalOut ? a.delegatedIn - a.principalOut : 0n, collateral);
     const seat = seatVault ? this._seat(await seatVault.getSeat(agentId)) : null;
     const usdg = await this._usdg();
     return {
       agentId: Number(agentId), owner, enrolled: a.enrolled, isRoot: a.isRoot, defaulted: a.defaulted, frozen: a.frozen,
       sponsor: Number(sponsor), sponsorKind, seatVault: onSeat ? await seatVault.getAddress() : null, premiumBps: Number(a.premiumBps),
-      line: a.delegatedIn, principalOut: a.principalOut, available, activeLoans: Number(a.activeLoans),
+      line: a.delegatedIn, principalOut: a.principalOut, available, refused, activeLoans: Number(a.activeLoans),
       loansRepaid: Number(a.loansRepaid), qualifiedRepaid: Number(a.qualifiedRepaid), volumeRepaid: a.volumeRepaid, feesPaid: a.feesPaid,
       openLoans: await this.openLoans(agentId),
       seat: seat && seat.status !== "none" ? { ...seat, seatVault: await seatVault.getAddress() } : null,
@@ -1393,7 +1397,7 @@ export class PriorsV2 {
   async stockAssets() { return readStockAssets(this.provider, await this._need(this.stockVault, "stockVault").getAddress()); }
 
   /** Agent `agentId`'s stock position (the tokens behind its line, their value, the line's room), or null. */
-  async stockPosition(agentId) { return readStockPosition(this._need(this.stockVault, "stockVault"), agentId); }
+  async stockPosition(agentId) { return readStockPosition(this._need(this.stockVault, "stockVault"), agentId, { pool: this.pool, registry: await this._registry() }); }
 
   /** `amount` of `token` in its own units: a bigint is raw, a number or decimal string is whole tokens. */
   async _tokenUnits(token, amount) {

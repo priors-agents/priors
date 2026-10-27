@@ -48,12 +48,17 @@ export interface StockCollateral {
   /** What the vault prices the tokens at, USDG base units; null while it will not price them for new loans. */
   value: bigint | null;
   ltvBps: bigint;
-  /** What the line can draw now, USDG base units. */
+  /** What the line can draw now, USDG base units: the vault's borrowRoom, or 0 when `refused` says why no loan can be
+   *  drawn (since 0.8.3). */
   borrowRoom: bigint;
+  /** "", or why no loan can be drawn whatever the vault's figure: the agent defaulted or frozen, its owner unread, the
+   *  agent in other hands than the position's, or a default marked on its owner's account (not a custodian). 0.8.3. */
+  refused: string;
   /** 0, or why new loans wait (STOCK_HOLDS). */
   hold: number; holdReason: string; status: string; closing: boolean;
 }
-export declare function stockCollateral(c: CreditContracts, id: bigint | number | string, sponsor: bigint | number | string): Promise<StockCollateral | null>;
+/** `known`: the caller's reads of the pool's getAgent and the registry's ownerOf (null owner: unread), reused. */
+export declare function stockCollateral(c: CreditContracts, id: bigint | number | string, sponsor: bigint | number | string, known?: { agent: any; owner: string | null } | null): Promise<StockCollateral | null>;
 export interface StockPosition extends StockCollateral { agentId: bigint; symbol: string | null; decimals: number | null; line: bigint; depositor: string; openedAt: number }
 export declare function stockPosition(c: CreditContracts, id: bigint | number | string, assets?: Array<{ symbol: string; token: string; decimals: number }>): Promise<StockPosition | null>;
 export interface StockAssetView { symbol: string; name: string; token: string; answer: bigint | null; price: number | null; updatedAt: number | null; usable: boolean; hold: number | null; holdReason: string; ltvBps: bigint }
@@ -61,8 +66,11 @@ export declare function stockAssets(c: CreditContracts, assets: Array<{ symbol: 
 export interface CreditStatus {
   agentId: bigint; owner: string | null; enrolled: boolean; isRoot: boolean; defaulted: boolean; frozen: boolean;
   sponsor: bigint; premiumBps: bigint; line: bigint; drawn: bigint;
-  /** What can be drawn now: the pool's figure, capped by the stock vault's borrowRoom on a stock line. */
+  /** What can be drawn now: the pool's figure, capped by the stock vault's borrowRoom on a stock line; 0 when
+   *  `refused` says why no loan can be drawn (since 0.8.3, on every line: a default marked on the owner's account). */
   available: bigint;
+  /** "", or why no loan can be drawn whatever the line's room (see StockCollateral.refused). Since 0.8.3. */
+  refused: string;
   /** The stock tokens behind a stock line; null for any other line. */
   collateral: StockCollateral | null;
   loansRepaid: bigint; qualifiedRepaid: bigint; volumeRepaid: bigint; feesPaid: bigint; enrolledAt: number;

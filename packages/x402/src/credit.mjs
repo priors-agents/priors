@@ -379,24 +379,53 @@ export function creditContracts({ runner, addresses = {} }) {
   };
 }
 
+/** Whether the pool refuses every loan of `owner`'s agents: a default is marked on its account (ownerDefaults) and it
+ *  is not a custodian, which holds others' agents (CreditPoolV2 _checkBorrower: OwnerDefaulted). */
+async function ownerMarked(pool, owner) {
+  if (BigInt(await pool.ownerDefaults(owner)) === 0n) return false;
+  return !(await pool.custodian(owner));
+}
+
+/**
+ * Why no loan can be drawn on agent `id`'s line now, whatever room the pool's figure, the lens's `available` or the
+ * stock vault's `borrowRoom` shows, or "" (GHSA-qcrq-x8xg-25vg: those views do not say): the pool refuses a defaulted
+ * or frozen agent (AgentDefaulted, IsFrozen) and every agent of an owner marked by a default who is not a custodian
+ * (OwnerDefaulted); on a stock line (`position`) the vault lends only to the owner who opened it (its canBorrow). `a`
+ * is the pool's getAgent, `owner` the registry's ownerOf (null when it could not be read: refused, never "no mark").
+ */
+async function drawRefusal(c, a, owner, position = null) {
+  if (a.defaulted) return "the agent defaulted";
+  if (a.frozen) return "the line is frozen";
+  if (!owner) return "its owner couldn't be read just now";
+  if (position && String(owner).toLowerCase() !== String(position.owner).toLowerCase()) return "the agent changed hands since its stock position opened, and the vault lends only to the owner who opened it";
+  if (await ownerMarked(c.pool, owner)) return "a default is marked on its owner's account, and the pool lends to none of that owner's agents";
+  return "";
+}
+
+/** The pool's agent and the registry's owner of `id`, for drawRefusal; the owner null when it can't be read. */
+const agentAndOwner = (c, id) => Promise.all([c.pool.getAgent(id), c.registry.ownerOf(id).catch(() => null)]);
+
 /**
  * The stock collateral behind agent `id`'s line, when the stock vault backs it (`sponsor` is the vault's root), else
  * null: { token, amount (token units), value (what the vault prices it at, USDG base units; null while it will not
- * price it for new loans), ltvBps, borrowRoom (what the line can draw now), hold (0, or why new loans wait:
- * STOCK_HOLDS), holdReason, status, closing }.
+ * price it for new loans), ltvBps, borrowRoom (what the line can draw now: the vault's figure, 0 when drawRefusal
+ * names why no loan can be drawn), refused (that reason, or ""), hold (0, or why new loans wait: STOCK_HOLDS),
+ * holdReason, status, closing }. `known` (`{ agent, owner }`) reuses the caller's reads of the pool and the registry.
  */
-export async function stockCollateral(c, id, sponsor) {
+export async function stockCollateral(c, id, sponsor, known = null) {
   if (!c.stockVault || !sponsor) return null;
   if (c._stockRoot === undefined) c._stockRoot = await c.stockVault.agentId();
   if (BigInt(sponsor) !== BigInt(c._stockRoot) || BigInt(c._stockRoot) === 0n) return null;
   const p = await c.stockVault.getPosition(BigInt(id));
   const payout = await payoutOf(c.stockVault, p);
-  const [[ok, value], borrowRoom, hold, ltvBps] = await Promise.all([
+  const [[ok, value], borrowRoom, hold, ltvBps, [agent, owner]] = await Promise.all([
     vaultValueOf(c.stockVault, p.token, payout), c.stockVault.borrowRoom(BigInt(id)), c.stockVault.lendStatus(p.token).then(Number).catch(() => 0),
     c.stockVault.ltvOf(BigInt(id), p.token).then(BigInt).catch(async () => BigInt((await c.stockVault.params()).ltvBps)),
+    known ? [known.agent, known.owner] : agentAndOwner(c, BigInt(id)),
   ]);
+  const refused = await drawRefusal(c, agent, owner, p);
   return {
-    token: p.token, amount: p.amount, ...(payout < BigInt(p.amount) ? { payout } : {}), value: ok ? value : null, ltvBps, borrowRoom: BigInt(borrowRoom), hold, holdReason: STOCK_HOLDS[hold] || (hold ? `hold ${hold}` : ""),
+    token: p.token, amount: p.amount, ...(payout < BigInt(p.amount) ? { payout } : {}), value: ok ? value : null, ltvBps, borrowRoom: refused ? 0n : BigInt(borrowRoom), refused, hold, holdReason: STOCK_HOLDS[hold] || (hold ? `hold ${hold}` : ""),
     status: POSITION_STATUS[Number(p.status)] || `status ${p.status}`, closing: p.closing,
   };
 }
@@ -404,19 +433,23 @@ export async function stockCollateral(c, id, sponsor) {
 const loanView = (id, l) => ({ loanId: BigInt(id), agentId: l.agentId, sponsorId: l.sponsorId, principal: l.principal, fee: l.fee, due: l.principal + l.fee, issuedAt: Number(l.issuedAt), dueAt: Number(l.dueAt), defaultableAt: Number(l.defaultableAt), status: LOAN_STATUS[Number(l.status)] || "unknown" });
 
 /** An agent's line, record, open loans and score, from the pool and lens; on a stock line, the collateral behind it
- *  and `available` capped by what the stock vault lets it draw (borrowRoom). */
+ *  and `available` capped by what the stock vault lets it draw (borrowRoom). `available` is 0, and `refused` says why,
+ *  when no loan can be drawn whatever the line's room (drawRefusal: a default marked on the owner's account counts on
+ *  every line, GHSA-qcrq-x8xg-25vg). */
 export async function creditStatus(c, agentId) {
   const id = BigInt(agentId);
   const [a, score, owner] = await Promise.all([c.pool.getAgent(id), c.lens.score(id).catch(() => null), c.registry.ownerOf(id).catch(() => null)]);
   const ids = await c.pool.loansOf(id);
   const loans = await Promise.all(ids.map(async (lid) => loanView(lid, await c.pool.getLoan(lid))));
   const blocked = a.defaulted || a.frozen || a.sponsor === 0n;
-  const collateral = await stockCollateral(c, id, a.sponsor);
-  const pooled = blocked ? 0n : a.delegatedIn > a.principalOut ? a.delegatedIn - a.principalOut : 0n;
+  const collateral = await stockCollateral(c, id, a.sponsor, { agent: a, owner });
+  // no line, or a stock line (its collateral read the same reason): nothing more to read
+  const refused = a.sponsor === 0n ? "" : collateral ? collateral.refused : await drawRefusal(c, a, owner);
+  const pooled = blocked || refused ? 0n : a.delegatedIn > a.principalOut ? a.delegatedIn - a.principalOut : 0n;
   return {
     agentId: id, owner, enrolled: a.enrolledAt !== 0n, isRoot: a.isRoot, defaulted: a.defaulted, frozen: a.frozen,
     sponsor: a.sponsor, premiumBps: a.premiumBps, line: a.delegatedIn, drawn: a.principalOut,
-    available: collateral && collateral.borrowRoom < pooled ? collateral.borrowRoom : pooled,
+    available: collateral && collateral.borrowRoom < pooled ? collateral.borrowRoom : pooled, refused,
     collateral,
     loansRepaid: a.loansRepaid, qualifiedRepaid: a.qualifiedRepaid, volumeRepaid: a.volumeRepaid, feesPaid: a.feesPaid,
     enrolledAt: Number(a.enrolledAt), score: score === null ? null : Number(score),
@@ -428,7 +461,8 @@ const FEED_ABI = ["function latestRoundData() view returns (uint80 roundId, int2
 
 /**
  * Agent `id`'s stock position (whatever backs its line today), or null when it has none: the collateral fields plus
- * { agentId, symbol (from `assets` when listed), depositor, line, openedAt }. Needs `c.stockVault`.
+ * { agentId, symbol (from `assets` when listed), depositor, line, openedAt }. `borrowRoom` is 0, and `refused` says
+ * why, when no loan can be drawn whatever the vault's figure (drawRefusal, GHSA-qcrq-x8xg-25vg). Needs `c.stockVault`.
  * @param {Array<{symbol: string, token: string, decimals: number}>} [assets]
  */
 export async function stockPosition(c, id, assets = []) {
@@ -436,14 +470,16 @@ export async function stockPosition(c, id, assets = []) {
   const p = await c.stockVault.getPosition(BigInt(id));
   if (Number(p.status) === 0) return null;
   const payout = await payoutOf(c.stockVault, p);
-  const [[ok, value], borrowRoom, hold, ltvBps] = await Promise.all([
+  const [[ok, value], borrowRoom, hold, ltvBps, [agent, owner]] = await Promise.all([
     vaultValueOf(c.stockVault, p.token, payout), c.stockVault.borrowRoom(BigInt(id)), c.stockVault.lendStatus(p.token).then(Number).catch(() => 0),
     c.stockVault.ltvOf(BigInt(id), p.token).then(BigInt).catch(async () => BigInt((await c.stockVault.params()).ltvBps)),
+    agentAndOwner(c, BigInt(id)),
   ]);
+  const refused = await drawRefusal(c, agent, owner, p);
   const a = assets.find((x) => String(x.token).toLowerCase() === String(p.token).toLowerCase()) || null;
   return {
     agentId: BigInt(id), token: p.token, symbol: a ? a.symbol : null, decimals: a ? a.decimals : null, amount: p.amount, ...(payout < BigInt(p.amount) ? { payout } : {}), value: ok ? value : null, ltvBps,
-    line: BigInt(p.line), borrowRoom: BigInt(borrowRoom), hold, holdReason: STOCK_HOLDS[hold] || (hold ? `hold ${hold}` : ""),
+    line: BigInt(p.line), borrowRoom: refused ? 0n : BigInt(borrowRoom), refused, hold, holdReason: STOCK_HOLDS[hold] || (hold ? `hold ${hold}` : ""),
     status: POSITION_STATUS[Number(p.status)] || `status ${p.status}`, closing: p.closing, depositor: p.depositor, openedAt: Number(p.openedAt),
   };
 }
