@@ -36,7 +36,7 @@ on data, it moves into the next on-chain version.
 | **risk time** | 300 | USDG **someone else** put at risk × days actually held (capped at the term), on loans repaid on time. 1 point per 10 USDG-days. A loan the agent repaid from x402 income counts up to 25% more, in proportion to the share of it that counted income paid (income weighted like the income component, at most 20 USDG per payer per loan, each payment spent once). |
 | **seasoned loans** | 200 | loans held 7+ days and repaid on time, backed by someone else. 20 each for a loan of 50 USDG or more; a smaller one counts in proportion (a 5 USDG loan: 2). |
 | **backing** | 150 | money another party has at risk behind the agent now. 1 point per 5 USDG. |
-| **age** | 100 | days since the agent's first loan on Priors, v1 included (an agent that never borrowed has none); restarts when the agent changes hands (from 2.0.4, not when by a sale on Priors' agent market: "A sale on Priors' market"). |
+| **age** | 100 | days since the agent's first loan on Priors, v1 included (an agent that never borrowed has none); restarts when the agent changes hands (from 2.0.4, not when by a sale on Priors' agent market: "A sale on Priors' market"). A change of hands is read from the owners its loans record and, after a v1 loan or for an agent with no loan before it, from its last registry transfer (one before its enrolment, such as its mint, changes nothing). An agent back with the owner whose v2 loans it holds keeps them. |
 | **recourse** | 100 | debts of vouched agents it paid itself. 50 each; dropped when the agent changes hands (from 2.0.4, kept at a sale on Priors' market). |
 | **income** | 150 | x402 payments (signed USDG, from any facilitator) to the agent's declared payment wallet (from 2.0.4, and for 30 days after a sale on Priors' market to the wallet it declared at the sale: "A sale on Priors' market") from payers that aren't its own, last 30 days, net of anything the agent's side sent that payer. A payer counts once it has paid 1 USDG in the window; each payer is capped at 20 USDG and weighted by its own score (unknown wallets at half weight); plus 5 points per payer, up to 50. A payment to a wallet several agents declared is shared between them. |
 | penalties | | −10 per late repayment (and it earns nothing); −75 per vouched agent that defaulted. Late: repaid after the due time; from 2.0.3, more than 24 hours after it |
@@ -165,10 +165,11 @@ buyer's own from then).
   at the sale included, and for a listed agent its listing, above), late or on time, with its child defaults. Backing
   is what is at risk behind the agent now, as always: a line from a root the market follows (the treasury's) stays on
   the agent; any other line the seller left before listing.
-- **v1 loans** carry no owner. For a sold agent with v1 loans Priors also reads its registry transfers since pool v2's
-  launch: a transfer after a v1 loan that was no sale restarts the record, as before (`plainTransferAt`), and so does a
-  sale that can't keep it (above). Until they are read, its last transfer counts, which is the sale: the record
-  restarts until the read catches up.
+- **v1 loans** carry no owner, and an agent with no loan has none to read. For a sold agent Priors also reads its
+  registry transfers since pool v2's launch: a transfer that was no sale restarts the record, as before
+  (`plainTransferAt`), after a v1 loan or, for an agent with no loan before it, after its enrolment, and so does a sale
+  that can't keep it (above). Until they are read, its last transfer counts, which is the sale: the record restarts
+  until the read catches up. (Until 2026-10-28 only the sold agents with v1 loans were read: GHSA-4x5r-f6w5-fhhc.)
 - **What is read.** The markets' sales, from each market's deploy block on, each timed by its block, with the wallet
   each sale's agent declared at the block before it, and never a price. A sale not read yet, or whose wallet is not
   read yet, counts as a plain transfer until it is (fails closed), and nobody else's score waits. The income index reads
@@ -223,6 +224,8 @@ once, without holding scores back; the published `index.permit2Backfill` is `nul
 - **Repaid from income.** A loan that counts (backed by someone else, repaid on time by the agent's own wallets, since
   its last change of hands) and was repaid while counted income arrived is marked repaid from income, in proportion.
   Income is weighted like the income component, capped at 20 USDG per payer per loan, and each payment is spent once.
+  Only payers whose payments in the index add up to 1 USDG fund it: the index nets those alone, so what the agent's
+  side sends a smaller payer is never read (GHSA-4x5r-f6w5-fhhc).
 - **Kept for a year.** Payments are kept 365 days (less only if the index must shrink to fit its store); a loan's
   bonus comes from income inside that window. Income is read from pool v2's launch block on, which is when x402
   started on Robinhood Chain. Each published result names how its index was read (`index`: blocks, retention).
@@ -245,6 +248,7 @@ once, without holding scores back; the published `index.permit2Backfill` is `nul
 | send a defaulted agent to an honest owner | harmless: a default spreads only to the wallet that defaulted |
 | push agents onto someone's address to dilute their income | only agents that declared the wallet share it, and a pushed agent's declaration is cleared by the registry |
 | spam new tiny payers to stall the index | payers under 1 USDG are ignored, and new payers never hold other scores back |
+| fund throwaway payers with under 1 USDG each, to mark a loan repaid from income | a payer under 1 USDG is never netted, and funds no loan (GHSA-4x5r-f6w5-fhhc) |
 | buy a loan's bonus with one big payment | at most 20 USDG per payer per loan, unknown payers at half weight |
 | sock-puppet payers funded elsewhere | per-payer cap; unknown payers at half weight; breadth only from payers of 1 USDG+; the income rung also needs a 30-day earned record; v2.1 funding-source clusters |
 | claim someone else's payments | only the agent's owner and a wallet that signed to be its payment wallet count |
@@ -361,6 +365,17 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
   published rather than one a stake moved. No score moves on the day: until V5's roots are 30 days old (the retired
   #8641 on 2026-11-08, #8762 on 2026-11-10), 2.0.1 and 2.0.2 give every agent the same score, so on 2026-11-01 only
   the published `version` changes. 2.0.0 stays the engine's default.
+- **inputs, 2026-10-28** (all versions; private report GHSA-4x5r-f6w5-fhhc): an agent with no loan before its last
+  registry transfer restarts at that transfer when it came after its enrolment, as one with v1 loans has since
+  2026-10-01; a transfer before the enrolment, such as the mint, changes nothing, and an agent back with the owner whose
+  v2 loans it holds keeps them (`transferRestart` in `sdk/score-v2-inputs.mjs`). Priors' publisher reads every scored
+  agent's transfers, not only the roots' and those of the agents with v1 loans, and a new agent waits for a read in
+  progress instead of restarting it; under 2.0.4 it reads every sold agent's transfers too (`plainTransferAt`), or a
+  loanless agent sold on the market would restart at its sale. And only payers whose payments in the index add up to
+  1 USDG fund a loan repaid from income: the index nets those alone. No weight changes. On the scores published at
+  block 100,277,645 one flag changes and no score: #7617 (no loan, transferred after its enrolment) shows
+  `ownershipChanged`, its score 0 before and after; under 2.0.3 and 2.0.4 one loan's income share goes from 0.012 to
+  0.009 (#8811's: 0.03 USDG from a payer of 0.03 USDG in all), below the precision of any published figure.
 - **inputs, 2026-10-14** (all versions): treasury v5's root (`meta.treasuryV5AgentId`, where an agent moves for its
   $25 raise) backs from day one, as the treasury does: a moved line's loans stay someone else's risk.
 - **inputs, 2026-10-04** (all versions): a loan repaid through AutoRepay (Autopay) is read from AutoRepay's own

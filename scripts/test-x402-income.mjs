@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { ethers } from "ethers";
 import { pairPayments, pairPermit2, scanPayments, scanTransfers, TOPICS, PERMIT2_PROXIES, getLogsAdaptive, DeadlineError, readAgentWallets, readRepayers, autoRepaidPayers, updateIncome, updateBackerTenure } from "../sdk/x402-income.mjs";
-import { scoreV2, DEFAULT_WEIGHTS as W } from "../sdk/score-v2.mjs";
+import { scoreV2, weightsFor, DEFAULT_WEIGHTS as W } from "../sdk/score-v2.mjs";
 import { buildInputs, scoreAll } from "../sdk/score-v2-inputs.mjs";
 
 const DAY = 86400, NOW = 1_800_000_000, $ = (n) => Math.round(n * 1e6);
@@ -176,6 +176,46 @@ await check("S-1: the backer transfer read is resumable: out of time mid-scan it
   assert.deepEqual(done.since, { 7: 1950 });
 });
 
+await check("GHSA-4x5r-f6w5-fhhc: with every scored agent read, a new id never restarts a scan in progress: it waits, and the next scan reads it from the start with the ids that arrived meanwhile", async () => {
+  const REG = A(8);
+  const nft = (id, block) => ({ transactionHash: "0x" + block.toString(16), index: 0, blockNumber: block, address: REG, topics: [TOPICS.TRANSFER, topic(A(1)), topic(A(2)), ethers.zeroPadValue(ethers.toBeHex(id), 32)], data: "0x" });
+  const logs = [nft(7, 150), nft(8, 160), nft(9, 170), nft(7, 950)];
+  const realNow = Date.now, reads = [];
+  let budget = Infinity;
+  const provider = {
+    async getLogs(f) {
+      if (--budget <= 0) Date.now = () => realNow() + 3_600_000;
+      const ids = f.topics[3].map((t) => Number(BigInt(t)));
+      reads.push([ids.join(","), f.fromBlock]);
+      return logs.filter((l) => l.blockNumber >= f.fromBlock && l.blockNumber <= f.toBlock && ids.includes(Number(BigInt(l.topics[3]))));
+    },
+    async getBlock(n) { return { timestamp: 1000 + n }; },
+  };
+  const step = async (prev, ids, windows) => {
+    budget = windows;
+    try { return await updateBackerTenure(provider, prev, { registry: REG, ids, fromBlock: 100, head: 1000, chunk: 100, deadline: realNow() + 60_000 }); } finally { Date.now = realNow; }
+  };
+  const s1 = await step(null, [7], 2); // id 7 from the start, out of time at block 300
+  assert.deepEqual([s1.pending, s1.waiting], [{ ids: [7], next: 300 }, []]);
+  const s2 = await step(s1, [7, 8], 2); // id 8 arrives: 7's scan goes on from 300, and 8 waits
+  assert.deepEqual([s2.pending, s2.waiting, reads.slice(-2)], [{ ids: [7], next: 500 }, [8], [["7", 300], ["7", 400]]]);
+  const s3 = await step(s2, [7, 8, 9], Infinity); // id 9 arrives too; 7's scan ends, then 8 and 9 are read together
+  assert.deepEqual([s3.pending, s3.waiting, s3.ids, s3.scannedTo], [null, [], [7, 8, 9], 1000]);
+  assert.deepEqual(s3.since, { 7: 1950, 8: 1160, 9: 1170 });
+  assert.deepEqual(reads.filter(([ids]) => ids === "8,9").map(([, from]) => from), [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000], "one scan for both, from block 100");
+  // before a scan starts, a new id joins it
+  const s4 = await updateBackerTenure(provider, { v: 1, scannedTo: 1000, ids: [7], since: { 7: 1950 }, pending: { ids: [8], next: 100 } }, { registry: REG, ids: [7, 8, 9], fromBlock: 100, head: 1000, chunk: 1000 });
+  assert.deepEqual([s4.pending, s4.waiting, s4.since], [null, [], { 7: 1950, 8: 1160, 9: 1170 }]);
+});
+
+await check("GHSA-4x5r-f6w5-fhhc: the transfer read asks for 400 ids a query at most (a node takes 1,000 selectors: the official one, measured 2026-10-28)", async () => {
+  const sizes = [];
+  const provider = { async getLogs(f) { sizes.push(f.topics[3].length); return []; }, async getBlock() { return { timestamp: 1 }; } };
+  const ids = Array.from({ length: 1000 }, (_, i) => i + 1);
+  const s = await updateBackerTenure(provider, null, { registry: A(8), ids, fromBlock: 100, head: 200 });
+  assert.deepEqual([sizes, s.ids.length, s.pending], [[400, 400, 200], 1000, null]);
+});
+
 // ---------------------------------------------------------------- scoring income
 const agent = (id, owner, over = {}) => ({ id, owner, sponsor: 0, isRoot: false, delegatedIn: 0, enrolledAt: NOW - 100 * DAY, defaulted: false, ...over });
 const pay = (payer, payTo, usd, daysAgo = 1) => ({ payer, payTo, amount: $(usd), at: NOW - daysAgo * DAY });
@@ -295,6 +335,24 @@ await check("income arriving outside the loan, from the agent's own side, or a l
   const thirdParty = one(s, 1, { income: [pay(CLIENT, OWNER, 60, 15)], repayers: { 701: OTHER } }); // repaid by another wallet
   const unknown = one(s, 1, { income: [pay(CLIENT, OWNER, 60, 15)] }); // repayer not known
   for (const r of [before, self, thirdParty, unknown]) assert.equal(r.detail.repaidFromIncome, 0);
+});
+
+await check("GHSA-4x5r-f6w5-fhhc (S-3): payers under 1 USDG, whose transfers from the agent's side the index never reads, fund no loan repaid from income; payers of 1 USDG, or whose payments add up to it, still do", () => {
+  for (const v of ["2.0.0", "2.0.1", "2.0.3", "2.0.4"]) {
+    const weights = weightsFor(v);
+    const s = { ...world(lender(), [backed(731, 10, 20, 10)]), meta: { timestamp: NOW, seatVaultV5AgentId: 98 } }; // 10.1 USDG due
+    const run = (income) => one(s, 1, { weights, income, repayers: { 731: OWNER } });
+    const payers = (usd, n = 21) => Array.from({ length: n }, (_, k) => pay(A(0x900 + k), OWNER, usd, 15));
+    // 21 throwaway payers of 0.999999 USDG (10.5 at half weight, more than the loan's due): the report's case
+    const dust = run(payers(0.999999)), pocket = run([]);
+    assert.equal(dust.detail.repaidFromIncome, 0, `${v}: dust funds nothing`);
+    assert.equal(pts(dust, "riskTime"), pts(pocket, "riskTime"), `${v}: no bonus`);
+    assert.equal(dust.detail.receiptPayers, 21, `${v}: still shown as receipts`);
+    assert.equal(run(payers(1)).detail.repaidFromIncome, 1, `${v}: payers of 1 USDG fund it`);
+    // a payer is netted once its payments over the index add up to 1 USDG, inside the loan or not
+    const split = payers(0.6).flatMap((p) => [p, { ...p, at: p.at - 10 * DAY }]); // 0.6 during the loan, 0.6 before it
+    assert.equal(run(split).detail.repaidFromIncome, 0.6, `${v}: 0.3 of each counts at half weight, 6.3 of 10.1`);
+  }
 });
 
 await check("a default spreads to agents linked through a declared wallet", () => {

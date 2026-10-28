@@ -1,7 +1,7 @@
 // Priors Score v2: the rules that make it hard to fake, each as a case that fails if the rule is removed.
 //   node scripts/test-score-v2.mjs
 import assert from "node:assert/strict";
-import { scoreV2, canonical, DEFAULT_WEIGHTS as W } from "../sdk/score-v2.mjs";
+import { scoreV2, canonical, weightsFor, DEFAULT_WEIGHTS as W } from "../sdk/score-v2.mjs";
 import { buildInputs, scoreAll, repaidByOwn } from "../sdk/score-v2-inputs.mjs";
 
 const DAY = 86400, NOW = 1_800_000_000, $ = (n) => Math.round(n * 1e6);
@@ -175,6 +175,32 @@ check("own audit SD-8: a v1-era agent sold after its v1 history restarts too, fr
   // a transfer before any v1 loan of a v2-only agent is the v2 loans' business, as before
   const v2 = { meta: { timestamp: NOW }, events: [], agents: [agent(1, "0xA", { sponsor: 2 }), agent(2, "0xB", { isRoot: true, enrolledAt: NOW - 400 * DAY })], loans: [0, 1, 2].map((i) => repaid(1, 2, 50, 90 - i * 10, 9, { owner: "0xA" })) };
   assert.deepEqual(one(v2, 1, { ownerSince: { 1: NOW - 5 * DAY } }), one(v2, 1));
+});
+
+check("GHSA-4x5r-f6w5-fhhc: an agent with no loan before its last registry transfer restarts at that transfer when it came after its enrolment (a sold root drops its recourse, income paid before it stops counting); one before its enrolment restarts nothing; back with the owner whose v2 loans it holds, it keeps them (SD-8)", () => {
+  for (const v of ["2.0.0", "2.0.1", "2.0.3", "2.0.4"]) {
+    const weights = weightsFor(v), meta = { timestamp: NOW, seatVaultV5AgentId: 98 }, SOLD = NOW - 5 * DAY;
+    // a root enrolled 90 days ago that paid two debts of agents it vouched for, never borrowed, now with 0xB
+    const root = { meta, events: [], loans: [], agents: [agent(1, "0xB", { isRoot: true, enrolledAt: NOW - 90 * DAY, recourseHonored: 2 })] };
+    const sold = one(root, 1, { weights, ownerSince: { 1: SOLD } });
+    assert.deepEqual([sold.flags.ownershipChanged, pts(sold, "recourse")], [true, 0], `${v}: sold after its enrolment`);
+    const never = one(root, 1, { weights });
+    assert.deepEqual([never.flags.ownershipChanged, pts(never, "recourse")], [false, 100], `${v}: never transferred`);
+    // its last transfer before its enrolment (its mint, or an identity handed to its owner before it joined): nothing moves
+    assert.deepEqual(one(root, 1, { weights, ownerSince: { 1: NOW - 95 * DAY } }), never, `${v}: handed over before enrolling`);
+    // a loanless agent: a payment before the transfer no longer counts, one after it does
+    const lone = { meta, events: [], loans: [], agents: [agent(3, "0xB", { enrolledAt: NOW - 40 * DAY })] };
+    const paid = (at) => one(lone, 3, { weights, ownerSince: { 3: SOLD }, agentWallets: { 3: "0xW1" }, income: [{ payer: "0xP1", payTo: "0xW1", amount: $(20), at }] });
+    assert.equal(pts(paid(SOLD - DAY), "income"), 0, `${v}: paid before the transfer`);
+    assert.ok(pts(paid(SOLD + DAY), "income") > 0, `${v}: paid after it`);
+    // v2 loans before the transfer: their owners decide, as before (SD-8): back with the owner of all its loans it keeps
+    // its record, and with anyone else it restarts at the change of hands they show
+    const v2 = (owner) => ({ meta, events: [], agents: [agent(2, owner, { sponsor: 4 }), agent(4, "0xR", { isRoot: true, enrolledAt: NOW - 400 * DAY })],
+      loans: [0, 1, 2].map((i) => repaid(2, 4, 50, 90 - i * 10, 9, { owner: "0xA" })) });
+    assert.deepEqual(one(v2("0xA"), 2, { weights, ownerSince: { 2: SOLD } }), one(v2("0xA"), 2, { weights }), `${v}: the round trip, by design`);
+    const other = one(v2("0xC"), 2, { weights, ownerSince: { 2: SOLD } });
+    assert.deepEqual([other.flags.ownershipChanged, other.detail.repaidByOthers], [true, 0], `${v}: sold to someone else`);
+  }
 });
 
 check("F2 rungs need time: 3 backed loans inside two weeks stay 'started', and 'earned' needs 30 days since the first", () => {

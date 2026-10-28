@@ -74,32 +74,44 @@ export async function getLogsAdaptive(provider, filter, fromBlock, toBlock, { mi
 }
 
 /**
- * When each backer id last changed hands: its latest ERC-721 Transfer in the identity registry since `fromBlock`, in
- * seconds (Score v2 counts a backer's 30 days from then when that is later than its enrolment: a bought aged id is a
- * new backer, private report GHSA-6f8j). Incremental: ids already known are read from the cursor on; a new id is read
- * from `fromBlock` in chunks, and a run out of time keeps its progress (`pending`) for the next one. The state is
- * { v: 1, scannedTo, ids, since: { [id]: seconds }, pending: null | { ids, next } }.
+ * When each id last changed hands: its latest ERC-721 Transfer in the identity registry since `fromBlock`, in seconds.
+ * Score v2 counts a backer's 30 days from then when that is later than its enrolment (a bought aged id is a new backer,
+ * private report GHSA-6f8j), and restarts an agent's record there when it came after its v1 loans or, with no loan
+ * before it, after its enrolment (own audit 2026-10-01, GHSA-4x5r-f6w5-fhhc), so the data Worker reads every scored
+ * agent. Incremental: ids already known are read from the cursor on; new ids are read from `fromBlock` in chunks, and a
+ * run out of time keeps its progress (`pending`) for the next one. A new id never restarts a scan in progress (some days
+ * bring dozens of new agents, and a scan of the chain since `fromBlock` takes several runs on a node that serves 10,000
+ * blocks a query): it waits (`waiting`) and is read, with every id that arrived meanwhile, in the next scan from
+ * `fromBlock`; a scan not started yet takes it at once. A query names `idBatch` ids at most: a node takes 1,000
+ * selectors in one (the official node: "only 1000 are allowed", measured 2026-10-28). The state is
+ * { v: 1, scannedTo, ids, since: { [id]: seconds }, pending: null | { ids, next }, waiting: [ids] }.
  */
-export async function updateBackerTenure(provider, prev, { registry, ids, fromBlock, head, deadline = Infinity, chunk = 1_000_000 }) {
+export async function updateBackerTenure(provider, prev, { registry, ids, fromBlock, head, deadline = Infinity, chunk = 1_000_000, idBatch = 400 }) {
   const st = prev?.v === 1
-    ? { v: 1, scannedTo: prev.scannedTo, ids: [...prev.ids], since: { ...prev.since }, pending: prev.pending ? { ids: [...prev.pending.ids], next: prev.pending.next } : null }
-    : { v: 1, scannedTo: fromBlock - 1, ids: [], since: {}, pending: null };
+    ? { v: 1, scannedTo: prev.scannedTo, ids: [...prev.ids], since: { ...prev.since }, pending: prev.pending ? { ids: [...prev.pending.ids], next: prev.pending.next } : null, waiting: [...(prev.waiting || [])] }
+    : { v: 1, scannedTo: fromBlock - 1, ids: [], since: {}, pending: null, waiting: [] };
   const want = [...new Set(ids.map(Number).filter((n) => Number.isSafeInteger(n) && n > 0))];
-  const fresh = want.filter((id) => !st.ids.includes(id) && !(st.pending?.ids || []).includes(id));
-  // a new id joins the scan in progress, which then starts over from fromBlock (rare: a new root)
-  if (fresh.length) st.pending = { ids: [...(st.pending?.ids || []), ...fresh], next: fromBlock };
+  const known = new Set([...st.ids, ...(st.pending?.ids || []), ...st.waiting]);
+  const fresh = want.filter((id) => !known.has(id));
+  if (fresh.length) {
+    if (!st.pending) st.pending = { ids: fresh, next: fromBlock };
+    else if (st.pending.next <= fromBlock) st.pending.ids.push(...fresh); // not started: it takes them
+    else st.waiting.push(...fresh); // in progress: they wait for the next scan
+  }
   const idTopics = (list) => list.map((id) => ethers.zeroPadValue(ethers.toBeHex(id), 32));
   const times = new Map();
   const scan = async (list, from, to, progress) => {
     for (let a = from; a <= to;) {
       const b = Math.min(to, a + chunk - 1);
-      const logs = await getLogsAdaptive(provider, { address: registry, topics: [TOPICS.TRANSFER, null, null, idTopics(list)] }, a, b, { deadline });
-      for (const l of logs) {
-        if (l.topics?.length !== 4) continue; // an ERC-721 transfer carries its token id as the fourth topic
-        const n = Number(l.blockNumber);
-        if (!times.has(n)) times.set(n, Number((await provider.getBlock(n)).timestamp));
-        const id = Number(BigInt(l.topics[3]));
-        if (!(st.since[id] >= times.get(n))) st.since[id] = times.get(n);
+      for (const part of batches(list, idBatch)) {
+        const logs = await getLogsAdaptive(provider, { address: registry, topics: [TOPICS.TRANSFER, null, null, idTopics(part)] }, a, b, { deadline });
+        for (const l of logs) {
+          if (l.topics?.length !== 4) continue; // an ERC-721 transfer carries its token id as the fourth topic
+          const n = Number(l.blockNumber);
+          if (!times.has(n)) times.set(n, Number((await provider.getBlock(n)).timestamp));
+          const id = Number(BigInt(l.topics[3]));
+          if (!(st.since[id] >= times.get(n))) st.since[id] = times.get(n);
+        }
       }
       progress(b);
       a = b + 1;
@@ -108,10 +120,11 @@ export async function updateBackerTenure(provider, prev, { registry, ids, fromBl
   try {
     if (st.ids.length) await scan(st.ids, st.scannedTo + 1, head, (b) => { st.scannedTo = b; });
     else st.scannedTo = Math.max(st.scannedTo, head); // nothing known yet: the cursor follows the head
-    if (st.pending) {
+    while (st.pending) {
       await scan(st.pending.ids, st.pending.next, head, (b) => { st.pending.next = b + 1; });
       st.ids.push(...st.pending.ids);
-      st.pending = null;
+      st.pending = st.waiting.length ? { ids: st.waiting, next: fromBlock } : null;
+      st.waiting = [];
     }
   } catch (e) {
     if (!(e instanceof DeadlineError)) throw e; // out of time: the progress is kept, the next run goes on
@@ -387,7 +400,8 @@ export const INDEX_DEFAULTS = Object.freeze({
   // window again a tenth as wide, and goes on at that width.
   transfersChunk: 100_000,
   transfersFrom: 1,           // netting reads the whole chain
-  minPayerAtomic: 1_000_000,  // a payer is netted (and counts) once it has paid 1 USDG: dust can't make work
+  minPayerAtomic: 1_000_000,  // a payer is netted (and counts) once it has paid 1 USDG: dust can't make work. Only a
+                              // netted payer funds a loan repaid from income (sdk/score-v2-inputs.mjs: GHSA-4x5r-f6w5-fhhc)
 });
 
 const DAY = 86400;

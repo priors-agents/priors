@@ -18,7 +18,8 @@
 // goes back where it came from is not income. A loan that counts (backed by someone else, repaid on time by the
 // agent's own wallets, since its last change of hands) is marked as repaid from income (`incomeShare`, 0..1) by the
 // counted income that arrived during it, each payment weighted like income, capped per payer and loan, and spent
-// once.
+// once, from payers the income index nets only: those whose payments add up to 1 USDG (`minPayerUsdg`), as the index
+// reads what the agent's side sent back only to them (GHSA-4x5r-f6w5-fhhc).
 //
 // Defaults. A default zeroes the other agents of the wallet that defaulted: the loan's owner when it was taken, and
 // the defaulted agent's declared payment wallet. Never whoever holds its NFT today: sending a defaulted agent to
@@ -27,7 +28,10 @@
 // Fails closed: a backer the snapshot doesn't know, or one enrolled for less than `backers.minAgeDays` when the loan
 // was issued, counts as the agent's own money.
 //
-// A change of hands restarts the record: loans, age and recourse count from the first loan of the new owner. With
+// A change of hands restarts the record: loans, age and recourse count from the first loan of the new owner. v1 loans
+// carry no owner and an agent with no loan has none to read, so for them the agent's last registry transfer
+// (`ownerSince`) shows it: after a v1 loan, or after the enrolment of an agent with no loan before it (GHSA-4x5r-f6w5-fhhc;
+// transferRestart). An agent back with the owner whose v2 loans it holds keeps them (own audit SD-8). With
 // weights 2.0.4 (`changeOfHands.keepAtMarketSale`), a change of hands that was a sale on Priors' agent market keeps it,
 // as if no change of hands had happened (the owner's rule: an agent's score does not change because it was sold):
 //   - which sales: the `sales` the data Worker reads from Priors' markets (AgentMarket's and AgentMarketV2's Sold, V2's
@@ -154,9 +158,9 @@ export function makeClusters(snapshot, links = { clusters: [] }, agentWallets = 
 }
 
 /**
- * When the agent's current owner took it over: the first loan after the last one taken under another owner. v1 loans
- * carry no owner, so a sale after v1 history is read from `transferredAt` (the agent's last registry transfer) when a
- * v1 loan came before it; a transfer before every v1 loan (its mint) moves nothing (own audit 2026-10-01).
+ * When the agent's current owner took it over: the first loan after the last one taken under another owner, or a later
+ * restart read from `transferredAt` (the agent's last registry transfer: transferRestart). v1 loans carry no owner, and
+ * an agent with no loan has none to read: for them the transfer is what shows a change of hands (GHSA-4x5r-f6w5-fhhc).
  */
 function ownershipChangedAt(agent, loans, now, transferredAt) {
   const byIssue = [...loans].sort((x, y) => Number(x.issuedAt) - Number(y.issuedAt));
@@ -165,10 +169,27 @@ function ownershipChangedAt(agent, loans, now, transferredAt) {
   withOwner.forEach((l, i) => { if (lc(l.owner) !== lc(agent.owner)) lastOther = i; });
   const next = withOwner[lastOther + 1];
   const fromLoans = lastOther < 0 ? 0 : next ? Number(next.issuedAt) : now; // not borrowed since the change: the record starts now
-  const sold = Number(transferredAt) || 0;
-  if (!(sold > 0) || !byIssue.some((l) => l.era === "v1" && Number(l.issuedAt) < sold)) return fromLoans;
-  const after = byIssue.find((l) => Number(l.issuedAt) >= sold);
-  return Math.max(fromLoans, after ? Number(after.issuedAt) : now);
+  return Math.max(fromLoans, transferRestart(agent, byIssue, now, Number(transferredAt) || 0));
+}
+
+/**
+ * Where a registry transfer at `sold` restarts the record (0: it restarts nothing). With v2 loans before it, their
+ * owners show every change of hands (own audit SD-8: an agent back with the owner whose loans it holds keeps them).
+ * After v1 loans (no owner), the record starts again at the first loan issued at or after it (now, while there is
+ * none). With no loan before it, a transfer after the agent's enrolment restarts it at the transfer itself (recourse
+ * drops, and only income paid from then on counts: GHSA-4x5r-f6w5-fhhc). A transfer before every loan and before the
+ * enrolment (the mint, or an identity handed over before it joined the pool) moves nothing (own audit 2026-10-01).
+ */
+function transferRestart(agent, byIssue, now, sold) {
+  if (!(sold > 0)) return 0;
+  const before = byIssue.filter((l) => Number(l.issuedAt) < sold);
+  if (before.length) {
+    if (!before.some((l) => l.era === "v1")) return 0; // the v2 loans' owners decide
+    const after = byIssue.find((l) => Number(l.issuedAt) >= sold);
+    return after ? Number(after.issuedAt) : now;
+  }
+  const enrolled = Number(agent.enrolledAt) || 0;
+  return enrolled > 0 && sold > enrolled ? sold : 0;
 }
 
 /** The sales `buildInputs` takes, by agent: [{ seller, buyer, at, wallet }] in chain order (time, then block and log
@@ -236,10 +257,7 @@ function keptOwnership(agent, loans, now, allSales, plainAt, defaultAt) {
     else since = c.until; // a plain transfer: the record starts again at the new owner's first loan, or now
   }
   const plain = Math.max(plainAt > 0 ? plainAt : 0, plainSale);
-  if (plain > 0 && byIssue.some((l) => l.era === "v1" && Number(l.issuedAt) < plain)) {
-    const after = byIssue.find((l) => Number(l.issuedAt) >= plain);
-    since = Math.max(since, after ? Number(after.issuedAt) : now);
-  }
+  since = Math.max(since, transferRestart(agent, byIssue, now, plain)); // a plain transfer after the record started
   const last = (sales || [])[(sales || []).length - 1];
   if (last && last.buyer === cur) incomeSince = Math.max(incomeSince, last.at);
   const hops = [];
@@ -277,7 +295,9 @@ function defaultTimes(snapshot, agentWallets, now) {
 
 /**
  * Inputs for every agent in the snapshot.
- *   income        [{ payer, payTo, amount, at }]  signed USDG payments (amount: atomic USDG, number or string)
+ *   income        [{ payer, payTo, amount, at }]  signed USDG payments (amount: atomic USDG, number or string): every
+ *                                                  payment the index keeps, as it is what decides which payers it nets
+ *                                                  (those it holds 1 USDG or more from fund a loan)
  *   agentWallets  { [agentId]: address | null }    declared payment wallets (ERC-8004 getAgentWallet); income is
  *                                                  matched on these only
  *   transfers     [{ from, to, amount, at }]       USDG sent from agent-side wallets to payers (netted out)
@@ -292,9 +312,10 @@ function defaultTimes(snapshot, agentWallets, now) {
  *   backerOwnerSince { [agentId]: seconds }        the last registry transfer of each backer id (sdk/x402-income.mjs
  *                                                  updateBackerTenure): a backer's 30 days count from then when it is
  *                                                  later than its enrolment. Absent: from its enrolment.
- *   ownerSince    { [agentId]: seconds }           the last registry transfer of an agent id (same reader): a sale
- *                                                  after its v1 loans restarts its record, as v2 loans' owners show
- *                                                  a sale after v2 loans. Absent: from the loans alone.
+ *   ownerSince    { [agentId]: seconds }           the last registry transfer of an agent id (same reader): a transfer
+ *                                                  after its v1 loans, or after its enrolment with no loan before it,
+ *                                                  restarts its record (transferRestart), as v2 loans' owners show a
+ *                                                  sale after v2 loans. Absent: from the loans alone.
  *   pending       { payers: [...], wallets: [...] } netting still being read (sdk/x402-income.mjs): payments from
  *                                                  those payers, or to a cluster holding one of those wallets, wait
  *   sales         [{ agentId, seller, buyer, at, wallet, block?, index? }] the sales on Priors' agent market (the
@@ -306,8 +327,8 @@ function defaultTimes(snapshot, agentWallets, now) {
  *                                                  sale, so `income` must hold them: x402-income.mjs `soldWallets`): read
  *                                                  by weights 2.0.4 (`changeOfHands`), unused before. Absent: no sale is
  *                                                  known, and every change of hands restarts
- *   plainTransferAt { [agentId]: seconds }         2.0.4, agents with v1 loans: the last registry transfer since pool
- *                                                  v2's launch that was no sale on the market (0: none). Absent for an
+ *   plainTransferAt { [agentId]: seconds }         2.0.4, sold agents: the last registry transfer since pool v2's
+ *                                                  launch that was no sale on the market (0: none). Absent for an
  *                                                  agent: its last transfer (`ownerSince`), as before
  */
 export function buildInputs(snapshot, { links, income = [], agentWallets = {}, transfers = [], repayers = {}, payerScores = {}, payerAgents = null, pending = {}, backerOwnerSince = {}, ownerSince = {}, sales, plainTransferAt = {}, now, weights = DEFAULT_WEIGHTS } = {}) {
@@ -421,6 +442,11 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
     .map((p) => ({ payer: lc(p.payer), payTo: lc(p.payTo), amount: Number(p.amount), at: Number(p.at) }))
     .filter((p) => (K.declaredBy.has(p.payTo) || carried.has(p.payTo)) && Number.isFinite(p.amount) && p.amount > 0 && Number.isFinite(p.at)
       && !waitPayers.has(p.payer) && !waitClusters.has(K.clusterOfWallet(p.payTo)));
+  // a payer is netted (its transfers from the agent's side read) only once it has paid minPayerUsdg over the index
+  // (sdk/x402-income.mjs minPayerAtomic): one under that is never netted, so it funds no loan (GHSA-4x5r-f6w5-fhhc)
+  const paidBy = new Map();
+  for (const p of income) { const a = Number(p.amount); if (Number.isFinite(a) && a > 0) paidBy.set(lc(p.payer), (paidBy.get(lc(p.payer)) || 0) + a); }
+  const netted = (w) => (paidBy.get(lc(w)) || 0) >= weights.components.income.minPayerUsdg * USDG;
   const pairKey = (c, payer) => c + "|" + payer;
   // the share of a payer's payments into a cluster of `C` that the cluster did not send back to it (per clusters, once)
   const netters = new Map();
@@ -479,7 +505,7 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
       const r = netRatio(J.C, p.payTo, p.payer);
       if (r <= 0) continue;
       if (!incomeOf.has(x.id)) incomeOf.set(x.id, []);
-      incomeOf.get(x.id).push({ payer: p.payer, amount: (p.amount * r) / to.length, at: p.at, route: x.route });
+      incomeOf.get(x.id).push({ payer: p.payer, amount: (p.amount * r) / to.length, at: p.at, route: x.route, netted: netted(p.payer) });
     }
   }
   const capPerPayer = weights.components.income.perPayerCapUsdg * USDG;
@@ -527,6 +553,7 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
       for (let j = 0; j < inc.length && need > 0; j++) {
         if (inc[j].at < Number(l.issuedAt) || inc[j].at > Number(l.closedAt) || left[j] <= 0) continue;
         if (inc[j].route !== route) continue; // 2.0.4: paid to another owner's wallet
+        if (!inc[j].netted) continue; // under minPayerUsdg: never netted, funds no loan
         const room = capPerPayer - (fromPayer.get(inc[j].payer) || 0);
         if (room <= 0) continue;
         const take = Math.min(left[j], need, room);
