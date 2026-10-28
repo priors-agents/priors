@@ -1,0 +1,105 @@
+{
+  "version": "2.0.4",
+  "published": "2026-10-28",
+  "notes": "Priors Score v2.0.4 weights: 2.0.3 plus the record kept across a sale on Priors' agent market (changeOfHands.keepAtMarketSale). A change of hands that was such a sale keeps the agent's record: its loans, its on-time history, its age, its recourse, the rungs' day counts and its income window go on as if no change of hands had happened. A plain transfer restarts it, as before. No weight, rung or penalty number changes. Announced on the dev log (priors.trade/updates) on 2026-10-28, 8 days ahead: the default from 2026-11-05 00:00 UTC (docs/SCORE-v2.md). Changing any number here is a new version.",
+  "max": 1000,
+  "backers": {
+    "minAgeDays": 30,
+    "why": "A backer counts once its agent has been on Priors for 30+ days when the loan is issued (the pool's treasury and seat vault from day one, and the Ethos lane's root: dayOneRoots), so a fresh second wallet can't vouch its way to a record.",
+    "ownCollateralRoots": [
+      "stockVault",
+      "seatVaultV5"
+    ],
+    "ownCollateralWhy": "A loan the stock vault backs is the borrower's own money: its own stock tokens stand behind it and are seized on a default, so it builds no record of risk someone else took (the vault's root, snapshot meta.stockVaultAgentId, counts as the borrower's own backer). So is a loan on a SeatVaultV5 line: the line is sized by the owner's own $PRIORS behind the agent, 75% of which burns on a default, so a bigger stake must never read as more risk someone else took (V5's roots, snapshot meta.seatVaultV5AgentId and meta.seatVaultV5RetiredAgentId, count as the borrower's own backers; without the first, no inputs are built).",
+    "dayOneRoots": [
+      "ethosRoot"
+    ],
+    "dayOneWhy": "The Ethos lane's root is Priors' own, as the treasury is: a loan on its line is risk someone else took from the root's first day (snapshot meta.ethosRootAgentId; without it, it is an ordinary backer, as before)."
+  },
+  "components": {
+    "riskTime": {
+      "max": 300,
+      "usdgDaysPerPoint": 10,
+      "why": "USDG someone else put at risk for this agent, times the days it was held (up to the loan's term), on loans repaid on time. Repaid from x402 income: up to 25% more.",
+      "incomeRepaidBonus": 0.25
+    },
+    "seasoned": {
+      "max": 200,
+      "pointsEach": 20,
+      "minHoldDays": 7,
+      "why": "Loans held a week or more and repaid on time, backed by someone else. A loan under 50 USDG counts in proportion.",
+      "fullSizeUsdg": 50
+    },
+    "backing": {
+      "max": 150,
+      "usdgPerPoint": 5,
+      "why": "Money others have at risk behind this agent right now."
+    },
+    "age": {
+      "max": 100,
+      "pointsPerDay": 1,
+      "why": "Days since its first loan on Priors (v1 included). A sale on Priors' agent market keeps them; any other change of hands restarts them."
+    },
+    "recourse": {
+      "max": 100,
+      "pointsEach": 50,
+      "why": "Debts of agents it vouched for that it paid back itself. A sale on Priors' agent market keeps them; any other change of hands drops them."
+    },
+    "income": {
+      "max": 150,
+      "windowDays": 30,
+      "usdgPerPoint": 1,
+      "perPayerCapUsdg": 20,
+      "breadthPointsPerPayer": 5,
+      "breadthMax": 50,
+      "unknownPayerWeight": 0.5,
+      "scoredPayerFloor": 0.5,
+      "why": "x402 payments to its wallets in the last 30 days, from payers that aren't its own and paid at least 1 USDG. Capped per payer and weighted by the payer's record; money sent back doesn't count.",
+      "minPayerUsdg": 1
+    }
+  },
+  "penalties": {
+    "lateRepayment": 10,
+    "lateAfterSeconds": 86400,
+    "lateWhy": "Late means repaid more than 24 hours after the due time. A loan held its whole term is repaid at or after its due time, and the pool's grace runs 3 days past it.",
+    "childDefault": 75
+  },
+  "rungs": [
+    {
+      "rung": 0,
+      "name": "unproven",
+      "rule": "no repayment backed by someone else"
+    },
+    {
+      "rung": 1,
+      "name": "started",
+      "rule": "at least one repayment backed by someone else",
+      "minRepaid": 1
+    },
+    {
+      "rung": 2,
+      "name": "proven",
+      "rule": "3+ repayments backed by someone else, over 14+ days, none late (more than 24 hours after its due time)",
+      "minRepaid": 3,
+      "minSpanDays": 14
+    },
+    {
+      "rung": 3,
+      "name": "earned",
+      "rule": "proven, a record score of 300+ (income not counted), and 30+ days since the first backed loan",
+      "minScore": 300,
+      "minDays": 30
+    },
+    {
+      "rung": 4,
+      "name": "income-backed",
+      "rule": "earned, income points 50+, from 3+ distinct payers",
+      "minIncomePoints": 50,
+      "minPayers": 3
+    }
+  ],
+  "changeOfHands": {
+    "keepAtMarketSale": true,
+    "why": "A change of hands that was a sale on Priors' agent market (a Sold log of AgentMarket or AgentMarketV2, or an accepted bid, BidTaken, on V2: the addresses of their deployment records) keeps the agent's record, as if no change of hands had happened. The sale is public, pays the market's fee in force and starts its 14-day hold, and the market refused it while the agent had a loan open or had defaulted, or either side was marked by a default. Every hop between the two owners must be such a sale. A plain transfer restarts the record, as before, and so does a sale after or before a plain transfer, a sale whose payment wallet at the sale is not read yet, and a sale by a wallet in default at it (the seller, or the payment wallet the agent declared then: a loan of theirs past its defaultable time, marked or not). The seller's side of the sale is judged as it was the second before it: the payment wallet the agent declared at the sale stays in the seller's cluster, and an agent the clusters file lists (its listing goes with it) has its seller's loans and that wallet's payments judged against its cluster built again with the seller as its owner. The income window goes on: for income.windowDays after the sale, payments to the wallet the agent declared at it count for the agent as they did, never from whoever owned the agent when they were made after the sale, netted, capped and weighted as any income (a payer's weight leaving out the agent it pays), and the seller's loans keep the income bonus they earned; payments to the wallet the new owner declares count from the sale on, a payment both wallets reach once. A default after the sale is the new owner's. A score whose current owner took the agent by such a sale says so (flags.keptSale)."
+  }
+}

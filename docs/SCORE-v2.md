@@ -3,7 +3,8 @@
 *2026-09-26, audited the same day (findings F1-F21 fixed below). Live since 2026-09-27: see "Where to read it".
 In this repo: the scoring engine (`sdk/score-v2.mjs`), its inputs (`sdk/score-v2-inputs.mjs`), the weights
 (`sdk/score-weights.v2.json`; 2.0.1 in `sdk/score-weights.v2.0.1.json`, 2.0.2 in `sdk/score-weights.v2.0.2.json`,
-2.0.3 in `sdk/score-weights.v2.0.3.json`), x402 income read from the chain (`sdk/x402-income.mjs`) and the tests
+2.0.3 in `sdk/score-weights.v2.0.3.json`, 2.0.4 in `sdk/score-weights.v2.0.4.json`), x402 income read from the chain
+(`sdk/x402-income.mjs`) and the tests
 (`scripts/test-score-v2.mjs`, `scripts/test-x402-income.mjs`, `scripts/test-stocks.mjs`,
 `scripts/test-score-v2-priors-stake.mjs`, `scripts/test-score-v2-late-window.mjs`). Priors' clusters list is not
 published (see "Clusters").*
@@ -28,16 +29,16 @@ for real time. An audit (2026-09-26) found what it can't see:
 v2 moves fast and in the open; v1 stays the hard floor the contracts rely on. When a v2 component has proven itself
 on data, it moves into the next on-chain version.
 
-## The score (v2.0.0 to 2.0.3, the same numbers; max 1000)
+## The score (v2.0.0 to 2.0.4, the same numbers; max 1000)
 
 | component | max | counts |
 |---|---|---|
 | **risk time** | 300 | USDG **someone else** put at risk × days actually held (capped at the term), on loans repaid on time. 1 point per 10 USDG-days. A loan the agent repaid from x402 income counts up to 25% more, in proportion to the share of it that counted income paid (income weighted like the income component, at most 20 USDG per payer per loan, each payment spent once). |
 | **seasoned loans** | 200 | loans held 7+ days and repaid on time, backed by someone else. 20 each for a loan of 50 USDG or more; a smaller one counts in proportion (a 5 USDG loan: 2). |
 | **backing** | 150 | money another party has at risk behind the agent now. 1 point per 5 USDG. |
-| **age** | 100 | days since the agent's first loan on Priors, v1 included (an agent that never borrowed has none); restarts when the agent changes hands. |
-| **recourse** | 100 | debts of vouched agents it paid itself. 50 each; dropped when the agent changes hands. |
-| **income** | 150 | x402 payments (signed USDG, from any facilitator) to the agent's declared payment wallet from payers that aren't its own, last 30 days, net of anything the agent's side sent that payer. A payer counts once it has paid 1 USDG in the window; each payer is capped at 20 USDG and weighted by its own score (unknown wallets at half weight); plus 5 points per payer, up to 50. A payment to a wallet several agents declared is shared between them. |
+| **age** | 100 | days since the agent's first loan on Priors, v1 included (an agent that never borrowed has none); restarts when the agent changes hands (from 2.0.4, not when by a sale on Priors' agent market: "A sale on Priors' market"). |
+| **recourse** | 100 | debts of vouched agents it paid itself. 50 each; dropped when the agent changes hands (from 2.0.4, kept at a sale on Priors' market). |
+| **income** | 150 | x402 payments (signed USDG, from any facilitator) to the agent's declared payment wallet (from 2.0.4, and for 30 days after a sale on Priors' market to the wallet it declared at the sale: "A sale on Priors' market") from payers that aren't its own, last 30 days, net of anything the agent's side sent that payer. A payer counts once it has paid 1 USDG in the window; each payer is capped at 20 USDG and weighted by its own score (unknown wallets at half weight); plus 5 points per payer, up to 50. A payment to a wallet several agents declared is shared between them. |
 | penalties | | −10 per late repayment (and it earns nothing); −75 per vouched agent that defaulted. Late: repaid after the due time; from 2.0.3, more than 24 hours after it |
 | **default** | | the score is 0, and so is every other agent of the wallet that defaulted: the loan's owner when it was taken, and the defaulted agent's declared payment wallet. Sending a defaulted agent to someone never harms them. (A v1 default, with no owner recorded, zeroes only the agent itself.) |
 
@@ -46,9 +47,9 @@ on data, it moves into the next on-chain version.
 id (registry transfers). The protocol's treasury (and treasury v5, once the snapshot names its root) and seat vaults
 (V3 and the growth seat vault V4, public ids in the snapshot) count from day one, and from 2.0.3 so does the Ethos
 lane's root (#8823, the snapshot's `meta.ethosRootAgentId`; a snapshot that does not name it leaves it an ordinary
-backer). A backer the record doesn't know counts as the agent's own, and so, under 2.0.1 to 2.0.3, does the stock
-vault's root: the agent's own tokens stand behind that loan. Under 2.0.2 and 2.0.3, so do SeatVaultV5's roots (#8762,
-and the retired #8641; the snapshot's `meta.seatVaultV5AgentId`, without which 2.0.2 and 2.0.3 build no inputs, and
+backer). A backer the record doesn't know counts as the agent's own, and so, under 2.0.1 to 2.0.4, does the stock
+vault's root: the agent's own tokens stand behind that loan. Under 2.0.2 to 2.0.4, so do SeatVaultV5's roots (#8762,
+and the retired #8641; the snapshot's `meta.seatVaultV5AgentId`, without which 2.0.2 to 2.0.4 build no inputs, and
 `meta.seatVaultV5RetiredAgentId`): V5 sizes the
 line by the owner's own $PRIORS behind the agent and burns 75% of it on a default, so a stake never changes a score.
 v1 loans take their backer from the repayment's `FeeSplit` event, not from today's sponsor. The same rule applies to
@@ -86,6 +87,107 @@ nothing. Clusters shape the computation only; no output names them.
 
 Next (v2.1): wallets funded from the same source, or paying each other's gas, join one cluster (`makeClusters` in
 `score-v2-inputs.mjs` is the seam).
+
+## A sale on Priors' market (2.0.4)
+
+*Built 2026-10-27: weights `2.0.4` (`sdk/score-weights.v2.0.4.json`, `changeOfHands.keepAtMarketSale`), the rule
+(`keptOwnership` in `sdk/score-v2-inputs.mjs`, which takes the market's sales as `sales`) and the income window carried
+across the sale (the inputs' income routes, `soldWallets` in `sdk/x402-income.mjs`). Announced on the dev log
+(priors.trade/updates) on 2026-10-28; Priors' scores use it from 2026-11-05 00:00 UTC.*
+
+The owner's rule (2026-10-26, restated 2026-10-27): an agent's score does not change because it was sold, and a sale on
+the market is as seamless as an NFT's. Under 2.0.0 to 2.0.3 any change of hands restarts age, record and recourse. Under
+2.0.4 a change of hands that was a sale on Priors' agent market keeps them, as if no change of hands had happened, and
+its new owner's loans add to that record. Everything carries, income included: the record, age, recourse, the rungs'
+day counts, the income window and the income bonus of the loans the sale carries are what they were, so the score the
+second after the sale is the score the second before, byte for byte but the flag that says so (`flags.keptSale`,
+"Outputs"). Three rules hold it: the seller's side of the sale is judged as it was the second before (below: the wallet
+at the sale, and for an agent the clusters list names, its listing); a payer's weight leaves out the agent it pays; and
+after the sale, the agent's owner paying the wallet at the sale is the owner paying its own agent. One effect is not
+held, under any version: an agent the clusters list names takes its listing to its buyer, so the buyer's other agents,
+and with them the buyer's weight as a payer, can score differently from the sale on (the list's wallets are the
+buyer's own from then).
+
+- **Which sales.** A `Sold` log of AgentMarket (v1, `0xe5C8b3FacD7802099C1DfB88c0C818Cd0ebA7B19`) or AgentMarketV2
+  (once deployed), or an accepted bid on V2 (`BidTaken`, its maker the buyer), read from those addresses only, with the
+  payment wallet the agent declared at the sale (the registry's `getAgentWallet` at the block before it). A sale on any
+  other contract is a plain transfer. Every hop between the owner the loans name and the next must be such a sale,
+  seller to buyer in turn.
+- **What stops gaming.** A sale is public, pays the market's fee in force (1%, at least 1 USDG today; the market's
+  timelock can change it, so the score counts on no fee) and starts its 14-day hold, and the market refuses it while
+  the agent has a loan open or has defaulted on either pool, is a root, or while either side is marked by a default
+  (`ownerDefaults`). On top of that the score keeps nothing when: the change was a plain transfer (it restarts as
+  before); a sale follows a plain transfer (A sends the agent to X, X sells it to B) or a plain transfer follows a sale
+  (A sells to X, X sends it to B); the seller, or the payment wallet the agent declared at the sale, was already in
+  default when it sold (one of its loans past its defaultable time, marked or not, or the declared payment wallet of
+  such a loan's agent), so a default the pool hasn't marked yet can't be carried to a fresh wallet; or that wallet is
+  not read yet (fails closed). Each of these restarts the record exactly as 2.0.3 does, on agents with v1 loans too.
+- **The payment wallet at the sale** stays in the seller's cluster. The registry clears an agent's payment wallet at
+  every transfer; without this, a sale (to anyone, the seller's own second wallet included) would unlink the seller
+  from the wallet it had declared, and the seller's loans backed by a root that wallet owns would start counting as
+  someone else's risk. With it, the seller's loans are judged against the same cluster after the sale as before. Its
+  wallets declared earlier and changed before the sale are not read. An agent the clusters list names takes its
+  listing with it (the list names the agent), so for such an agent the seller's side is built again as it was the
+  second before the sale: the agent owned by the seller and declaring the wallet it declared then, the list's wallets
+  with it. Its seller's loans and the payments to the wallet at the sale are judged against that cluster
+  (`sdk/score-v2-inputs.mjs`, the routes' `judgeOf`): a wash sale to a fresh wallet never turns the list's wallets into
+  the agent's customers, nor the seller's own root into someone else's risk.
+- **Recourse** (paid by the seller): kept. Debts the agent paid for agents it vouched for are its record as much as
+  the loans it repaid, which the seller also paid; a plain transfer still drops it. Rare in practice: the market refuses
+  roots, and roots do most of the vouching.
+- **Income**: the window carries. Income is read on the payment wallet the agent declared in the ERC-8004 registry,
+  which the registry clears at every transfer. For the income window's length (30 days) after the sale, payments to the
+  wallet the agent declared at the sale keep counting for it, as they did: judged against the seller's side as it was
+  the second before the sale (that wallet stays in the seller's cluster, and a listed agent's listing is counted in,
+  above), so the seller and its own wallets paying it are still paying themselves; netted against what that side sends
+  a payer back; shared with any other agent that declares it; with the 1-USDG floor, the 20-USDG cap per payer, half
+  weight for unknown payers and the 150-point cap, as any income. A payment to it made after the sale by whoever owned
+  the agent then (the buyer, or a wash sale's second wallet) counts nothing: that is the owner paying its own agent. A
+  payer's weight (its own score) leaves out the agent it pays, so a buyer that was the agent's customer before the sale
+  weighs what it weighed then. Payments to the wallet the new owner declares count from the sale on (`incomeSince`),
+  never one from before it (the new owner's other business), judged against the agent's cluster now; a payment both
+  reach (the new owner declared the seller's wallet again) counts once. Each payment counts in the 30-day window as
+  always, so a payment to the wallet at the sale made up to 30 days after the sale counts for its own 30 days: the
+  seller's customers are out of the score 60 days after the sale, as the new owner's come in. A chain of sales carries
+  each seller's wallet, from its seller's start to 30 days after its own sale. A carried loan keeps its income bonus
+  (up to 25% more for a loan repaid from x402 income) as the seller earned it: each loan draws only on what was paid to
+  its own owner's wallet, so the new owner's loans never draw on the seller's. The income index keeps reading the
+  wallet at each sale (`soldWallets`, below). A sale that keeps nothing carries no income: the agent's income restarts
+  with its record, as under 2.0.3.
+- **Defaults**: a default after the sale is the new owner's. A default zeroes the wallet that owned the defaulted loan
+  (and the defaulted agent's declared wallet), so the buyer's default on the agent zeroes the buyer's other agents and
+  never the seller's, and the seller's later default on another agent never reaches the agent it sold (it can't have had
+  a loan open on it: the market refuses the sale). A seller in default when it sold carries nothing (above).
+- **The rungs' day counts** run across the sale: proven's 14 days between the first and the last backed repayment,
+  earned's 30 days since the first backed loan, and age, all count from the agent's own first loans, the seller's
+  included. `next` reads the same figures.
+- **Each loan stays as it was counted**: judged against the cluster of its owner when it was taken (the payment wallet
+  at the sale included, and for a listed agent its listing, above), late or on time, with its child defaults. Backing
+  is what is at risk behind the agent now, as always: a line from a root the market follows (the treasury's) stays on
+  the agent; any other line the seller left before listing.
+- **v1 loans** carry no owner. For a sold agent with v1 loans Priors also reads its registry transfers since pool v2's
+  launch: a transfer after a v1 loan that was no sale restarts the record, as before (`plainTransferAt`), and so does a
+  sale that can't keep it (above). Until they are read, its last transfer counts, which is the sale: the record
+  restarts until the read catches up.
+- **What is read.** The markets' sales, from each market's deploy block on, each timed by its block, with the wallet
+  each sale's agent declared at the block before it, and never a price. A sale not read yet, or whose wallet is not
+  read yet, counts as a plain transfer until it is (fails closed), and nobody else's score waits. The income index reads
+  the wallet at each sale of the last 365 days (the index's retention) as if still declared (`soldWallets` in
+  `sdk/x402-income.mjs`): its payments, what it or its seller (who may own no agent any more) sends a payer back, and
+  the repayers of its agent's loans. A wallet of a sale made before 2026-11-05 is read again from the index's start on
+  the first runs, so its carried income can read low until then, never high.
+- **Outputs.** One flag, only on a sold agent: `flags.keptSale` true when its current owner took it by a sale on
+  Priors' market that kept its record (every other score has no such key, so with no sale 2.0.4 is 2.0.3 byte for
+  byte). A kept sale leaves `flags.ownershipChanged` false (nothing restarted, so the pages say no change of owner) and
+  `version` names 2.0.4; an agent whose record restarted at an earlier plain transfer and was then sold on the market
+  keeps `ownershipChanged` true, with `keptSale` saying the restart was an earlier owner's. Every owner-change word keys
+  on both under 2.0.4: the attester posts its owner note (`OWNER_CHANGED`, "Its Priors score counts the record from the
+  new owner", `sdk/attestation.mjs`) only when `ownershipChanged` is true and `keptSale` is not, and for a kept sale
+  posts a plain note that names the new owner, with no owner words, so the live note never names the seller
+  (`docs/ATTESTATION-v2.md`); the paid API's `ownership-changed` flag and Go mode's owner note key on the same flags.
+  The scores also say how far their sales read is (`sales: { behind, unread, pending }` in `/api/score-v2`): while any
+  is not 0, a sale may count there as a plain transfer, and the attester posts nothing for a change of owner until it
+  sees them all at 0 (a note on chain is permanent).
 
 ## How x402 income is read
 
@@ -147,7 +249,11 @@ once, without holding scores back; the published `index.permit2Backfill` is `nul
 | sock-puppet payers funded elsewhere | per-payer cap; unknown payers at half weight; breadth only from payers of 1 USDG+; the income rung also needs a 30-day earned record; v2.1 funding-source clusters |
 | claim someone else's payments | only the agent's owner and a wallet that signed to be its payment wallet count |
 | climb fast | rungs need time: proven needs 14+ days of backed repayments, earned 30+ days since the first |
-| buy an aged agent | a change of hands restarts age, record and recourse |
+| buy an aged agent | a plain transfer restarts age, record and recourse. From 2.0.4 a sale on Priors' market keeps them (the owner's rule: a sold agent's score doesn't change): the sale is public, pays the market's fee in force, starts its 14-day hold, and needs no loan open and no default on either side; the buyer's own conduct counts from then on, and its default zeroes the agent |
+| launder a plain transfer through the market (2.0.4): send the agent to a wallet, then sell it on, or sell it and pass it on | every hop between the owners must be a sale on Priors' market, seller to buyer in turn: a plain hop before or after a sale restarts the record. A sale on any other contract is a plain transfer |
+| sell a zeroed agent to a fresh wallet to escape a default (2.0.4) | the market refuses a seller the pool marked; a sale whose seller, or whose payment wallet at the sale, was in default when it sold (a loan past its defaultable time, marked or not, or the declared wallet of such a loan's agent) carries nothing: the agent restarts as at a plain transfer |
+| wash-sell to yourself (2.0.4) | adds nothing: a sale keeps the record as it was, and the seller's side is judged as it was the second before the sale (the payment wallet the agent declared at it stays in the seller's cluster, and a listed agent's listing is counted in), so the seller's loans are judged as before (a sale whose wallet is not read yet keeps nothing), and the income it was paid goes on counting as it did: its payers judged against that side (the seller and the list's wallets paying it are still paying themselves), netted against what that side sends back, a payment the new owner's wallet also gets counted once, the second wallet paying it after the sale counting nothing (it owns the agent then) and weighing before the sale what it weighed then (a payer's weight leaves out the agent it pays). The fee in force is spent; the score counts on no fee, which the market's timelock can lower |
+| sell to yourself to count two wallets' income (2.0.4) | for the 30 days after a sale, payments to the wallet at the sale and to the one the new owner declares both count, where re-declaring alone would switch from one to the other. No new kind of payer on the wallet at the sale: its payers are judged against the seller's side as it was (the list's wallets included), and the new owner paying it counts nothing; each payer is capped at 20 USDG across both wallets and weighted, and income stays at 150 points at most; each sale pays the fee and starts its 14-day hold |
 | gift your root to a borrower's owner | makes them one party, so the borrower's backed record stops counting; it costs the gifted stake and is undone by moving the root away |
 | repay late but eventually | late loans earn nothing and cost 10 points |
 | keep the money a day past the due time (2.0.3's window) | the window adds nothing: held time stops at the due time, as the pool's does, so a loan repaid inside it earns what one repaid at the due second earns, and one more than 24 hours past it is late. The pool charges no more for that day, as it charges nothing in its grace (`scripts/test-score-v2-late-window.mjs`) |
@@ -181,9 +287,9 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
   the changelog below, and an announcement on the dev log (priors.trade/updates) at least **7 days before** it becomes
   the default. Old versions stay in the repo, so any past score can be recomputed.
 - **Pinned outputs.** Every published score names its version; apps can pin a version. The engine computes with
-  the version it is given (`weightsFor` in `sdk/score-v2.mjs`: 2.0.0, 2.0.1, 2.0.2 or 2.0.3; 2.0.0 when none is
-  given). Priors' published scores use 2.0.1, and 2.0.3 from 2026-11-02 00:00 UTC (in place of 2.0.2 from
-  2026-11-01): a score's version follows from its own timestamp.
+  the version it is given (`weightsFor` in `sdk/score-v2.mjs`: 2.0.0, 2.0.1, 2.0.2, 2.0.3 or 2.0.4; 2.0.0 when none
+  is given). Priors' published scores use 2.0.1, 2.0.3 from 2026-11-02 00:00 UTC (in place of 2.0.2 from
+  2026-11-01), and 2.0.4 from 2026-11-05 00:00 UTC: a score's version follows from its own timestamp.
 - **No per-agent levers.** No per-agent overrides. Protecting the pool from a bad actor uses the existing on-chain tools
   (freeze, pause), which are public events.
 - **The clusters list changes only by commit** (in Priors' own repository; it is not published, so a score it touches
@@ -203,6 +309,25 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
 
 ## Changelog
 
+- **2.0.4** (built 2026-10-27; published on the dev log, priors.trade/updates, on 2026-10-28; Priors' scores use it
+  from 2026-11-05 00:00 UTC): 2.0.3 plus the record kept across a sale on Priors' agent market
+  (`sdk/score-weights.v2.0.4.json`, `changeOfHands.keepAtMarketSale`; rules in "A sale on Priors' market (2.0.4)"), by
+  the owner's rule that a sold agent's score doesn't change. A plain transfer still restarts age, record and recourse;
+  so does a sale after or before a plain hop, a sale by a wallet in default (its seller, or the payment wallet the agent
+  declared at it; a loan past its defaultable time, marked or not), and a sale whose wallet is not read yet. The
+  payment wallet at the sale stays in the seller's cluster, and a listed agent's seller side is judged as it was the
+  second before the sale. The income window carries too: for 30 days after the sale, payments to the wallet the agent
+  declared at it count for the agent as they did, judged against the seller's side, never from the agent's owner after
+  the sale, and the seller's loans keep the income bonus they earned; payments to the new owner's wallet count from the
+  sale on; a payer's weight leaves out the agent it pays; so the score the second after the sale is the one the second
+  before, income included, and its flags add `keptSale`. A default after the sale is the new owner's. Under 2.0.4 the
+  attester posts its owner note, the paid API its flag and Go mode its note only when the score says the record
+  restarted with this owner (`flags.ownershipChanged`, and not `keptSale`); the attester posts a plain note for a kept
+  sale, and nothing for a change of owner while the scores' sales read (`sales`) is short. No weight, rung or penalty
+  number changes, and with no sale every agent scores as under 2.0.3. Past sales count too: every sale on AgentMarket
+  since it went live is read, so an agent sold there before 2026-11-05 gets its record back from that day when every
+  change of owner in between was such a sale and no seller was in default. Announced 8 days before it becomes the
+  default.
 - **2.0.3** (built 2026-10-25; published on the dev log, priors.trade/updates, on 2026-10-25; Priors' scores use it
   from 2026-11-02 00:00 UTC, in place of 2.0.2 from 2026-11-01): 2.0.2 plus a 24-hour on-time window after a loan's due
   time (`sdk/score-weights.v2.0.3.json`, `penalties.lateAfterSeconds` 86400; `sdk/score-v2.mjs repaidLate`).

@@ -55,7 +55,7 @@ const $ = (x) => Math.round(x * 1e6);
   const strip = (w) => { const c = JSON.parse(JSON.stringify(w)); delete c.backers.ownCollateralRoots; delete c.backers.ownCollateralWhy; delete c.version; delete c.published; return c; };
   assert.deepEqual(strip(W201), strip(W200), "2.0.1 changes no number, only adds the rule");
   assert.throws(() => weightsFor("9.9.9"), /unknown weights version/);
-  assert.deepEqual(Object.keys(WEIGHTS_BY_VERSION).sort(), ["2.0.0", "2.0.1", "2.0.2", "2.0.3"]);
+  assert.deepEqual(Object.keys(WEIGHTS_BY_VERSION).sort(), ["2.0.0", "2.0.1", "2.0.2", "2.0.3", "2.0.4"]);
   ok("score 2.0.1: inert without meta.stockVaultAgentId; 2.0.0 still the engine default; no weight number changed; unknown versions refused");
 }
 

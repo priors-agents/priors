@@ -152,6 +152,11 @@ Added with v2:
   then, `owner`, and `ownerChanged` with the owner before. A note posted before owners were recorded gets its owner
   recorded by the next pass with no post (a change between that note and the recording is not told); a defaulted
   agent's 0 stays whoever holds it.
+  Under Score v2 2.0.4 (a sale on Priors' market keeps the record, docs/SCORE-v2.md), `ownerChanged` is posted only
+  when the score says the record restarted with this owner (`flags.ownershipChanged`, and not `flags.keptSale`); a
+  kept sale gets a plain note, the score as it is with the new `owner` and no `ownerChanged`, so the live note never
+  names the seller; and while the scores say their read of the market's sales is short (`sales` in
+  `/api/score-v2`), a change of owner posts nothing until it is read.
 
 A pass posts nothing when its evidence is not at the scores' block.
 

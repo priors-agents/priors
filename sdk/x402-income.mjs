@@ -403,13 +403,19 @@ const addUnique = (list, items) => { const seen = new Set(list.map((x) => x.id))
  *                 the whole chain from `transfersFrom`, for netting
  *   repayers      who repaid each v2 loan that overlaps a payment to its agent (through `autoRepay`, the deployed
  *                 AutoRepay: the addresses that paid through it, readRepayers)
+ * `soldWallets` (Score v2 2.0.4, [{ agentId, wallet, seller }]): the payment wallet each agent sold on Priors' market
+ * declared at its sale, and its seller. The registry clears the wallet at the transfer, and the score goes on counting
+ * payments to it for the agent (its income window after the sale, and the seller's loans' income bonus:
+ * sdk/score-v2-inputs.mjs), so each is read as if still declared: its payments are kept and read on, what it or the
+ * seller (who may own no agent any more) sends back to a payer is netted, and the repayers of its agent's loans that
+ * overlap them are read. Empty (the default): the index is exactly what it was.
  * A new wallet or payer is backfilled on its own (only the new pairs are read from the start) while the main cursors
  * keep moving, so new arrivals never hold everyone else back: `pending` names the payers and agent-side wallets whose
  * netting is still being read, and their income waits (sdk/score-v2-inputs.mjs `pending`). Everything stops cleanly
  * at `deadline` (ms epoch) and resumes on the next call. `prev` is the last returned state (plain JSON) or null.
  * Returns { state, complete, pending: { payers, wallets } }: publish scores only from a complete index.
  */
-export async function updateIncome(provider, prev, { usdg, registry, pool, autoRepay = null, snapshot, extraWallets = [], fromBlock, head, now, deadline = Infinity, ...opts }) {
+export async function updateIncome(provider, prev, { usdg, registry, pool, autoRepay = null, snapshot, extraWallets = [], soldWallets = [], fromBlock, head, now, deadline = Infinity, ...opts }) {
   const P = { ...INDEX_DEFAULTS, ...Object.fromEntries(Object.entries(opts).filter(([, v]) => v !== undefined)) };
   const fresh = () => ({ v: 2, fromBlock, transfersFrom: P.transfersFrom, agentWallets: {}, walletFailures: {}, walletsAt: 0,
     wallets: [], payments: [], paymentsTo: fromBlock - 1, paymentBackfills: [], permit2: true, permit2Backfill: null,
@@ -438,17 +444,20 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, autoR
   }
   const walletsPending = ids.some((id) => !(id in state.agentWallets));
 
-  // 2. payments to declared wallets: new wallets backfilled on their own, then the main cursor
+  // 2. payments to declared wallets (and to the sold agents' wallets at their sales, `soldWallets`, read as if still
+  // declared): new wallets backfilled on their own, then the main cursor
   const declared = uniq(Object.values(state.agentWallets).filter(isAddr).map(lc)).sort();
-  const want = new Set(declared), had = new Set(state.wallets);
+  const sold = (soldWallets || []).filter((x) => x && isAddr(x.wallet)).map((x) => ({ agentId: Number(x.agentId), wallet: lc(x.wallet), seller: isAddr(x.seller) ? lc(x.seller) : null }));
+  const watched = sold.length ? uniq([...declared, ...sold.map((x) => x.wallet)]).sort() : declared;
+  const want = new Set(watched), had = new Set(state.wallets);
   const removed = new Set(state.wallets.filter((w) => !want.has(w)));
-  const added = declared.filter((w) => !had.has(w));
+  const added = watched.filter((w) => !had.has(w));
   if (removed.size) {
     state.payments = state.payments.filter((p) => !removed.has(p.payTo));
     state.paymentBackfills = state.paymentBackfills.map((bf) => ({ ...bf, wallets: bf.wallets.filter((w) => !removed.has(w)) })).filter((bf) => bf.wallets.length);
   }
   if (added.length && state.paymentsTo >= fromBlock) state.paymentBackfills.push({ wallets: added, next: fromBlock, until: state.paymentsTo });
-  state.wallets = declared;
+  state.wallets = watched;
   // A payment window that can't be read in one run would never advance (a window cut short is dropped whole), so a
   // run that ends without reading one makes the window 4x smaller for the next; a run that reads every window it tries
   // lets it grow back. The index always moves forward as long as one small window fits in a run.
@@ -462,7 +471,7 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, autoR
   };
   if (state.paymentsTo < head && !past(deadline)) {
     const from = state.paymentsTo + 1;
-    const r = await scanPayments(provider, { usdg, wallets: declared, fromBlock: from, toBlock: head, chunk, deadline });
+    const r = await scanPayments(provider, { usdg, wallets: watched, fromBlock: from, toBlock: head, chunk, deadline });
     addUnique(state.payments, r.payments);
     state.paymentsTo = Math.max(state.paymentsTo, r.scannedTo);
     tune(r, from);
@@ -475,7 +484,7 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, autoR
     const paid = new Map();
     for (const p of state.payments) paid.set(p.payer, (paid.get(p.payer) || 0n) + BigInt(p.amount));
     const payers = [...paid].filter(([, v]) => v >= BigInt(P.minPayerAtomic)).map(([k]) => k).sort();
-    const from = uniq([...snapshot.agents.map((a) => lc(a.owner)), ...declared, ...extraWallets.map(lc)]).filter(isAddr).sort();
+    const from = uniq([...snapshot.agents.map((a) => lc(a.owner)), ...watched, ...sold.map((x) => x.seller), ...extraWallets.map(lc)]).filter(isAddr).sort();
     const fromSet = new Set(from), payerSet = new Set(payers);
     const goneFrom = new Set(state.from.filter((w) => !fromSet.has(w))), gonePayers = new Set(state.payers.filter((x) => !payerSet.has(x)));
     if (goneFrom.size || gonePayers.size) {
@@ -512,6 +521,10 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, autoR
       const w = lc(state.agentWallets[a.id]);
       if (!isAddr(w)) continue;
       for (const p of state.payments) if (p.payTo === w) { if (!paidAt.has(Number(a.id))) paidAt.set(Number(a.id), []); paidAt.get(Number(a.id)).push(Number(p.at)); }
+    }
+    // a sold agent's loans that overlap a payment to the wallet it declared at its sale: its seller's loans draw on it
+    for (const x of sold) {
+      for (const p of state.payments) if (p.payTo === x.wallet) { if (!paidAt.has(x.agentId)) paidAt.set(x.agentId, []); paidAt.get(x.agentId).push(Number(p.at)); }
     }
     const wanted = snapshot.loans.filter((l) => l.era === "v2" && l.status === "repaid" && !(l.id in state.repayers) && repaidTx.has(Number(l.id))
       && (paidAt.get(Number(l.agentId)) || []).some((t) => t >= Number(l.issuedAt) && t <= Number(l.closedAt)));
@@ -568,7 +581,7 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, autoR
   }
   if (state.permit2Backfill && !past(deadline) && scanStatus.stopped !== "rate-limited") {
     const bf = state.permit2Backfill, from = bf.next;
-    const r = await scanPayments(provider, { usdg, wallets: declared, fromBlock: from, toBlock: bf.until, chunk, deadline, routes: ["permit2"] });
+    const r = await scanPayments(provider, { usdg, wallets: watched, fromBlock: from, toBlock: bf.until, chunk, deadline, routes: ["permit2"] });
     addUnique(state.payments, r.payments);
     bf.next = r.scannedTo + 1;
     tune(r, from);

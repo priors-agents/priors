@@ -800,6 +800,28 @@ await check("index: complete waits for the netting scan and the repayers", async
   assert.equal(r2.complete, false, "a wanted repayer not read yet");
 });
 
+await check("index (Score v2 2.0.4): the wallet a sold agent declared at its sale (soldWallets) is read as if still declared: its payments stay and are read on, what it or its seller (owning no agent now) sends a payer back is netted, and its loans' repayers are read; without it both go when the registry clears the wallet, as before", async () => {
+  const O1 = A(0xc1), O2 = A(0xc2);
+  const logs = { payments: [{ payer: P1, payTo: W1, amount: 2_000_000, block: 50 }, { payer: P1, payTo: W1, amount: 3_000_000, block: 110 }], transfers: [{ from: O1, to: P1, amount: 200_000, block: 60 }, { from: W1, to: P1, amount: 500_000, block: 115 }] };
+  const first = await updateIncome(fakeChain({ ...logs, wallets: { 1: W1 } }), null, opts(snapOf([agent(1, O1)]), 100));
+  assert.deepEqual([first.state.wallets, first.state.payments.map((p) => p.block)], [[W1.toLowerCase()], [50]]);
+  // sold to O2: the registry cleared its wallet (read again at once, walletsEvery 0); its loan overlapped the payment at block 50
+  const loan = { agentId: 1, era: "v2", id: 7, principal: 1, fee: 0, issuedAt: NOW - 1000 + 45, dueAt: NOW + DAY, closedAt: NOW - 1000 + 55, status: "repaid" };
+  const snap = snapOf([agent(1, O2)], [loan], [{ kind: "Repaid", era: "v2", loanId: 7, tx: "0xr7" }]);
+  const cleared = () => fakeChain({ ...logs, wallets: {} });
+  const plain = await updateIncome(cleared(), first.state, opts(snap, 120, { walletsEvery: 0 }));
+  assert.deepEqual([plain.state.wallets, plain.state.payments, plain.state.transfers, "7" in plain.state.repayers], [[], [], [], false], "no agent declares it: gone, as before");
+  const sold = await updateIncome(cleared(), first.state, opts(snap, 120, { walletsEvery: 0, soldWallets: [{ agentId: 1, wallet: W1, seller: O1 }] }));
+  assert.deepEqual(sold.state.wallets, [W1.toLowerCase()]);
+  assert.deepEqual(sold.state.payments.map((p) => p.block), [50, 110], "kept, and read on");
+  assert.deepEqual(sold.state.transfers.map((x) => [x.from, x.to, x.amount]).sort(), [[O1.toLowerCase(), P1.toLowerCase(), "200000"], [W1.toLowerCase(), P1.toLowerCase(), "500000"]], "the seller's refund kept, the wallet's read on: both netted");
+  assert.ok("7" in sold.state.repayers, "the repayer of its loan a payment to it overlaps");
+  assert.deepEqual([sold.complete, sold.pending], [true, { payers: [], wallets: [] }]);
+  // and with no sold wallet the index is the one it always was
+  const none = await updateIncome(cleared(), first.state, opts(snap, 120, { walletsEvery: 0, soldWallets: [] }));
+  assert.equal(JSON.stringify(none.state), JSON.stringify(plain.state));
+});
+
 await check("index: old payments leave after the retention; the size guard prunes, then refuses", async () => {
   const chain = fakeChain({ payments: [{ payer: P1, payTo: W1, amount: 1_000_000, block: 50 }], wallets: { 1: W1 } });
   const kept = await updateIncome(chain, null, opts(snapOf([agent(1, W1)]), 100));

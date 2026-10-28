@@ -6,16 +6,20 @@
 //   - only risk SOMEONE ELSE took counts: loans backed by the agent's own cluster (same owner, or agents and
 //     wallets under common control) build no score;
 //   - late repayments are penalised and earn nothing (from 2.0.3, late is more than 24 hours after the due time);
-//   - age runs from the first loan on Priors, v1 included, and restarts when the agent changes hands;
+//   - age runs from the first loan on Priors, v1 included, and restarts when the agent changes hands (from 2.0.4, not
+//     when it changed hands by a sale on Priors' agent market: the record goes on, sdk/score-v2-inputs.mjs);
 //   - a default by any agent of the same owner zeroes the owner's other agents too;
 //   - x402 income from distinct payers outside the cluster, each payer capped and weighted by its own record;
 //   - a rung on the trust ladder (docs/TRUST.md) and a full breakdown, so every number explains itself.
 //
 // Inputs (all amounts in USDG base units, 6 decimals; all times unix seconds):
 //   { agentId, now (required), defaulted, ownerDefaulted?, recordStart (first loan), ownershipChangedAt?,
+//     keptSale? (2.0.4: the current owner took the agent by a sale on Priors' market that kept its record),
 //     childrenDefaulted, recourseHonored,
 //     backingByOthers, loans: [{ principal, issuedAt, dueAt, closedAt, status, backedByOthers }],
-//     income: [{ payer, amount, at, payerScore? }] }   // income already filtered to payers outside the cluster
+//     income: [{ payer, amount, at, payerScore? }] }   // income already filtered to payers outside the cluster (2.0.4:
+//                                                      // and, across a sale on Priors' market, to what each owner in
+//                                                      // turn was paid: sdk/score-v2-inputs.mjs)
 import WEIGHTS from "./score-weights.v2.json" with { type: "json" };
 import WEIGHTS_2_0_1 from "./score-weights.v2.0.1.json" with { type: "json" };
 // 2.0.2: 2.0.1 plus SeatVaultV5's roots as the owner's own collateral (a line sized by the owner's own $PRIORS). Its
@@ -24,6 +28,9 @@ import WEIGHTS_2_0_2 from "./score-weights.v2.0.2.json" with { type: "json" };
 // 2.0.3: 2.0.2 plus a 24-hour window after the due time (penalties.lateAfterSeconds): a 7-day loan, the pool's minimum
 // score term, held its whole term could only be on time at its exact due second (priors-agents/priors#16).
 import WEIGHTS_2_0_3 from "./score-weights.v2.0.3.json" with { type: "json" };
+// 2.0.4: 2.0.3 plus the record kept across a sale on Priors' agent market (changeOfHands.keepAtMarketSale). Its inputs
+// read the market's sales (sdk/score-v2-inputs.mjs `sales`); without them every change of hands restarts, as in 2.0.3.
+import WEIGHTS_2_0_4 from "./score-weights.v2.0.4.json" with { type: "json" };
 
 const DAY = 86400;
 const USDG = 1e6;
@@ -33,7 +40,7 @@ const round1 = (x) => Math.round(x * 10) / 10;
 /** The default weights (2.0.0). A newer version becomes the default only once announced (docs/SCORE-v2.md). */
 export const DEFAULT_WEIGHTS = WEIGHTS;
 /** Every published weights version, so a past score can be recomputed and a new one run before it is the default. */
-export const WEIGHTS_BY_VERSION = Object.freeze({ [WEIGHTS.version]: WEIGHTS, [WEIGHTS_2_0_1.version]: WEIGHTS_2_0_1, [WEIGHTS_2_0_2.version]: WEIGHTS_2_0_2, [WEIGHTS_2_0_3.version]: WEIGHTS_2_0_3 });
+export const WEIGHTS_BY_VERSION = Object.freeze({ [WEIGHTS.version]: WEIGHTS, [WEIGHTS_2_0_1.version]: WEIGHTS_2_0_1, [WEIGHTS_2_0_2.version]: WEIGHTS_2_0_2, [WEIGHTS_2_0_3.version]: WEIGHTS_2_0_3, [WEIGHTS_2_0_4.version]: WEIGHTS_2_0_4 });
 /** The weights of `version` (the default when empty); an unknown version throws. */
 export function weightsFor(version) {
   if (version == null || String(version).trim() === "") return DEFAULT_WEIGHTS;
@@ -47,6 +54,10 @@ export const lateAfterSeconds = (W = WEIGHTS) => Number((W && W.penalties && W.p
 /** Was a repaid loan late under weights `W`: closed more than lateAfterSeconds after its due time. Every count of late
  *  repayments shown next to a score (the board, the record by owner, the attestation's evidence) uses this rule. */
 export const repaidLate = (closedAt, dueAt, W = WEIGHTS) => Number(closedAt) > Number(dueAt) + lateAfterSeconds(W);
+
+/** Whether weights `W` keep the record across a sale on Priors' agent market (2.0.4, `changeOfHands.keepAtMarketSale`):
+ *  false before. Every other change of hands restarts it under every version. */
+export const keepsAtMarketSale = (W = WEIGHTS) => !!(W && W.changeOfHands && W.changeOfHands.keepAtMarketSale === true);
 
 /** How much a payer's USDG counts (0..1): unknown wallets at `unknownPayerWeight`, scored ones by their own score. */
 export function payerWeight(score, W = WEIGHTS) {
@@ -67,7 +78,8 @@ export function scoreV2(input, W = WEIGHTS) {
   if (input.now == null) throw new TypeError(`score-v2: agent ${id}: 'now' is required (the score must not read the clock)`);
   const now = num(input.now, "now", id);
   const since = num(input.ownershipChangedAt ?? 0, "ownershipChangedAt", id);
-  const flags = { defaulted: !!input.defaulted, ownerDefaulted: !!input.ownerDefaulted, ownershipChanged: since > 0 };
+  // keptSale (2.0.4, only when true): a restart `ownershipChanged` shows came with an earlier owner, not this one
+  const flags = { defaulted: !!input.defaulted, ownerDefaulted: !!input.ownerDefaulted, ownershipChanged: since > 0, ...(input.keptSale ? { keptSale: true } : {}) };
 
   // loans that count: repaid, issued after the last change of hands, backed by someone else. Every sum over loans is
   // an integer (risk time in base units x seconds x parts per million), so the result never depends on their order.
@@ -137,7 +149,8 @@ export function scoreV2(input, W = WEIGHTS) {
     seasoned: Math.min(C.seasoned.max, seasonedWeight * C.seasoned.pointsEach),
     backing: Math.min(C.backing.max, num(input.backingByOthers ?? 0, "backingByOthers", id) / USDG / C.backing.usdgPerPoint),
     age: Math.min(C.age.max, ageDays * C.age.pointsPerDay),
-    // paying a vouched agent's debt is the old owner's act, so it does not survive a change of hands
+    // paying a vouched agent's debt is the old owner's act, so it does not survive a change of hands (from 2.0.4 a sale
+    // on Priors' market is none: `since` stays where the record started, and recourse goes on with it)
     recourse: since > 0 ? 0 : Math.min(C.recourse.max, num(input.recourseHonored ?? 0, "recourseHonored", id) * C.recourse.pointsEach),
     income: Math.min(C.income.max, incomeValue / C.income.usdgPerPoint + breadth),
   };

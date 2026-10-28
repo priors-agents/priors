@@ -162,7 +162,7 @@ check("2.0.2 is 2.0.1 plus V5's roots: no number changed; published 2026-10-23, 
   assert.ok(SWITCH - Date.parse(W202.published) / 1000 >= 7 * DAY, "announced 7 days ahead");
   assert.doesNotMatch(W202.notes, /note on X|not published/, "the notes say how it was announced");
   assert.equal(DEFAULT_WEIGHTS.version, "2.0.0", "DEFAULT_WEIGHTS stays 2.0.0");
-  assert.deepEqual(Object.keys(WEIGHTS_BY_VERSION).sort(), ["2.0.0", "2.0.1", "2.0.2", "2.0.3"]);
+  assert.deepEqual(Object.keys(WEIGHTS_BY_VERSION).sort(), ["2.0.0", "2.0.1", "2.0.2", "2.0.3", "2.0.4"]);
   assert.equal(scoreV2({ agentId: 1, now: 1, loans: [] }, W202).version, "2.0.2");
   const W203 = weightsFor("2.0.3");
   assert.deepEqual(W203.backers.ownCollateralRoots, W202.backers.ownCollateralRoots, "2.0.3 keeps 2.0.2's V5 rule");
