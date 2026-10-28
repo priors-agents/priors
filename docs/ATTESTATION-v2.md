@@ -173,7 +173,8 @@ The RPC is `--rpc`, else `RPC_URL`, else Robinhood Chain's public endpoint; an e
 - the entry is live; its `NewFeedback` event's `feedbackHash` is keccak256 of the bytes in its `feedbackURI`;
 - the file's `agentRegistry`, `agentId`, `clientAddress`, `value`, `valueDecimals`, `tag1`, `tag2` are the entry's, and
   `getSummary(agentId, [attester], "priors-score", "")` is the file's score;
-- `blockTime` is the timestamp of `block`, and the note was posted at or after it;
+- `blockTime` is the timestamp of `block`, and the note was posted at or after it; `block` is at or after pool v2's
+  deploy block (`deployBlock` in `deployments/4663.v2.json`): no Priors note predates it (GHSA-4r8c-f8q3-4r67);
 - `pool`, and `v1Pool` when the file names one, are the pools of `deployments/4663.v2.json`. The repayments and the
   payment below are read from those two pools, whatever the file names, so a citation of another contract fails
   (GHSA-m5wj-mgcg-x3fv);
@@ -182,12 +183,14 @@ The RPC is `--rpc`, else `RPC_URL`, else Robinhood Chain's public endpoint; an e
   2.0.3 (2026-11-02 00:00 UTC), within 24 hours after it. The window is that of the weights Priors' scores use at
   `block`, read from that block's own timestamp and the published schedule (`LATE_WINDOW_SCHEDULE` in
   `sdk/attestation.mjs`), never wider than that of the weights the note names, so naming other weights cannot widen
-  it;
-- `proofOfPayment`: the borrow transaction carries the pool's `Borrowed` log for `paid.loan`, to `toAddress`, for
-  `paid.usdg`;
+  it. Each loan is cited once: a repeated citation fails;
+- the payment, whenever the file carries `paid`, with or without `proofOfPayment`: `getLoan(paid.loan)` shows the
+  agent's loan, repaid on time (the same window) by `blockTime`, for `paid.usdg`. With `proofOfPayment`, its borrow
+  transaction succeeded at or before `block` and carries the pool's `Borrowed` log for `paid.loan`, to `toAddress`, for
+  `paid.usdg` (GHSA-4r8c-f8q3-4r67);
 - the line and backing at `block` (lens `creditReport` with that block tag): capacity, principalOut, available,
   sponsor, delegatedIn, defaulted. This needs state at that block: the public endpoint keeps about 15 minutes of it,
-  so for an older note pass an archive endpoint; the script says when it could not check.
+  so for an older note pass an archive endpoint; the script says when it could not check, and the error it got.
 
 Not verified by the script: the score's arithmetic (it needs the x402 income index and every agent's loans; the inputs
 are public and the engine is `sdk/score-v2.mjs`, see [SCORE-v2.md](SCORE-v2.md)), and the totals (`repaid.onTime`,

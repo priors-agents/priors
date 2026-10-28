@@ -8,7 +8,7 @@
 //   - feedbackHash = keccak256(file bytes), and the file's spec fields (agentRegistry, agentId, clientAddress, value,
 //     valueDecimals, tag1, tag2) match the entry on chain; getSummary(agentId, [attester], "priors-score", "") is the
 //     file's score;
-//   - priors.blockTime is the timestamp of priors.block;
+//   - priors.blockTime is the timestamp of priors.block, and priors.block is at or after the v2 deploy block;
 //   - priors.pool and priors.v1Pool are the pools of deployments/4663.v2.json; whatever the file names, every
 //     repayment and the payment below are read from those two, never from an address in the file;
 //   - each cited repayment (priors.repaid.last): the transaction succeeded before priors.block and carries the pool's
@@ -17,8 +17,10 @@
 //     weights Priors' scores use at priors.block, by that block's own time (sdk/attestation.mjs LATE_WINDOW_SCHEDULE: 24
 //     hours from weights 2.0.3, 2026-11-02 00:00 UTC; none before), never wider than the window of the weights the note
 //     names (priors.weights, tag2 on chain);
-//   - proofOfPayment: the borrow transaction carries the pool's Borrowed log for priors.paid.loan, from the pool to
-//     toAddress, for priors.paid.usdg;
+//     each loan is cited once;
+//   - the payment: the loan priors.paid names (with or without proofOfPayment) is the agent's, repaid on
+//     time (the same window) by priors.blockTime, for priors.paid.usdg; the borrow transaction succeeded by priors.block
+//     and carries the pool's Borrowed log for that loan, from the pool to toAddress, for priors.paid.usdg;
 //   - the line and backing at priors.block (lens creditReport with blockTag = that block: capacity = line.limit,
 //     principalOut = line.drawn, available >= line.available (a stock line is capped lower by its vault), sponsor and
 //     delegatedIn = backing, defaulted), when the RPC serves state at that block (an archive node; the public endpoint
@@ -112,6 +114,9 @@ say("info", "schema", `priors.v ${P.v}, created ${F.createdAt}, at block ${P.blo
 const blk = await provider.getBlock(Number(P.block));
 ok(blk && Number(blk.timestamp) === Number(P.blockTime), "priors.blockTime is priors.block's timestamp", blk ? `${blk.timestamp}` : "block not found");
 ok(ev.log.blockNumber >= Number(P.block), "the note was posted at or after the block it describes");
+// No Priors note predates pool v2: before its deploy block the lens has no code, and its "0x" would read as a node
+// without state at that block, skipping the line and backing (GHSA-4r8c-f8q3-4r67).
+ok(Number(P.block) >= Number(DEP.deployBlock), "the note's block is at or after the v2 deploy block", `block ${P.block}, v2 from ${DEP.deployBlock}`);
 
 // The cited repayments and the payment are read from the pools of the deployment record, never from an address the file
 // names: a contract the file's author chose can answer anything (GHSA-m5wj-mgcg-x3fv). The file must name the same ones.
@@ -129,9 +134,13 @@ const inForce = scheduledWeights(blk ? Number(blk.timestamp) : 0);
 const lateAfter = Math.min(windowOf(inForce), windowOf(P.weights));
 say("info", "late window", `${lateAfter} s after the due time; at the block's time: ${inForce ? `weights ${inForce}` : "no window"}; the note names: ${P.weights}`);
 
-// each cited repayment
+// each cited repayment, once: a loan cited again would read as another repayment (GHSA-4r8c-f8q3-4r67)
+const cited = new Set();
 for (const c of P.repaid?.last || []) {
   const isV1 = c.era === "v1";
+  let key; try { key = `${isV1 ? "v1" : "v2"}:${BigInt(c.loan)}`; } catch (_) { key = `${isV1 ? "v1" : "v2"}:${String(c.loan)}`; }
+  if (cited.has(key)) { say("FAIL", `${isV1 ? "v1 " : ""}loan ${c.loan} cited again`, "priors.repaid.last cites each repayment once"); continue; }
+  cited.add(key);
   const c_ = isV1 ? v1 : pool;
   if (!c_) { say("FAIL", `loan v1:${c.loan}`, "no priors.v1Pool to read it from"); continue; }
   const rc = await provider.getTransactionReceipt(c.tx);
@@ -144,23 +153,31 @@ for (const c of P.repaid?.last || []) {
 }
 say("info", "totals (from the snapshot, not re-derived)", `on time ${P.repaid?.onTime} (${P.repaid?.usdg} USDG), late ${P.late}, defaults ${P.defaults}`);
 
-// proofOfPayment: the pool's borrow payment to the agent
-if (F.proofOfPayment) {
+// the payment: priors.paid names the loan, proofOfPayment its borrow transaction (the pool's payment to the agent). The
+// file defines it as the borrow of a loan repaid on time by the note's block, so that is what is checked, and priors.paid
+// is read from the pool whether or not the note carries proofOfPayment (GHSA-4r8c-f8q3-4r67).
+if (F.proofOfPayment || P.paid != null) {
   const pp = F.proofOfPayment;
-  const rc = await provider.getTransactionReceipt(pp.txHash);
-  const topic = pool.interface.getEvent("Borrowed").topicHash;
-  const lg = rc && rc.status === 1 ? rc.logs.find((l) => same(l.address, DEP.pool) && l.topics[0] === topic && BigInt(l.topics[1]) === BigInt(P.paid?.loan ?? -1)) : null;
-  const b = lg ? pool.interface.parseLog(lg).args : null;
-  ok(!!b && same(pp.fromAddress, DEP.pool) && Number(b.agentId) === agentId && same(b.to, pp.toAddress) && usdg(b.principal) === String(P.paid?.usdg) && Number(pp.chainId) === CHAIN_ID,
-    "proofOfPayment: the pool paid this agent's loan to toAddress", b ? `loan ${b.loanId}, ${usdg(b.principal)} USDG to ${b.to}` : `no Borrowed log for loan ${P.paid?.loan} in ${pp.txHash}`);
+  const l = P.paid?.loan != null ? await pool.getLoan(P.paid.loan).catch((e) => { if (e?.code === "CALL_EXCEPTION" || e?.code === "INVALID_ARGUMENT") return null; throw e; }) : null;
+  ok(!!l && Number(l.agentId) === agentId && Number(l.status) === REPAID && Number(l.closedAt) <= Number(l.dueAt) + lateAfter && Number(l.closedAt) <= Number(P.blockTime) && usdg(l.principal) === String(P.paid?.usdg),
+    "priors.paid: this agent's loan, repaid on time before the note's block, for paid.usdg",
+    l ? `loan ${P.paid.loan}: agent ${l.agentId}, status ${l.status}, closed ${l.closedAt} <= due ${l.dueAt}${lateAfter ? ` + ${lateAfter}` : ""} and <= ${P.blockTime}, ${usdg(l.principal)} USDG` : `the pool has no loan ${P.paid?.loan}`);
+  if (pp) {
+    const rc = await provider.getTransactionReceipt(pp.txHash);
+    const topic = pool.interface.getEvent("Borrowed").topicHash;
+    const lg = rc && rc.status === 1 ? rc.logs.find((x) => same(x.address, DEP.pool) && x.topics[0] === topic && BigInt(x.topics[1]) === BigInt(P.paid?.loan ?? -1)) : null;
+    const b = lg ? pool.interface.parseLog(lg).args : null;
+    ok(!!b && rc.blockNumber <= Number(P.block) && same(pp.fromAddress, DEP.pool) && Number(b.agentId) === agentId && same(b.to, pp.toAddress) && usdg(b.principal) === String(P.paid?.usdg) && Number(pp.chainId) === CHAIN_ID,
+      "proofOfPayment: the pool paid this agent's loan to toAddress before the note's block", b ? `loan ${b.loanId}, tx block ${rc.blockNumber}, ${usdg(b.principal)} USDG to ${b.to}` : `no Borrowed log for loan ${P.paid?.loan} in ${pp.txHash}`);
+  }
 } else say("info", "no proofOfPayment", "the agent had no loan repaid on time when the note was posted");
 
 // the line and backing at the note's block: needs state at that block
 const lens = new ethers.Contract(DEP.lens, LENS_ABI, provider);
-let r = null;
-try { r = await lens.creditReport(agentId, { blockTag: Number(P.block) }); } catch (e) { r = null; }
+let r = null, why = "";
+try { r = await lens.creditReport(agentId, { blockTag: Number(P.block) }); } catch (e) { r = null; why = e?.code || "error"; }
 if (!r) {
-  say("skip", `line and backing at block ${P.block}`, "this RPC keeps no state at that block (not an archive node); pass --rpc <archive endpoint>");
+  say("skip", `line and backing at block ${P.block}`, `the lens could not be read at that block (${why}): an RPC that keeps no state that old answers so; pass --rpc <archive endpoint>`);
 } else {
   const L = P.line || {};
   ok(usdg(r.capacity) === L.limit, "line.limit = the lens' capacity at the block", `${usdg(r.capacity)} USDG`);
