@@ -117,8 +117,8 @@ buyer's own from then).
   timelock can change it, so the score counts on no fee) and starts its 14-day hold, and the market refuses it while
   the agent has a loan open or has defaulted on either pool, is a root, or while either side is marked by a default
   (`ownerDefaults`). On top of that the score keeps nothing when: the change was a plain transfer (it restarts as
-  before); a sale follows a plain transfer (A sends the agent to X, X sells it to B) or a plain transfer follows a sale
-  (A sells to X, X sends it to B); the seller, or the payment wallet the agent declared at the sale, was already in
+  before); a sale follows a plain transfer (A sends the agent to X, X sells it to B, or back to A: the oldest sale must
+  be the loans' owner's, GHSA-jjxq-7r68-44m5) or a plain transfer follows a sale (A sells to X, X sends it to B); the seller, or the payment wallet the agent declared at the sale, was already in
   default when it sold (one of its loans past its defaultable time, marked or not, or the declared payment wallet of
   such a loan's agent), so a default the pool hasn't marked yet can't be carried to a fresh wallet; or that wallet is
   not read yet (fails closed). Each of these restarts the record exactly as 2.0.3 does, on agents with v1 loans too.

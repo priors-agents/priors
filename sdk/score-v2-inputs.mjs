@@ -258,8 +258,6 @@ function keptOwnership(agent, loans, now, allSales, plainAt, defaultAt) {
   }
   const plain = Math.max(plainAt > 0 ? plainAt : 0, plainSale);
   since = Math.max(since, transferRestart(agent, byIssue, now, plain)); // a plain transfer after the record started
-  const last = (sales || [])[(sales || []).length - 1];
-  if (last && last.buyer === cur) incomeSince = Math.max(incomeSince, last.at);
   const hops = [];
   for (let i = allSales.length - 1, who = cur; i >= 0; i--) {
     const s = allSales[i];
@@ -267,6 +265,14 @@ function keptOwnership(agent, loans, now, allSales, plainAt, defaultAt) {
     hops.unshift(s);
     who = s.seller;
   }
+  // the oldest of them must be sold by the owner the loans name before it: a seller that owner handed the agent to off
+  // the market (a plain hop, then a sale back to that owner) keeps nothing, and its sale gives no incomeSince either:
+  // the record goes on as 2.0.3 counts it (GHSA-jjxq-7r68-44m5). With no loan before it, `since` bounds what it carries
+  const named = hops.length ? byIssue.filter((l) => l.owner && Number(l.issuedAt) < hops[0].at).pop() : null;
+  const laundered = !!named && lc(named.owner) !== hops[0].seller;
+  if (laundered) hops.length = 0;
+  const last = (sales || [])[(sales || []).length - 1];
+  if (last && last.buyer === cur && !laundered) incomeSince = Math.max(incomeSince, last.at);
   return { since, incomeSince, hops };
 }
 
