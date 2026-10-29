@@ -76,10 +76,10 @@ check("forge test is fully green, and the lender-loss regression is still in it 
   // was deliberately retained as a failing test. The exposure accounting is fixed now, so the assertion inverts:
   // the suite must be green, AND the test that proved the bug must still exist and pass. Deleting the regression
   // would otherwise turn a real guarantee back into an untested claim while the suite stayed reassuringly green.
-  // On CI the full suite is the `contracts` job's (`forge test -vvv`, no time limit): running all of it again here,
-  // from a cold compile on a small runner, outgrew any sane timeout once the suite passed 500 tests (every CI run
-  // from 2026-09-23 failed on `spawnSync forge ETIMEDOUT`). There, this check keeps what only it asserts: the named
-  // regression and the DefaultAccounting suite below. Locally it still runs the whole suite first.
+  // On CI the full suite is the `contracts` job's (`forge test -vvv` in three parts, no time limit): running all of it
+  // again here, from a cold compile on a small runner, outgrew any sane timeout once the suite passed 500 tests (every
+  // CI run from 2026-09-23 failed on `spawnSync forge ETIMEDOUT`). There, this check keeps what only it asserts: the
+  // named regression and the DefaultAccounting suite below. Locally it still runs the whole suite first.
   const T = 1_200_000; // a cold compile of the via-IR pool alone takes minutes on a CI runner
   if (!process.env.CI) {
     const r = sh("forge", ["test"], { timeout: T });

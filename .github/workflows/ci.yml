@@ -27,8 +27,18 @@ jobs:
           version: v1.7.1
       - run: forge --version
       - run: forge fmt --check
-      - run: forge build --sizes
-      - run: forge test -vvv
+      # CreditPoolV2 and every file that imports it (StockVault, the SeatVaults and their tests) compile in one via-IR
+      # solc process (foundry.toml's compilation_restrictions), whose memory grows with each test contract in it. With
+      # all of test/ in it, `forge build` peaked at 18 GiB, over the runner's 16 GB, and the job was killed (exit 143).
+      # So the build compiles and sizes what is deployed (src/ and script/; with test/ in it `--sizes` would also hold
+      # the test-only StockVaultV2Mock, StockVault plus a slot and a function, to the 24,576-byte limit), and the tests
+      # run in three parts: `forge test --match-path` compiles src/ and the matching tests only, in its own solc process
+      # (at most 5.7, 8.6 and 4.5 GiB). `*` matches across directories here; the three together run every test that
+      # `forge test` runs.
+      - run: forge build --sizes --skip test
+      - run: forge test -vvv --match-path 'test/StockVault*'
+      - run: forge test -vvv --match-path 'test/*Seat*'
+      - run: forge test -vvv --no-match-path 'test/{StockVault*,*Seat*}'
 
   sdk:
     runs-on: ubuntu-latest
