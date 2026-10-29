@@ -2574,8 +2574,8 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
           // 2. the bond
           if (!bonded) {
             if (s.allowance < amount) rec = (await flSend(rec, "approve", AT.usdg, FL.encodeFunctionData("approve", [AT.bond, amount]), ctx)).rec;
-            bondSent = true; // counted from its broadcast on: the deposit may land whatever its answer
-            const d = await flSend(rec, "deposit", AT.bond, FL.encodeFunctionData("deposit", [id]), ctx);
+            // counted from its broadcast on: the deposit may land whatever its answer; refused or unread before it, nothing
+            const d = await flSend(rec, "deposit", AT.bond, FL.encodeFunctionData("deposit", [id]), { ...ctx, sending: () => { bondSent = true; } });
             rec = d.rec;
             bondDone = true;
             // the bot reads the bond from its own node: a block more on this one before it is asked (at most 2 s)
@@ -2628,8 +2628,9 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     }
 
     /** One transaction of first_line's (`stage`), as join sends its own: simulated, its gas against the wallet's ETH,
-     *  signed here, kept on file (the record's `tx`), sent once, its receipt waited for. Returns { rec, rc, hash }. */
-    async function flSend(rec, stage, to, data, { id, block, end, left, waitEnd, stepMs, after }) {
+     *  signed here, kept on file (the record's `tx`), sent once, its receipt waited for. Returns { rec, rc, hash }.
+     *  `sending`, if given, is called once it is kept on file and right before its broadcast: from then on it may land. */
+    async function flSend(rec, stage, to, data, { id, block, end, left, waitEnd, stepMs, after, sending }) {
       const me = wallet.address, what = flWhat(stage, id);
       if (end - Date.now() < stepMs) throw new ToolError(`first_line stopped before ${what}: this call's time ran out. ${after()}Nothing more was signed or sent: call first_line again; it goes on from here.`);
       try { await withinTime(provider.call({ from: me, to, data }), left()); } catch (e) { throw new ToolError(`${cap1(what)} would be refused on chain (${revertWhy(e)}). ${after()}Nothing more was signed or sent.`); }
@@ -2654,6 +2655,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
         if (e?.code === "OTHER_SESSION") throw flOther(after());
         throw new ToolError(`${what} could not be kept on file in PRIORS_STATE_DIR (${explain(e)}), so it was not sent. ${after()}Fix that directory, then call first_line again.`);
       }
+      if (sending) sending();
       let seen = null;
       try { await withinTime(provider.send("eth_sendRawTransaction", [signed]), left()); } catch (e) {
         seen = await lookupTx(hash, end);

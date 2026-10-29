@@ -1,5 +1,12 @@
 # @priors/mcp changelog
 
+## Unreleased
+
+- **`first_line` counts the bond against `PRIORS_MAX_SPEND_DAY_USD` only once its deposit is about to be broadcast.**
+  A deposit refused by its simulation, or whose gas or balance could not be read, or that could not be signed or kept
+  on file, sent nothing, but it was counted as the day's 5 USDG: under a 5 USDG limit, first_line could not be called
+  again that day. Such a deposit now counts nothing; one broadcast counts, whatever its answer, as before.
+
 ## 0.12.2 (2026-10-27)
 
 Still on @priors/x402 0.8.3.
