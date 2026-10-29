@@ -97,8 +97,9 @@ contract StockVaultHolds {
     event Recorded(address indexed feed, uint80 fromRound, uint80 throughRound);
 
     /// @notice Records `feed`'s rounds on its price tape, at most `maxRounds` of them, from the one after the tape's last
-    ///         (for a new tape, or a feed whose phase changed, from the first round of the last TAPE_FROM) toward the
-    ///         latest. Anyone may call it, any number of times: it only reads the feed, and never records a round twice.
+    ///         (for a new tape, a feed whose phase changed, or a tape whose last round the feed no longer serves or
+    ///         published TAPE_FROM ago or more, from the first round of the last TAPE_FROM) toward the latest. Anyone
+    ///         may call it, any number of times: it only reads the feed, and never records a round twice.
     ///         New credit against a busy feed waits until its tape is less than LIVE_ROUNDS rounds behind (see
     ///         `_priceSettled`), and so does seizing a default (StockVault `_seize`: the default's hook fails, and
     ///         `settle` reverts TapeBehind until it is recorded); repaying and closing never wait on it. A round that
@@ -110,7 +111,14 @@ contract StockVaultHolds {
         uint256 next;
         if (t.through != 0 && t.through >> 64 == latest >> 64 && t.through <= latest) {
             if (t.through == latest || maxRounds == 0) return t.through;
-            next = uint256(t.through) + 1;
+            // it resumes after its last round only while that round can still be read and is within TAPE_FROM: a feed
+            // that keeps only its latest rounds (PtLinearDiscountFeed, 1,024) has dropped those after an older one, and
+            // each would count as unreadable today, holding new credit ~15 days and seizing a waiting default whole
+            // (GHSA-4w7q-8vph-j5mr). Older than TAPE_FROM, it begins again where a new tape begins, and skips only
+            // rounds older than TAPE_FROM, as a new tape does
+            uint256 lastAt = _publishedAt(feed, t.through);
+            if (lastAt != 0 && lastAt + TAPE_FROM > block.timestamp) next = uint256(t.through) + 1;
+            else (next, t.phaseBegan) = _tapeStart(feed, latest);
         } else {
             if (maxRounds == 0) return t.through;
             (next, t.phaseBegan) = _tapeStart(feed, latest);
@@ -1208,7 +1216,9 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
         return _lendStatus(token);
     }
 
-    /// @notice What agent `id` could still draw on its position now (0 when a loan would be refused).
+    /// @notice What agent `id` could still draw on its position now (0 when a loan would be refused: by this vault, or by
+    ///         the pool for a defaulted agent; a default marked on its owner's account, `OwnerDefaulted`, is not read
+    ///         here and stays with the readers, GHSA-qcrq-x8xg-25vg).
     function borrowRoom(uint256 id) external view returns (uint256) {
         Position storage p = positions[id];
         if (p.status != Status.Open || p.closing || paused) return 0;
@@ -1216,6 +1226,9 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
         if (!ok || _lendStatus(p.token) != 0) return 0;
         uint256 limit = value * ltvOf(id, p.token) / 10_000;
         CreditPoolV2.Agent memory a = pool.getAgent(id);
+        if (a.defaulted) return 0; // the pool refuses every loan (AgentDefaulted)
+        (bool okO, uint256 o) = _read(address(registry), abi.encodeCall(IERC8004Identity.ownerOf, (id)));
+        if (!okO || address(uint160(o)) != p.owner) return 0; // canBorrow: the owner who opened it
         uint256 cap = a.delegatedIn > a.principalOut ? a.delegatedIn - a.principalOut : 0;
         uint256 byValue = limit > a.principalOut ? limit - a.principalOut : 0;
         return byValue < cap ? byValue : cap;
