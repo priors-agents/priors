@@ -188,10 +188,10 @@ async function accountOf(account, wallet) {
 // wallet never said it), hashes (the steps that went through before), step }. Waiting is bounded by `waitTimeoutMs`.
 
 /** TX_UNCONFIRMED: step `c` may have been sent and what it did is not known; running the trade again could trade twice. */
-function unconfirmed(c, hash, cause, hashes, { awaiting = false } = {}) {
+function unconfirmed(c, hash, cause, hashes, { awaiting = false, recheck = "the balances (ptPosition)" } = {}) {
   const why = cause?.shortMessage || cause?.message || String(cause);
   const what = awaiting ? "got no answer from the wallet in time: it may still be awaiting approval there, or it may have been sent" : "may have been sent";
-  return Object.assign(new Error(`${c.what || "a call"}${hash ? ` (tx ${hash})` : ""} ${what}, and what it did is not known (${why}): check the balances (ptPosition) before trying again, since running the trade again could trade twice`),
+  return Object.assign(new Error(`${c.what || "a call"}${hash ? ` (tx ${hash})` : ""} ${what}, and what it did is not known (${why}): check ${recheck} before trying again, since running the trade again could trade twice`),
     { code: "TX_UNCONFIRMED", unconfirmed: true, hash: hash ?? null, hashes: [...hashes], step: c.what || null, cause });
 }
 const causes = (e) => { const out = []; for (let x = e, i = 0; x && i < 8; x = x.cause, i++) out.push(x); return out; };
@@ -230,13 +230,13 @@ function checked(c, hash, rc, hashes) {
 
 /** Wait, until `end`, for step `c`'s receipt: done when it succeeded, an ordinary error when it reverted (that step did
  *  nothing), TX_UNCONFIRMED when none came; a lookup that fails is asked again. */
-async function receipt(client, c, hash, hashes, end) {
+async function receipt(client, c, hash, hashes, end, recheck) {
   let last = null;
   for (;;) {
     let rc;
     try { rc = await within(rpc(client, "eth_getTransactionReceipt", [hash]), end - Date.now()); } catch (e) { last = e; }
     if (rc) return checked(c, hash, rc, hashes);
-    if (Date.now() >= end) throw unconfirmed(c, hash, last || new Error("no receipt in time"), hashes);
+    if (Date.now() >= end) throw unconfirmed(c, hash, last || new Error("no receipt in time"), hashes, { recheck });
     await sleep(Math.min(1500, Math.max(1, end - Date.now())));
   }
 }
@@ -246,19 +246,23 @@ async function receipt(client, c, hash, hashes, end) {
  *  only with a `signingKey` (a Wallet): a NonceManager counts its nonces in its own sendTransaction, and a
  *  JsonRpcSigner has the node sign, so both send themselves. */
 async function signHere(wallet, c) {
+  const nonce = c.nonce != null ? { nonce: c.nonce } : {}; // a call's own nonce, when its caller names one
   if (wallet.signingKey != null && typeof wallet.signTransaction === "function" && typeof wallet.populateTransaction === "function" && wallet.provider) {
-    return wallet.signTransaction(await wallet.populateTransaction({ to: c.to, data: c.data, value: c.value })); // ethers Wallet
+    return wallet.signTransaction(await wallet.populateTransaction({ to: c.to, data: c.data, value: c.value, ...nonce })); // ethers Wallet
   }
   if (wallet.account?.type === "local" && typeof wallet.prepareTransactionRequest === "function" && typeof wallet.signTransaction === "function") {
-    return wallet.signTransaction(await wallet.prepareTransactionRequest({ account: wallet.account, chain: wallet.chain ?? null, to: c.to, data: c.data, value: c.value }));
+    return wallet.signTransaction(await wallet.prepareTransactionRequest({ account: wallet.account, chain: wallet.chain ?? null, to: c.to, data: c.data, value: c.value, ...nonce }));
   }
   return null;
 }
 
 /** Send `calls` in order from `wallet`, each simulated first, each waited for: the hashes. `onSend(hash, what)` is told
  *  of each step as it leaves: signed here, just before its broadcast (if it throws, nothing is sent); with a wallet that
- *  sends itself, once the wallet answers (null when its answer was lost; if it throws, the step goes on). */
-export async function sendCalls(client, wallet, calls, from, { waitTimeoutMs = 180_000, onSend } = {}) {
+ *  sends itself, once the wallet answers (null when its answer was lost; if it throws, the step goes on). `recheck`:
+ *  what a TX_UNCONFIRMED says to check before trying again (default "the balances (ptPosition)"; sdk/stock-trade.mjs
+ *  names its own). A call's `nonce`, when set, is the one it is signed or sent with (a wallet's provider that caches its
+ *  nonce reads could give a step sent right after another that one's again). */
+export async function sendCalls(client, wallet, calls, from, { waitTimeoutMs = 180_000, onSend, recheck } = {}) {
   const hashes = [];
   for (const c of calls) {
     try { await rpc(client, "eth_call", [{ from, to: c.to, data: c.data }, "latest"]); } catch (e) { throw new Error(`${c.what || "the call"} would revert: ${e.shortMessage || e.message}`); }
@@ -275,36 +279,37 @@ export async function sendCalls(client, wallet, calls, from, { waitTimeoutMs = 1
       let seen = null;
       try {
         const answer = await within(rpc(client, "eth_sendRawTransaction", [signed]), end - Date.now());
-        if (answer === undefined) throw unconfirmed(c, hash, new Error("no answer to the broadcast in time"), hashes);
+        if (answer === undefined) throw unconfirmed(c, hash, new Error("no answer to the broadcast in time"), hashes, { recheck });
       } catch (e) {
         if (e?.unconfirmed) throw e;
         seen = await lookup(client, hash, end);
-        if (!seen) throw unconfirmed(c, hash, e, hashes);
+        if (!seen) throw unconfirmed(c, hash, e, hashes, { recheck });
         if (seen.state === "unknown") {
           if (noFunds(e)) throw Object.assign(new Error(`${c.what || "the call"} was refused: ${e.shortMessage || e.message}`), { code: "INSUFFICIENT_FUNDS", hashes: [...hashes], cause: e });
-          throw unconfirmed(c, hash, e, hashes);
+          throw unconfirmed(c, hash, e, hashes, { recheck });
         }
         // "mined" (its receipt in hand) or "pending" (waited for below): the node took it
       }
       if (seen?.state === "mined") checked(c, hash, seen.rc, hashes);
-      else await receipt(client, c, hash, hashes, end);
+      else await receipt(client, c, hash, hashes, end, recheck);
     } else {
       // a wallet that sends itself: one deadline from the moment it is asked (its user's approval included), over its
       // send (an ethers JsonRpcSigner polls the node before it returns) and the receipt
       const end = Date.now() + waitTimeoutMs;
       try {
+        const nonce = c.nonce != null ? { nonce: c.nonce } : {};
         const sending = wallet.account && typeof wallet.sendTransaction === "function" && !wallet.getAddress
-          ? wallet.sendTransaction({ account: wallet.account, chain: wallet.chain ?? null, to: c.to, data: c.data, value: c.value })
-          : Promise.resolve(wallet.sendTransaction({ to: c.to, data: c.data, value: c.value })).then((tx) => tx.hash);
+          ? wallet.sendTransaction({ account: wallet.account, chain: wallet.chain ?? null, to: c.to, data: c.data, value: c.value, ...nonce })
+          : Promise.resolve(wallet.sendTransaction({ to: c.to, data: c.data, value: c.value, ...nonce })).then((tx) => tx.hash);
         hash = await within(sending, end - Date.now());
-        if (hash === undefined) throw unconfirmed(c, null, new Error("the wallet gave no answer in time"), hashes, { awaiting: true });
+        if (hash === undefined) throw unconfirmed(c, null, new Error("the wallet gave no answer in time"), hashes, { awaiting: true, recheck });
       } catch (e) {
         if (!e?.unconfirmed && declined(e)) throw e;
         told(onSend, null, c.what);
-        throw e?.unconfirmed ? e : unconfirmed(c, null, e, hashes);
+        throw e?.unconfirmed ? e : unconfirmed(c, null, e, hashes, { recheck });
       }
       told(onSend, hash, c.what);
-      await receipt(client, c, hash, hashes, end);
+      await receipt(client, c, hash, hashes, end, recheck);
     }
     hashes.push(hash);
   }

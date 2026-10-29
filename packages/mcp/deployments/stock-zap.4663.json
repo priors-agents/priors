@@ -1,0 +1,520 @@
+{
+  "_what": "Stock tokens bought with USDG in Go mode (web/account-zap.js, SITE_ZAP=on) and the gas gate's STOCK_ZAP rule (gas-worker/gate.mjs through sdk/stock-zap.mjs): the contracts, the bounds of one buy, and each offered token's pinned pools, chosen from the market scout's scan by docs/STOCK-ZAP-SPEC.md 7.2 (scripts/stock-zap-pools.mjs writes this file and web/zap-pools.js). A v3 pool is swapped through Uniswap's SwapRouter02 (multicall(deadline, [exactInputSingle])), a v4 pool through Priors' V4SwapOnce; the USDG approval is exactly the amount swapped, and the tokens go to the account itself. A token in notOffered has no pool deep enough: the page keeps its Uniswap link.",
+  "chainId": 4663,
+  "usdg": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+  "registry": "0xe10b6f6b275de231345c20d14ab812db62151b00",
+  "v4": {
+    "poolManager": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+    "swapper": "0x7Cd4E04E433E69e588728c86A3832753B5F846d4",
+    "quoter": "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
+    "stateView": "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b"
+  },
+  "v3": {
+    "router": "0xCaf681a66D020601342297493863E78C959E5cb2",
+    "quoter": "0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7",
+    "factory": "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA"
+  },
+  "minUsdgPerOp": "1000000",
+  "maxUsdgPerOp": "1000000000",
+  "slippageBps": [
+    50,
+    100,
+    200
+  ],
+  "defaultSlippageBps": 100,
+  "maxSlippageBps": 200,
+  "deadlineS": 900,
+  "maxDeadlineS": 1800,
+  "impactWarnBps": 100,
+  "impactStopBps": 300,
+  "scan": {
+    "block": 90176571,
+    "at": "2026-10-16T15:14:19Z",
+    "rule": "7.2"
+  },
+  "tokens": [
+    {
+      "symbol": "AAPL",
+      "token": "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 500,
+          "pool": "0xAae0d815EE56e4092a5E5C2911E676Fea50B2d6D"
+        },
+        {
+          "v": 4,
+          "fee": 3000,
+          "tickSpacing": 60,
+          "id": "0xc748f4671a867db48b552f6b7650bf3255e05f80f00e3f7aad1b17ccb7898fdb"
+        },
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0x783C9bbB765047CFdD2b84b92b2Ca9F11D34b7Ed"
+        }
+      ]
+    },
+    {
+      "symbol": "AMD",
+      "token": "0x86923f96303D656E4aa86D9d42D1e57ad2023fdC",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0x48D284A2A4d3DC1b3Da08231Fe44317e7e7Aa51f"
+        }
+      ]
+    },
+    {
+      "symbol": "AMZN",
+      "token": "0x12f190a9F9d7D37a250758b26824B97CE941bF54",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0x8AC92DA74AB5F3b1d024Dc1943Ad7e15Dc4179Ef"
+        },
+        {
+          "v": 4,
+          "fee": 2400,
+          "tickSpacing": 24,
+          "id": "0xefc94885c96b02696b9b45de43eeeb8ac53c0199cab42b4daae4911b96fb8825"
+        }
+      ]
+    },
+    {
+      "symbol": "ASML",
+      "token": "0x47F93d52cBeC7C6D2CfC080e154002370a60dAEA",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 10000,
+          "pool": "0xedb22516B14Eb2d1C86927Db373B0E8bF70F5cD1"
+        }
+      ]
+    },
+    {
+      "symbol": "BABA",
+      "token": "0xad25Ac6C84D497db898fa1E8387bf6Af3532a1c4",
+      "pools": [
+        {
+          "v": 4,
+          "fee": 1000,
+          "tickSpacing": 10,
+          "id": "0x1791fc651cc794a282e5dbcb56d0b2b38eff8754b677c8876e86901521ecc439"
+        },
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0xa57ab582b310dd6f9e934EA1EEEa152741545E6A"
+        }
+      ]
+    },
+    {
+      "symbol": "COIN",
+      "token": "0x6330D8C3178a418788dF01a47479c0ce7CCF450b",
+      "pools": [
+        {
+          "v": 4,
+          "fee": 2500,
+          "tickSpacing": 25,
+          "id": "0xe2e1a0e32205e854525e0fb1d3667a53bd3b4919f032b9bcd2a038b6b6dac314"
+        },
+        {
+          "v": 4,
+          "fee": 10000,
+          "tickSpacing": 200,
+          "id": "0x007a13fa152f6dc383cad20a8eaab4e1e2538b606936eae2a424f8aa47d6db31"
+        }
+      ]
+    },
+    {
+      "symbol": "CRCL",
+      "token": "0xdF0992E440dD0be65BD8439b609d6D4366bf1CB5",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0x654E4143e82a5824445Ade0824351C2A9ACD95a8"
+        },
+        {
+          "v": 4,
+          "fee": 3000,
+          "tickSpacing": 30,
+          "id": "0x628c98ab436ee34a6a7decd606242890582591bdf7c9a35d90e0d08021c31ea0"
+        },
+        {
+          "v": 4,
+          "fee": 1500,
+          "tickSpacing": 15,
+          "id": "0x5177eac8c2176468bbf15e44081e151d35c2e7d068e96d3db94f496a4dc944b2"
+        }
+      ]
+    },
+    {
+      "symbol": "CRWV",
+      "token": "0x5f10A1C971B69e47e059e1dC91901B59b3fB49C3",
+      "pools": [
+        {
+          "v": 4,
+          "fee": 9000,
+          "tickSpacing": 90,
+          "id": "0x237014478f7ef98afbe7412ac35b6a3f96b8fb111de48b7c4dbf49dba4bd9c4b"
+        }
+      ]
+    },
+    {
+      "symbol": "DELL",
+      "token": "0x941AE714EC6D8130c7B75d67160Ca08f1e7d11Dd",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 10000,
+          "pool": "0xc30c89cB7815A1488b7998D15eEC73961707Fc5a"
+        }
+      ]
+    },
+    {
+      "symbol": "GME",
+      "token": "0x1b0E319c6A659F002271B69dB8A7df2F911c153E",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 500,
+          "pool": "0xE2b46c905E12Ab8E2f864e4821a4325884C1B126"
+        }
+      ]
+    },
+    {
+      "symbol": "GOOGL",
+      "token": "0x2e0847E8910a9732eB3fb1bb4b70a580ADAD4FE3",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 500,
+          "pool": "0x34D0dC122CF9A8Eb296fC5e0D3A233625D7d19b7"
+        },
+        {
+          "v": 4,
+          "fee": 300,
+          "tickSpacing": 3,
+          "id": "0x43fe16b75cabbf38f5b185d16142b02d1d9200d8f1ba17cb6cf899f562c6197f"
+        },
+        {
+          "v": 4,
+          "fee": 3000,
+          "tickSpacing": 60,
+          "id": "0xd4ecb79fdc521d7725d22b33ed43cb4e47aa96bfad76aa29577e3151f723ac5e"
+        }
+      ]
+    },
+    {
+      "symbol": "INTC",
+      "token": "0xc72b96e0E48ecd4DC75E1e45396e26300BC39681",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0x2e5a92f5013a64661A49312111be2e8aBd33F56a"
+        }
+      ]
+    },
+    {
+      "symbol": "META",
+      "token": "0xc0D6457C16Cc70d6790Dd43521C899C87ce02f35",
+      "pools": [
+        {
+          "v": 4,
+          "fee": 310,
+          "tickSpacing": 3,
+          "id": "0xc58bb68060bcb7b3ea0f6d4a4afef1e57f628722e808db12afb6d1733552872f"
+        },
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0x107a7Cb40d8665360ba10E59471Af06150A50922"
+        },
+        {
+          "v": 4,
+          "fee": 3000,
+          "tickSpacing": 60,
+          "id": "0x5875d407a42965b0e768c8925cea290e06fa50603ef34fc99eb92a1050e6ae36"
+        }
+      ]
+    },
+    {
+      "symbol": "MSFT",
+      "token": "0xe93237C50D904957Cf27E7B1133b510C669c2e74",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0xeb60bCD1D920ad6E102690CCFC6fB488899E1510"
+        },
+        {
+          "v": 4,
+          "fee": 3000,
+          "tickSpacing": 60,
+          "id": "0x9194a557b6a6bb2236b49ea7e2bbccec5d3eeb705aef00903be4b3de1d949579"
+        }
+      ]
+    },
+    {
+      "symbol": "MSTR",
+      "token": "0xec262a75e413fAfD0dF80480274532C79D42da09",
+      "pools": [
+        {
+          "v": 4,
+          "fee": 2500,
+          "tickSpacing": 25,
+          "id": "0x319bac87e616a89e241c10aeb8afd4892a852cdd8b373cd9765ecddc40b87cfe"
+        },
+        {
+          "v": 4,
+          "fee": 2400,
+          "tickSpacing": 24,
+          "id": "0xc105b8300ff65d750a0e4e63c7a879e20504069b770713464a5315e797735326"
+        }
+      ]
+    },
+    {
+      "symbol": "MU",
+      "token": "0xfF080c8ce2E5feadaCa0Da81314Ae59D232d4afD",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0xd057B1Bc54917855BBee58eAd58647f47caB35E5"
+        }
+      ]
+    },
+    {
+      "symbol": "NBIS",
+      "token": "0x9D9c6684F596F66a64C030B93A886D51Fd4D7931",
+      "pools": [
+        {
+          "v": 4,
+          "fee": 9900,
+          "tickSpacing": 99,
+          "id": "0x7c2f9ce1214ba9baf56d1b6a1fc640c1b63e9a711172c0c7d10e5a9c4a3d4f0c"
+        }
+      ]
+    },
+    {
+      "symbol": "NVDA",
+      "token": "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 500,
+          "pool": "0xd4EB21209C4D6093f80B5b84f5C45cc093EA14a3"
+        },
+        {
+          "v": 4,
+          "fee": 100,
+          "tickSpacing": 1,
+          "id": "0x6444a8e0b267406a15db74ca00c4a24bdfa81ed3180f5b6d0851f8ed6f4f29c5"
+        },
+        {
+          "v": 4,
+          "fee": 3000,
+          "tickSpacing": 60,
+          "id": "0x3bb34a44f1b2b5f32c034c38a53065a521a47b199700fa9bd19d60985ff24bf1"
+        }
+      ]
+    },
+    {
+      "symbol": "ORCL",
+      "token": "0xb0992820E760d836549ba69BC7598b4af75dEE03",
+      "pools": [
+        {
+          "v": 4,
+          "fee": 10000,
+          "tickSpacing": 200,
+          "id": "0xc2ce4784e1e72cf0221b51b30c8aaadf6c0b12863cf03ab3687854fb7b1d850a"
+        }
+      ]
+    },
+    {
+      "symbol": "PLTR",
+      "token": "0x894E1EC2D74FFE5AEF8Dc8A9e84686acCB964F2A",
+      "pools": [
+        {
+          "v": 4,
+          "fee": 1500,
+          "tickSpacing": 15,
+          "id": "0xc59eaeda6d1a6f031bc7e1d039772f2d675e7b4de2c8668610f4471bd60b3802"
+        },
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0x851680416A4f4E1c463d45171d61ACDdBc8554c0"
+        }
+      ]
+    },
+    {
+      "symbol": "QQQ",
+      "token": "0xD5f3879160bc7c32ebb4dC785F8a4F505888de68",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 500,
+          "pool": "0xD60A5d14dB690B7Afad71F76B108071D7175597d"
+        }
+      ]
+    },
+    {
+      "symbol": "SGOV",
+      "token": "0x92FD66527192E3e61d4DDd13322Aa222DE86F9B5",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 500,
+          "pool": "0x6Ba50150B17Ffd0972915Aaf04fFd5E8f4Fa49b4"
+        },
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0xfAb520051f96F4D2a32c22B6a3dD7fFfdf231bFe"
+        }
+      ]
+    },
+    {
+      "symbol": "SLV",
+      "token": "0x411eFb0E7f985935DAec3D4C3ebaEa0d0AD7D89f",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0x8cB787e6c315D464775289BaD00FDD67d53Ecb3D"
+        },
+        {
+          "v": 3,
+          "fee": 10000,
+          "pool": "0x0Fa7BC480885DCf58Ad2ef63eC7289cF2481D51c"
+        }
+      ]
+    },
+    {
+      "symbol": "SNDK",
+      "token": "0xB90A19fF0Af67f7779afF50A882A9CfF42446400",
+      "pools": [
+        {
+          "v": 4,
+          "fee": 10000,
+          "tickSpacing": 200,
+          "id": "0x2707cb88a6a40fa0f948f58958051ba097d6f6a3cf7f87929bd68ccc5becea24"
+        }
+      ]
+    },
+    {
+      "symbol": "SPCX",
+      "token": "0x4a0E65A3EcceC6dBe60AE065F2e7bb85Fae35eEa",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 500,
+          "pool": "0xc61284332117c3FB23A2A56cceFFD07F7aF60029"
+        },
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0xEb07d9587eFD1778dFb9c385Ec43EF6d5F9fE401"
+        }
+      ]
+    },
+    {
+      "symbol": "SPY",
+      "token": "0x117cc2133c37B721F49dE2A7a74833232B3B4C0C",
+      "pools": [
+        {
+          "v": 4,
+          "fee": 100,
+          "tickSpacing": 1,
+          "id": "0xe1ae6a4c6ccc9f037389a8d50a4f577bde1a9fe01d85d88ecbbd39955ce53288"
+        },
+        {
+          "v": 3,
+          "fee": 500,
+          "pool": "0xa7Bb1AC63BBaB0C44316E6c8C455213441689167"
+        },
+        {
+          "v": 4,
+          "fee": 500,
+          "tickSpacing": 5,
+          "id": "0xe5923c8a8be481ec89a2ca784a2bbfa4235de6d88f92260fd66b660c4babf907"
+        }
+      ]
+    },
+    {
+      "symbol": "TSLA",
+      "token": "0x322F0929c4625eD5bAd873c95208D54E1c003b2d",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0xf4ACdAEEB7022862A763C9B1B885e11191c889E3"
+        },
+        {
+          "v": 4,
+          "fee": 3000,
+          "tickSpacing": 60,
+          "id": "0x8517f8071ae5b831b738052f12125e8e3d6c158b78728aa44ce3b25e5104d32e"
+        }
+      ]
+    },
+    {
+      "symbol": "TSM",
+      "token": "0x58FfE4a942d3885bAa22D7520691F611EF09e7AA",
+      "pools": [
+        {
+          "v": 4,
+          "fee": 7500,
+          "tickSpacing": 75,
+          "id": "0x0ba5d53d2f6255f334b7c8ead4f56b6aef5af3402c5e4d11180afd38c6b85fb1"
+        },
+        {
+          "v": 3,
+          "fee": 10000,
+          "pool": "0x07e8Ea83D4C1340774c8965125e26e12bf943bf1"
+        }
+      ]
+    },
+    {
+      "symbol": "USAR",
+      "token": "0xd917B029C761D264c6A312BBbcDA868658eF86a6",
+      "pools": [
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0x04391780F519B7d3ba59c9590459D76e23d225C4"
+        }
+      ]
+    },
+    {
+      "symbol": "USO",
+      "token": "0xa30FA36Db767ad9eD3f7a60fC79526fB4d56D344",
+      "pools": [
+        {
+          "v": 4,
+          "fee": 1200,
+          "tickSpacing": 15,
+          "id": "0x1f2ad5a274a776d8e1408292bde1d92d8fa7b6444acf14ad60b9c3e4e5b66420"
+        },
+        {
+          "v": 3,
+          "fee": 3000,
+          "pool": "0x02175608F1b5E6b5ed221cCFdC7Be197D111D915"
+        }
+      ]
+    }
+  ],
+  "notOffered": {
+    "CLSK": "thin",
+    "EWY": "thin",
+    "IONQ": "thin",
+    "RGTI": "thin",
+    "RKLB": "thin"
+  }
+}

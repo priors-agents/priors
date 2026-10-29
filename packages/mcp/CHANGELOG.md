@@ -1,5 +1,47 @@
 # @priors/mcp changelog
 
+## 0.14.0 (2026-10-29)
+
+Still on @priors/x402 0.8.3.
+
+- **Buying and selling Stock Tokens from the agent's own key, with `PRIORS_STOCKS=on` and `PRIORS_STOCKS_ELIGIBLE=yes`
+  (both off by default).** `stock_buy` spends the wallet's own USDG on one of the 30 Robinhood Stock Tokens Go mode's
+  stock buy offers, and `stock_sell` sells one back to USDG, on the same Uniswap pools it pins
+  (`deployments/stock-zap.4663.json`, now in the package): an approval of exactly the amount, then one exact-input swap
+  paying this wallet, its minimum out a fresh quote less the slippage. Without both settings the server is exactly as
+  before: no tool, no sentence in the instructions.
+  - `PRIORS_STOCKS_ELIGIBLE=yes` is the user's statement, Go mode's eligibility tick word for word (in the README): not a
+    person of the United States, the United Kingdom, Canada or Switzerland, nor of the countries Robinhood prohibits,
+    nor of the United Arab Emirates, and not acting for one. This server cannot tell where its user is; unset, the tools
+    are not offered, and any value other than yes or no stops the start.
+  - Refused before anything is signed: `$PRIORS` (never), a token not on the pinned list, a slippage above 2%, a price
+    impact of 3% or more, Chainlink's price older than 4 hours or the trade more than 5% from it, the issuer's pauses
+    and block list, a trade under 1 USDG or above `PRIORS_MAX_STOCK_USD` (default 50, at most 1,000), past
+    `PRIORS_MAX_STOCK_TOTAL_USD` while the server runs (default 200) or past 5 buys or 5 sales a UTC day for the agent
+    and the wallet (in `PRIORS_STATE_DIR/stocks`, across restarts), a fresh quote under `min_out`, more than the wallet
+    holds, and a buy that would leave less USDG, savings counted, than the agent's open loans owe or than payments
+    signed and not settled yet need. Nothing borrows. With both on, the start needs `PRIORS_AGENT_ID` and
+    `PRIORS_STATE_DIR`.
+  - One money call at a time, as every money tool; each step simulated before it is signed, and the trade read and
+    planned again after its approval (a refusal then says the approval stands, usable only by this wallet's own swap);
+    a lost answer is `TX_UNCONFIRMED`. Gas is the wallet's own ETH. The tool descriptions ask for the user's go-ahead
+    and say each trade is public on chain.
+  - The SDK files it runs are bundled byte for byte: `sdk/stock-trade.mjs` (`stockQuote`, `stockBuy`, `stockSell`,
+    `openLoansOwed`; a trade needs `eligible: true`) and `sdk/stock-zap.mjs` (now with `buildSell`). `sdk/pt-usdg.mjs`'s
+    `sendCalls` takes the words its `TX_UNCONFIRMED` names to check (`recheck`) and a call's own `nonce`, which each step
+    of a stock trade carries, read just before it (an ethers provider's 250 ms cache could give a step the one the step
+    before took); PT-USDG's calls and words are unchanged.
+- **A Base payment its seller answered as paid stays counted until USDC shows its settlement** (found in Priors' own
+  live test of 2026-10-29). `pay_url` forgot a payment on Base once the seller answered it paid, but a facilitator can
+  answer before its settlement is mined: `return_to_robinhood("all")`, called half a second after such a payment, asked
+  Relay for USDC the settlement was about to take, and Relay reported the return failed (no USDG delivered; its
+  authorization expired unused). Such a payment is now counted until USDC records its authorization's nonce as used or
+  the authorization expires, and it is read before the float: `return_to_robinhood` keeps it back, and `pay_url`'s Base
+  reserve, which counted only a return still in flight, counts it with the payments signed on Base and not settled yet
+  (a payment the rest cannot cover is refused before anything is signed, and says so). The nonces are asked at once
+  under one 5 s bound; one whose record cannot be read stays counted. They are kept in this process's memory: another
+  session of the wallet, or a server restarted meanwhile, does not see them for the seconds a settlement takes.
+
 ## 0.13.0 (2026-10-29)
 
 Still on @priors/x402 0.8.3.
