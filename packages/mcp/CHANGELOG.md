@@ -1,11 +1,67 @@
 # @priors/mcp changelog
 
-## Unreleased
+## 0.13.0 (2026-10-29)
 
+Still on @priors/x402 0.8.3.
+
+- **Invisible characters in a merchant's text no longer reach the model.** The data fence kept merchant text from
+  writing outside its markers, but the invisible characters inside it came through as written: Unicode tag characters
+  (U+E0000 to U+E007F, "ASCII smuggling": each reads to a model as an ASCII letter and shows nothing to a person),
+  zero-width characters, bidi controls and marks, variation selectors. Every default-ignorable code point and format
+  character is now removed from third-party text before the fence reads it (a response body, a redirect target, the
+  listings, Keyring's listing, a third-party string quoted in an answer or in `structuredContent`), but the number signs
+  such as U+0600, which are visible. Where a fence removed any, a line of the server's own right after its closing
+  marker says how many, never which: `(response body: 98 invisible characters removed)`. What it costs legitimate
+  text: an emoji ZWJ sequence shows its emoji side by side, an emoji loses its VS16 style, a subdivision flag shows as a
+  black flag, a Persian or Indic word loses its ZWNJ or ZWJ, mixed-direction text shows in the bidi algorithm's own
+  order. A reference to one (`&zwj;`) is visible and stays as written; a merchant's link that carries one, as written or
+  percent-encoded, is not given ("no url"), like any link the fence would change. Text with none comes back byte for
+  byte. The hosted MCP (mcp.priors.trade) shares the fence: its listings and manifests lose them too.
+- **`pay_url` and `pay_gateway` say when the answer's body could not be read whole** (issue #19, reported by
+  ryan-ubi). A body that failed mid-read after the headers (a timeout, a reset) was dropped with no line, so a paid
+  call read as delivered. Now the answer says so, and once the payment settled, that it is not undone and that calling
+  again for the same purchase pays again.
+- **Trading agents from the agent's own key, with `PRIORS_MARKET=on` (off by default)**. `market_agent` reads an agent
+  on Priors' agent market: its holder, its listing, its hold, its line and bond, whether this server may sell it, and on
+  AgentMarketV2 its open bids with their ids and proofs. `market_list`, `market_cancel` and `market_buy` list, cancel
+  and buy on AgentMarket; `market_bid`, `market_bid_any`, `market_cancel_bid` and `market_accept` register only with
+  AgentMarketV2's record in the package (`deployments/4663.agent-market-v2.json`), which it carries since V2's deploy
+  (2026-10-28): the market is AgentMarketV2, with AgentMarket v1 as its `previous`.
+  - Each step is a plain transaction from the configured wallet, its gas in ETH, sent through the one-money-call queue.
+    `sdk/market-plan.mjs` (bundled byte for byte, with the SDK files it imports) checks every rule of the market on
+    reads taken at one block before anything is signed; each step is simulated before it is signed, and everything is
+    read and planned again before each later step, so a listing changed meanwhile stops the call between steps.
+  - Refused before anything is signed: an agent not in `PRIORS_MARKET_SELL` (off by default), the agent the server acts
+    for (`PRIORS_AGENT_ID`, always), a price or a net under `PRIORS_MARKET_MIN_SELL_USD`, a buy or a bid above
+    `PRIORS_MAX_MARKET_USD`, open bids above `PRIORS_MAX_BIDS_USD`, a day above `PRIORS_MAX_MARKET_DAY_USD` (required with
+    the switch, counted per UTC day for the agent and the wallet across restarts, in `PRIORS_STATE_DIR/market`), and a
+    buy, a bid or a bond that would leave less USDG, savings counted, than the agent's open loans owe (checked again
+    before each later step that takes USDG).
+  - A market record per wallet (`market-<wallet>.json`) is written before each broadcast: a lost answer is
+    `TX_UNCONFIRMED`, nothing more is sent while it is pending, and a retry of the same call within 10 minutes of its
+    settling answers from the record instead of buying or bidding again; a bid on the same terms as one the record made
+    in those 10 minutes, still open, is refused.
+  - `market_bid_any` bids on Priors' hub's list for an origin, its ids checked against its root (which proves only that
+    the list is the hub's): the answer names the list and its first ids, and the bid asks at least 1 repaid loan by
+    default.
+  - A sale's net is the price less the fee, and less the agent's builder share where the market answers `builderOf`;
+    an accept pins it exactly (`minNet`).
+  - The market is the package's deployment record, confirmed on chain at the first market call; there is no address
+    setting. With `PRIORS_MARKET` off (unset, or `off`, `false`, `0`, `no`, `none`), the tools and the instructions are
+    0.12.0's, byte for byte, and none of the market's settings is read.
+- **`first_line` posts at most `PRIORS_MAX_BOND_TOTAL_USD` in bonds while the server runs (default 5 USDG: one bond)**
+  (GHSA-43jv-qfcj-qhjh, rated Low, reported by mfrxivu). It was the one money tool with no bound on the process (P-2's
+  rule, which `pay_url`'s `PRIORS_MAX_SPEND_USD` and the totals of `borrow`, `save`, `pt_buy` and the bridge keep for
+  theirs): with no `PRIORS_MAX_SPEND_DAY_USD` set, one process posted a 5 USDG bond for every identity the wallet owns
+  with no record, as long as the invite bot answered open. A bond past it is refused before anything is signed or the
+  bot is asked. It counts from its deposit's broadcast; a deposit refused before it, or that the chain shows moved
+  nothing (dropped, refused for gas, reverted), counts nothing. Read only with `PRIORS_JOIN=on`; with it off the server
+  is as before.
 - **`first_line` counts the bond against `PRIORS_MAX_SPEND_DAY_USD` only once its deposit is about to be broadcast.**
   A deposit refused by its simulation, or whose gas or balance could not be read, or that could not be signed or kept
   on file, sent nothing, but it was counted as the day's 5 USDG: under a 5 USDG limit, first_line could not be called
   again that day. Such a deposit now counts nothing; one broadcast counts, whatever its answer, as before.
+- **zod ^4.6.6** (from ^4.6.5).
 
 ## 0.12.2 (2026-10-27)
 
