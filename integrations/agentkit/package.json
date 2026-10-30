@@ -1,0 +1,33 @@
+{
+  "name": "@priors/agentkit",
+  "version": "0.1.0",
+  "description": "Priors action provider for Coinbase AgentKit: pay x402 APIs in USDG on Robinhood Chain and borrow the gap from an ERC-8004 agent's Priors credit line, repay, and read another agent's repayment record before paying it.",
+  "license": "MIT",
+  "author": "Priors <contact@priors.trade>",
+  "homepage": "https://priors.trade",
+  "repository": { "type": "git", "url": "git+https://github.com/priors-agents/priors.git", "directory": "integrations/agentkit" },
+  "keywords": ["agentkit", "coinbase", "priors", "credit", "x402", "usdg", "erc-8004", "robinhood-chain"],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.cjs",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@x402/evm": "^2.7.0",
+    "@x402/fetch": "^2.7.0",
+    "viem": "^2.38.3"
+  },
+  "peerDependencies": {
+    "@coinbase/agentkit": ">=0.10.4",
+    "zod": "^3.23.8 || ^4.0.0"
+  },
+  "devDependencies": {
+    "@coinbase/agentkit": "0.10.4",
+    "typescript": "^5.9.0",
+    "zod": "^3.25.0"
+  },
+  "engines": { "node": ">=18" }
+}

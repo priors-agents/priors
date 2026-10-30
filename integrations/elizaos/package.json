@@ -1,0 +1,40 @@
+{
+  "name": "@priors/plugin-elizaos",
+  "version": "0.1.0",
+  "description": "Priors credit for elizaOS agents: pay x402 APIs and borrow the gap in USDG from the agent's Priors line on Robinhood Chain, repay it, and read another agent's repayment record before paying it.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["src", "elizaos.plugin.json", "README.md"],
+  "packageType": "plugin",
+  "keywords": ["elizaos", "elizaos-plugin", "plugin", "priors", "credit", "x402", "usdg", "erc-8004", "robinhood-chain"],
+  "homepage": "https://priors.trade",
+  "repository": { "type": "git", "url": "git+https://github.com/priors-agents/priors.git", "directory": "integrations/elizaos" },
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "@priors/mcp": "0.14.1"
+  },
+  "peerDependencies": {
+    "@elizaos/core": "^1.7.0"
+  },
+  "agentConfig": {
+    "pluginType": "elizaos:plugin:1.0.0",
+    "pluginParameters": {
+      "PRIORS_KEY_FILE": { "type": "string", "description": "Path of a file holding the agent wallet's private key, readable by this user only (chmod 600). A dedicated wallet." },
+      "PRIORS_KEY": { "type": "string", "description": "The agent wallet's private key, if no key file is used." },
+      "PRIORS_AGENT_ID": { "type": "string", "description": "The agent's ERC-8004 id on Robinhood Chain." },
+      "PRIORS_PAY_HOSTS": { "type": "string", "description": "The only hosts a payment may go to, comma-separated." },
+      "PRIORS_MAX_PRICE_USD": { "type": "string", "description": "Most one x402 call may cost (default 1.00)." },
+      "PRIORS_MAX_SPEND_DAY_USD": { "type": "string", "description": "Most the agent may pay per UTC day (optional)." },
+      "PRIORS_MAX_BORROW_DAY_USD": { "type": "string", "description": "Most the agent may borrow per UTC day (optional)." }
+    }
+  }
+}

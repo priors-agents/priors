@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "priors",
+  "version": "0.1.0",
+  "description": "Pay x402 APIs on credit: an ERC-8004 agent borrows the gap in USDG from its Priors line, pays, repays, and reads another agent's repayment record before paying it.",
+  "author": {
+    "name": "Priors",
+    "url": "https://priors.trade"
+  },
+  "homepage": "https://priors.trade",
+  "repository": "https://github.com/priors-agents/priors",
+  "license": "MIT",
+  "keywords": ["priors", "credit", "x402", "http-402", "payments", "usdg", "erc-8004", "robinhood-chain", "mcp"],
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": {
+        "priors": { "trust": "untrusted" },
+        "priors-wallet": {
+          "trust": "untrusted",
+          "requires": { "app": true },
+          "app": {
+            "darwin": { "presence": "executable", "location": [{ "kind": "command", "name": "priors-mcp" }] },
+            "linux": { "presence": "executable", "location": [{ "kind": "command", "name": "priors-mcp" }] },
+            "win32": { "presence": "executable", "location": [{ "kind": "command", "name": "priors-mcp" }] }
+          }
+        }
+      }
+    }
+  }
+}

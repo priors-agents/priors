@@ -1,0 +1,24 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "priors": {
+      "type": "streamable-http",
+      "url": "https://mcp.priors.trade/mcp"
+    },
+    "priors-wallet": {
+      "type": "stdio",
+      "command": "priors-mcp",
+      "args": [],
+      "env": {
+        "PRIORS_KEY_FILE": "${PRIORS_KEY_FILE}",
+        "PRIORS_KEY": "${PRIORS_KEY}",
+        "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID}",
+        "PRIORS_PAY_HOSTS": "${PRIORS_PAY_HOSTS}",
+        "PRIORS_MAX_PRICE_USD": "${PRIORS_MAX_PRICE_USD}",
+        "PRIORS_MAX_SPEND_DAY_USD": "${PRIORS_MAX_SPEND_DAY_USD}",
+        "PRIORS_MAX_BORROW_DAY_USD": "${PRIORS_MAX_BORROW_DAY_USD}",
+        "PRIORS_STATE_DIR": "${PRIORS_STATE_DIR}"
+      }
+    }
+  }
+}

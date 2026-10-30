@@ -230,6 +230,20 @@ takes that address from its caller; `@priors/mcp`'s `autopay_on` reads it from `
 bundled deployments file. `@priors/mcp` 0.10.0 bundles AutoRepay v2's address, so Autopay needs no setting there;
 0.9.3 and earlier bundle none (set `PRIORS_AUTOREPAY` on those). 0.2.11 carries 0.5.0's security fixes for those staying on the 0.2 line.
 
+### Or add it to your agent runtime
+
+Three packages put the same tools in an agent framework, each run end to end on mainnet on 2026-10-30 (an agent short
+on an x402 payment borrowed the gap, paid, repaid, and read the seller's record first; demos in
+[`docs/demos`](docs/demos)):
+
+- **Hermes Agent**: [`integrations/hermes`](integrations/hermes), a Portable Agent Plugins package with the
+  hosted server, the local `priors-mcp` server and the skill (Hermes asks before each payment).
+- **elizaOS**: [`integrations/elizaos`](integrations/elizaos), `@priors/plugin-elizaos`, four actions
+  (`PRIORS_AGENT_RECORD`, `PRIORS_CREDIT_STATUS`, `PRIORS_PAY_X402`, `PRIORS_REPAY`).
+- **Coinbase AgentKit**: [`integrations/agentkit`](integrations/agentkit), `@priors/agentkit`, an action
+  provider for the AgentKit on npm (`pay_x402_with_priors_credit`, `borrow_from_priors`, `repay_priors_loan` and two
+  reads).
+
 ### Or pay per call
 
 The same record is a paid x402 v2 endpoint: `https://api.priors.trade/v1/report/{id}` and `/v1/score/{id}`, 0.03 USDG
@@ -532,6 +546,10 @@ packages/x402/               @priors/x402: x402 v2 USDG preset for Robinhood Cha
                              borrows the gap, the merchant's record gate, savings and Autopay helpers
 packages/mcp/                @priors/mcp: local MCP server with the agent's wallet (pay_url, borrow, repay, savings,
                              Autopay, reads)
+integrations/hermes/         the Hermes Agent plugin (Portable Agent Plugins v1): both MCP servers and the skill
+integrations/elizaos/        @priors/plugin-elizaos: the elizaOS plugin, over @priors/mcp and the hosted server
+integrations/agentkit/       @priors/agentkit: the Coinbase AgentKit action provider
+docs/demos/                  the three runtime demos, cut from their mainnet runs
 bin/priors-v2.mjs            the v2 CLI (`npx priors-v2`)
 bin/priors.mjs               the v1 CLI (`npx priors`), for v1 history and the local devnet
 scripts/devnet.mjs           local v1 chain, deployed and bootstrapped so firstLine() actually works

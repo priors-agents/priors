@@ -1,0 +1,23 @@
+{
+  "id": "priors",
+  "name": "@priors/plugin-elizaos",
+  "description": "Priors credit for agents on Robinhood Chain: pay x402 APIs and borrow the gap in USDG from the agent's line, repay it, and read another agent's repayment record before paying it.",
+  "version": "0.1.0",
+  "kind": "plugin",
+  "requiredSecrets": [],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "PRIORS_KEY_FILE": { "type": "string", "description": "Path of a file holding the agent wallet's private key (chmod 600). Without a key, only records can be read." },
+      "PRIORS_AGENT_ID": { "type": "string", "description": "The agent's ERC-8004 id on Robinhood Chain." },
+      "PRIORS_PAY_HOSTS": { "type": "string", "description": "The only hosts a payment may go to, comma-separated." },
+      "PRIORS_MAX_PRICE_USD": { "type": "string", "description": "Most one x402 call may cost (default 1.00)." },
+      "PRIORS_MAX_SPEND_DAY_USD": { "type": "string", "description": "Most the agent may pay per UTC day (optional)." },
+      "PRIORS_MAX_BORROW_DAY_USD": { "type": "string", "description": "Most the agent may borrow per UTC day (optional)." }
+    }
+  },
+  "uiHints": {
+    "PRIORS_KEY_FILE": { "sensitive": false, "label": "Agent wallet key file" },
+    "PRIORS_PAY_HOSTS": { "label": "Hosts it may pay" }
+  }
+}
