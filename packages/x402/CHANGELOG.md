@@ -1,5 +1,24 @@
 # @priors/x402 changelog
 
+## 0.8.4 (2026-10-30)
+
+- **@x402/core, @x402/evm and @x402/fetch ^2.29.0 (from ^2.27.0), and the optional peers @x402/express and @x402/mcp
+  with them: no zod 3 under them** ("Zod can exhaust memory while validating oversized constrained collections",
+  GHSA-mrhx-c7xc-m3w5: every zod below 4.6.6, no fix in 3.x). @x402 2.27 and 2.28 depend on zod ^3.24.2, 2.29.0
+  (2026-10-28) on zod ^4.6.6. With ^2.27.0 an install that already held 2.27 or 2.28 (a lockfile, or a project that
+  uses them itself) kept them, each with zod 3.25 nested under it; with ^2.29.0 npm moves them. @x402/express 2.29 asks
+  for express ^4.22.3 or ^5.3.0, and @x402/mcp 2.29 for @modelcontextprotocol/sdk ^1.32.0.
+- **Nothing this package does changes.** Its own code is 0.8.3's, and the @x402 code it calls is the same in 2.27.0 and
+  2.29.0 (compared from their published source maps): `x402Client`, `x402HTTPClient`, the header encoders and
+  @x402/evm's exact client and server, so `createPayer`, `pay()`, `payViaGateway` and `registerUsdg` sign and pay as
+  before, and `x402ResourceServer.verifyPayment`, where `recordGate`'s `onBeforeVerify` runs. What 2.29 changes around
+  it, for a merchant on @x402's own middleware: `HTTPFacilitatorClient` refuses a facilitator answer over 1 MiB
+  (`ResponseBodyTooLargeError`); @x402/express and @x402/hono charge a HEAD request as its GET route, no longer match
+  an OPTIONS preflight with a route that names no method, and send an unpaid 402's reason as `{ error }` where the body
+  was `{}`; an `afterSettle` hook can fail a settlement with `AfterSettleAbortError`. @x402/fetch's
+  `wrapFetchWithPayment` refuses a 402 body over 1 MiB, and @x402/core/schemas are zod 4 schemas. 2.28 adds only USDC
+  on Arc, Arc Testnet and Monad testnet to @x402/evm's default assets.
+
 ## 0.8.3 (2026-10-27)
 
 - **A borrow on a SeatVaultV5 line for more than 10 days is refused before anything is sent** (GHSA-xccq-5ghg-w7mq,

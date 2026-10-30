@@ -1,5 +1,16 @@
 # @priors/mcp changelog
 
+## 0.14.1 (2026-10-30)
+
+On @priors/x402 0.8.4, whose @x402 packages are 2.29.0 or later.
+
+- **No zod 3 through @priors/x402's @x402 packages** ("Zod can exhaust memory while validating oversized constrained
+  collections", GHSA-mrhx-c7xc-m3w5: every zod below 4.6.6, no fix in 3.x). @x402/core, @x402/evm and @x402/fetch 2.27
+  and 2.28 depend on zod ^3.24.2, and @priors/x402 0.8.3 took them from ^2.27.0, so an install that already held them
+  (a lockfile, or a project that uses them itself) kept zod 3.25 nested under each. @priors/x402 0.8.4 requires
+  ^2.29.0, the first on zod ^4.6.6: npm moves them. This server's own zod was already ^4.6.6 (since 0.13.0). Its tools,
+  instructions and answers are 0.14.0's.
+
 ## 0.14.0 (2026-10-29)
 
 Still on @priors/x402 0.8.3.
