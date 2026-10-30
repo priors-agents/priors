@@ -170,14 +170,14 @@ await check("S-1: the backer transfer read is resumable: out of time mid-scan it
   };
   let s;
   try { s = await updateBackerTenure(provider, null, { registry: REG, ids: [7], fromBlock: 100, head: 1000, chunk: 100, deadline: realNow() + 60_000 }); } finally { Date.now = realNow; }
-  assert.ok(s.pending && s.pending.next === 300 && !s.ids.includes(7), `progress kept: ${JSON.stringify(s)}`);
+  assert.ok(s.scans.length === 1 && s.scans[0].next === 300 && !s.ids.includes(7), `progress kept: ${JSON.stringify(s)}`);
   assert.deepEqual(s.since, { 7: 1150 }, "what was read counts already");
   const done = await updateBackerTenure(provider, s, { registry: REG, ids: [7], fromBlock: 100, head: 1000, chunk: 100 });
-  assert.ok(!done.pending && done.ids.includes(7) && done.scannedTo === 1000, JSON.stringify(done));
+  assert.ok(!done.scans.length && done.ids.includes(7) && done.scannedTo === 1000, JSON.stringify(done));
   assert.deepEqual(done.since, { 7: 1950 });
 });
 
-await check("GHSA-4x5r-f6w5-fhhc: with every scored agent read, a new id never restarts a scan in progress: it waits, and the next scan reads it from the start with the ids that arrived meanwhile", async () => {
+await check("GHSA-4x5r-f6w5-fhhc: with every scored agent read, a new id never restarts a scan in progress: it gets a scan of its own, after the one with less left to read, and the ids arriving before that scan starts join it", async () => {
   const REG = A(8);
   const nft = (id, block) => ({ transactionHash: "0x" + block.toString(16), index: 0, blockNumber: block, address: REG, topics: [TOPICS.TRANSFER, topic(A(1)), topic(A(2)), ethers.zeroPadValue(ethers.toBeHex(id), 32)], data: "0x" });
   const logs = [nft(7, 150), nft(8, 160), nft(9, 170), nft(7, 950)];
@@ -197,16 +197,16 @@ await check("GHSA-4x5r-f6w5-fhhc: with every scored agent read, a new id never r
     try { return await updateBackerTenure(provider, prev, { registry: REG, ids, fromBlock: 100, head: 1000, chunk: 100, deadline: realNow() + 60_000 }); } finally { Date.now = realNow; }
   };
   const s1 = await step(null, [7], 2); // id 7 from the start, out of time at block 300
-  assert.deepEqual([s1.pending, s1.waiting], [{ ids: [7], next: 300 }, []]);
-  const s2 = await step(s1, [7, 8], 2); // id 8 arrives: 7's scan goes on from 300, and 8 waits
-  assert.deepEqual([s2.pending, s2.waiting, reads.slice(-2)], [{ ids: [7], next: 500 }, [8], [["7", 300], ["7", 400]]]);
-  const s3 = await step(s2, [7, 8, 9], Infinity); // id 9 arrives too; 7's scan ends, then 8 and 9 are read together
-  assert.deepEqual([s3.pending, s3.waiting, s3.ids, s3.scannedTo], [null, [], [7, 8, 9], 1000]);
+  assert.deepEqual(s1.scans, [{ ids: [7], next: 300 }]);
+  const s2 = await step(s1, [7, 8], 2); // id 8 arrives: 7's scan goes on from 300, and 8's, from the start, comes after it
+  assert.deepEqual([s2.scans, reads.slice(-2)], [[{ ids: [8], next: 100 }, { ids: [7], next: 500 }], [["7", 300], ["7", 400]]]);
+  const s3 = await step(s2, [7, 8, 9], Infinity); // id 9 arrives too, and joins 8's scan; 7's scan ends, then 8 and 9 are read together
+  assert.deepEqual([s3.scans, s3.ids, s3.scannedTo], [[], [7, 8, 9], 1000]);
   assert.deepEqual(s3.since, { 7: 1950, 8: 1160, 9: 1170 });
   assert.deepEqual(reads.filter(([ids]) => ids === "8,9").map(([, from]) => from), [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000], "one scan for both, from block 100");
   // before a scan starts, a new id joins it
   const s4 = await updateBackerTenure(provider, { v: 1, scannedTo: 1000, ids: [7], since: { 7: 1950 }, pending: { ids: [8], next: 100 } }, { registry: REG, ids: [7, 8, 9], fromBlock: 100, head: 1000, chunk: 1000 });
-  assert.deepEqual([s4.pending, s4.waiting, s4.since], [null, [], { 7: 1950, 8: 1160, 9: 1170 }]);
+  assert.deepEqual([s4.scans, s4.since], [[], { 7: 1950, 8: 1160, 9: 1170 }]);
 });
 
 await check("GHSA-4x5r-f6w5-fhhc: the transfer read asks for 400 ids a query at most (a node takes 1,000 selectors: the official one, measured 2026-10-28)", async () => {
@@ -214,7 +214,64 @@ await check("GHSA-4x5r-f6w5-fhhc: the transfer read asks for 400 ids a query at 
   const provider = { async getLogs(f) { sizes.push(f.topics[3].length); return []; }, async getBlock() { return { timestamp: 1 }; } };
   const ids = Array.from({ length: 1000 }, (_, i) => i + 1);
   const s = await updateBackerTenure(provider, null, { registry: A(8), ids, fromBlock: 100, head: 200 });
-  assert.deepEqual([sizes, s.ids.length, s.pending], [[400, 400, 200], 1000, null]);
+  assert.deepEqual([sizes, s.ids.length, s.scans], [[400, 400, 200], 1000, []]);
+});
+
+/** A registry with id transfers at the given blocks, recording each read as [ids, fromBlock]; `budget.n` windows a run
+ *  before its clock runs out (the next read throws DeadlineError) */
+function tenureNode(logs) {
+  const REG = A(8), reads = [], budget = { n: Infinity }, realNow = Date.now;
+  const nft = (id, block) => ({ transactionHash: "0x" + id.toString(16) + "b" + block.toString(16), index: 0, blockNumber: block, address: REG, topics: [TOPICS.TRANSFER, topic(A(1)), topic(A(2)), ethers.zeroPadValue(ethers.toBeHex(id), 32)], data: "0x" });
+  const all = logs.map(([id, block]) => nft(id, block));
+  const provider = {
+    async getLogs(f) {
+      if (--budget.n <= 0) Date.now = () => realNow() + 3_600_000;
+      const ids = f.topics[3].map((t) => Number(BigInt(t)));
+      reads.push([ids.join(","), f.fromBlock]);
+      return all.filter((l) => l.blockNumber >= f.fromBlock && l.blockNumber <= f.toBlock && ids.includes(Number(BigInt(l.topics[3]))));
+    },
+    async getBlock(n) { return { timestamp: 1000 + n }; },
+  };
+  const run = async (prev, opts, windows = Infinity) => {
+    budget.n = windows;
+    try { return await updateBackerTenure(provider, prev, { registry: REG, fromBlock: 100, head: 1000, chunk: 100, deadline: realNow() + 60_000, ...opts }); } finally { Date.now = realNow; }
+  };
+  return { reads, run, from: (ids) => reads.filter(([x]) => x === ids).map(([, b]) => b) };
+}
+
+// A transfer before an agent's enrolment changes nothing in its score unless it has v1 loans (sdk/score-v2-inputs.mjs:
+// transferRestart, and a backer's 30 days from max(enrolledAt, its last transfer)), so Priors' publisher names each new
+// id's first block (its enrolment's). Until 2026-10-30 a new id waited for the scan in progress and
+// was then read from pool v2's launch: live, 358 ids pending for hours, the guards GHSA-6f8j and GHSA-4x5r-f6w5-fhhc
+// open for each meanwhile
+await check("a new id is read from its own first block (`starts`), in a scan of its own that runs before a longer one in progress: done in the run it arrives", async () => {
+  const t = tenureNode([[7, 150], [7, 950], [8, 850], [8, 120]]);
+  const s1 = await t.run(null, { ids: [7] }, 2); // 7 from block 100, out of time at 300
+  assert.deepEqual(s1.scans, [{ ids: [7], next: 300 }]);
+  const s2 = await t.run(s1, { ids: [7, 8], starts: { 8: 800 } }, 3); // 8 enrolled at 800: three windows, then out of time
+  assert.deepEqual([s2.ids, s2.since[8], s2.scans], [[8], 1850, [{ ids: [7], next: 300 }]], JSON.stringify(s2));
+  assert.deepEqual(t.from("8"), [800, 900, 1000], "8 from its first block only: its transfer at 120, before it, changes nothing");
+  const s3 = await t.run(s2, { ids: [7, 8], starts: { 8: 800 } });
+  assert.deepEqual([s3.ids, s3.scans, s3.scannedTo, s3.since], [[8, 7], [], 1000, { 7: 1950, 8: 1850 }]);
+});
+
+await check("new ids with no start, or one before `fromBlock`, are read from `fromBlock` in a scan of their own; those with starts from the earliest of them; a scan not started takes the ids that would start where it does", async () => {
+  const t = tenureNode([[9, 110], [10, 905], [11, 960], [12, 130]]);
+  const s = await t.run(null, { ids: [9, 10, 11, 12], starts: { 10: 900, 11: 950, 12: 40 }, deadline: 0 }); // out of time at once
+  assert.deepEqual(s.scans, [{ ids: [9, 12], next: 100 }, { ids: [10, 11], next: 900 }], JSON.stringify(s.scans));
+  const done = await t.run(s, { ids: [9, 10, 11, 12, 13], starts: { 10: 900, 11: 950, 12: 40 } });
+  assert.deepEqual(t.from("10,11"), [900, 1000], "the later scan first, both ids in one query a window");
+  assert.deepEqual(t.from("9,12,13"), [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000], "13 joins the scan from block 100 that had not started");
+  assert.deepEqual([done.scans, done.since], [[], { 9: 1110, 10: 1905, 11: 1960, 12: 1130 }]);
+});
+
+await check("a scan whose ids all start later than its next block goes on from the earliest of them; the state written before (`pending`, `waiting`) is read on", async () => {
+  const t = tenureNode([[5, 150], [6, 650], [7, 320]]);
+  const prev = { v: 1, scannedTo: 1000, ids: [4], since: {}, pending: { ids: [5, 6], next: 200 }, waiting: [7] };
+  const s = await t.run(prev, { ids: [4, 5, 6, 7], starts: { 5: 600, 6: 640 } });
+  assert.deepEqual(t.from("5,6"), [600, 700, 800, 900, 1000], "from 600, not 200");
+  assert.deepEqual(t.from("7"), [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000], "the waiting id from fromBlock, with no start");
+  assert.deepEqual([s.ids, s.scans, s.since, "pending" in s, "waiting" in s], [[4, 5, 6, 7], [], { 6: 1650, 7: 1320 }, false, false]);
 });
 
 // ---------------------------------------------------------------- scoring income

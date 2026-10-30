@@ -78,26 +78,37 @@ export async function getLogsAdaptive(provider, filter, fromBlock, toBlock, { mi
  * Score v2 counts a backer's 30 days from then when that is later than its enrolment (a bought aged id is a new backer,
  * private report GHSA-6f8j), and restarts an agent's record there when it came after its v1 loans or, with no loan
  * before it, after its enrolment (own audit 2026-10-01, GHSA-4x5r-f6w5-fhhc), so the data Worker reads every scored
- * agent. Incremental: ids already known are read from the cursor on; new ids are read from `fromBlock` in chunks, and a
- * run out of time keeps its progress (`pending`) for the next one. A new id never restarts a scan in progress (some days
- * bring dozens of new agents, and a scan of the chain since `fromBlock` takes several runs on a node that serves 10,000
- * blocks a query): it waits (`waiting`) and is read, with every id that arrived meanwhile, in the next scan from
- * `fromBlock`; a scan not started yet takes it at once. A query names `idBatch` ids at most: a node takes 1,000
- * selectors in one (the official node: "only 1000 are allowed", measured 2026-10-28). The state is
- * { v: 1, scannedTo, ids, since: { [id]: seconds }, pending: null | { ids, next }, waiting: [ids] }.
+ * agent. Incremental: ids already known are read from the cursor on; new ids are read in scans of their own (`scans`),
+ * in chunks, and a run out of time keeps each scan's progress for the next one. A new id is read from its own first
+ * block (`starts[id]`, never below `fromBlock`; `fromBlock` with none): a transfer before an agent's enrolment changes
+ * nothing unless it has v1 loans or was imported from v1 (Priors' publisher names the rest). A new id never restarts a scan in
+ * progress (some days bring dozens of new agents, and a scan of the chain since `fromBlock` takes many runs on a node
+ * that serves 10,000 blocks a query): the ids a run finds new are read in at most two scans, those from `fromBlock` and
+ * the rest from the earliest of their starts, each joining a scan whose next block is that one (one not started, or
+ * there already). The scan with the least left to read goes first, so a new agent enrolled lately is read in the run it
+ * arrives in, ahead of a long scan in progress; a scan whose ids all start later than its next block goes on from the
+ * earliest of them. A query names `idBatch` ids at most: a node takes 1,000 selectors in one (the official node: "only
+ * 1000 are allowed", measured 2026-10-28). The state is { v: 1, scannedTo, ids, since: { [id]: seconds }, scans:
+ * [{ ids, next }] }, by next block; the one written until 2026-10-30 (`pending`, one scan, and `waiting`, its new ids) is
+ * read on, and code of that day reads this one's scanning ids as new.
  */
-export async function updateBackerTenure(provider, prev, { registry, ids, fromBlock, head, deadline = Infinity, chunk = 1_000_000, idBatch = 400 }) {
+export async function updateBackerTenure(provider, prev, { registry, ids, fromBlock, head, deadline = Infinity, chunk = 1_000_000, idBatch = 400, starts = {} }) {
   const st = prev?.v === 1
-    ? { v: 1, scannedTo: prev.scannedTo, ids: [...prev.ids], since: { ...prev.since }, pending: prev.pending ? { ids: [...prev.pending.ids], next: prev.pending.next } : null, waiting: [...(prev.waiting || [])] }
-    : { v: 1, scannedTo: fromBlock - 1, ids: [], since: {}, pending: null, waiting: [] };
+    ? { v: 1, scannedTo: prev.scannedTo, ids: [...prev.ids], since: { ...prev.since }, scans: [...(prev.scans || []), ...(prev.pending ? [prev.pending] : [])].map((s) => ({ ids: [...s.ids], next: s.next })) }
+    : { v: 1, scannedTo: fromBlock - 1, ids: [], since: {}, scans: [] };
   const want = [...new Set(ids.map(Number).filter((n) => Number.isSafeInteger(n) && n > 0))];
-  const known = new Set([...st.ids, ...(st.pending?.ids || []), ...st.waiting]);
-  const fresh = want.filter((id) => !known.has(id));
-  if (fresh.length) {
-    if (!st.pending) st.pending = { ids: fresh, next: fromBlock };
-    else if (st.pending.next <= fromBlock) st.pending.ids.push(...fresh); // not started: it takes them
-    else st.waiting.push(...fresh); // in progress: they wait for the next scan
+  const known = new Set([...st.ids, ...st.scans.flatMap((s) => s.ids)]);
+  const fresh = want.filter((id) => !known.has(id)); // a `waiting` id of the earlier state among them
+  const startOf = (id) => Math.max(fromBlock, Number(starts?.[id]) || 0);
+  const firstOf = (list) => Math.min(...list.map(startOf));
+  for (const group of [fresh.filter((id) => startOf(id) === fromBlock), fresh.filter((id) => startOf(id) > fromBlock)]) {
+    if (!group.length) continue;
+    const next = firstOf(group), same = st.scans.find((s) => s.next === next);
+    if (same) same.ids.push(...group);
+    else st.scans.push({ ids: group, next });
   }
+  for (const s of st.scans) s.next = Math.max(s.next, firstOf(s.ids)); // no block before the earliest its ids need
+  st.scans.sort((x, y) => x.next - y.next);
   const idTopics = (list) => list.map((id) => ethers.zeroPadValue(ethers.toBeHex(id), 32));
   const times = new Map();
   const scan = async (list, from, to, progress) => {
@@ -120,11 +131,11 @@ export async function updateBackerTenure(provider, prev, { registry, ids, fromBl
   try {
     if (st.ids.length) await scan(st.ids, st.scannedTo + 1, head, (b) => { st.scannedTo = b; });
     else st.scannedTo = Math.max(st.scannedTo, head); // nothing known yet: the cursor follows the head
-    while (st.pending) {
-      await scan(st.pending.ids, st.pending.next, head, (b) => { st.pending.next = b + 1; });
-      st.ids.push(...st.pending.ids);
-      st.pending = st.waiting.length ? { ids: st.waiting, next: fromBlock } : null;
-      st.waiting = [];
+    while (st.scans.length) {
+      const s = st.scans[st.scans.length - 1]; // the least left to read
+      await scan(s.ids, s.next, head, (b) => { s.next = b + 1; });
+      st.ids.push(...s.ids);
+      st.scans.pop();
     }
   } catch (e) {
     if (!(e instanceof DeadlineError)) throw e; // out of time: the progress is kept, the next run goes on

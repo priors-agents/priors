@@ -370,6 +370,16 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
   published rather than one a stake moved. No score moves on the day: until V5's roots are 30 days old (the retired
   #8641 on 2026-11-08, #8762 on 2026-11-10), 2.0.1 and 2.0.2 give every agent the same score, so on 2026-11-01 only
   the published `version` changes. 2.0.0 stays the engine's default.
+- **inputs, 2026-10-30, the transfers read** (all versions; the read behind private reports GHSA-6f8j and
+  GHSA-4x5r-f6w5-fhhc): a new agent's registry transfers are read from its enrolment, since a transfer before it changes
+  nothing (`transferRestart`; a backer's 30 days count from the later of its enrolment and its last transfer), in a scan
+  of its own that goes before a longer one in progress (`updateBackerTenure`'s `starts` and `scans` in
+  `sdk/x402-income.mjs`). An agent with v1 loans, or imported from v1, is still read from pool v2's launch. Before, a new
+  agent waited for the scan in progress and was then read from pool v2's launch, so its first read could take many
+  hours, and until it was done a change of hands after its enrolment went unseen. Under 2.0.4 a sold agent's transfers
+  are read the same way, and the sales read asks for 10,000 blocks at a time within its own 5 s of each step. No weight
+  changes. On the scores published at block 101,967,551, the first after it shipped, nothing changes: the two agents
+  then waiting (#19900 and #19926) were read in that step, with no transfer after their enrolment.
 - **inputs, 2026-10-30** (all versions): a payer under 1 USDG over the index, which the index never nets, no longer
   waits on a wallet of the paid agent's cluster still being read: its payments show as receipts at once (under the
   rule before, a cluster gaining wallets faster than one read finishes held every payment into it at every publish,
