@@ -323,7 +323,9 @@ function defaultTimes(snapshot, agentWallets, now) {
  *                                                  restarts its record (transferRestart), as v2 loans' owners show a
  *                                                  sale after v2 loans. Absent: from the loans alone.
  *   pending       { payers: [...], wallets: [...] } netting still being read (sdk/x402-income.mjs): payments from
- *                                                  those payers, or to a cluster holding one of those wallets, wait
+ *                                                  those payers wait, and so do those of a payer the index nets
+ *                                                  (minPayerUsdg over `income`) to a cluster holding one of those
+ *                                                  wallets; a smaller payer's show at once (it is never netted)
  *   sales         [{ agentId, seller, buyer, at, wallet, block?, index? }] the sales on Priors' agent market (the
  *                                                  data Worker's read of AgentMarket's and AgentMarketV2's Sold and V2's
  *                                                  BidTaken; never a price), `wallet` the payment wallet the agent
@@ -440,19 +442,20 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
   const ownerRoute = (id, at) => (keptOf.get(id)?.hops || []).filter((h) => h.at <= at).length;
 
   // ---- income: payments to declared payment wallets, netted per (cluster, payer) against what the cluster sent back
-  // income whose netting is still being read waits (fails closed): from a payer not yet read back, or to a cluster
-  // holding a wallet not yet read
+  // income whose netting is still being read waits (fails closed): from a payer not yet read back, or from a netted
+  // payer to a cluster holding a wallet not yet read. A payer under minPayerUsdg is never netted, so nothing it waits
+  // for is ever read: its payments show as receipts at once and still count toward nothing
   const waitPayers = new Set((pending.payers || []).map(lc));
   const waitClusters = new Set((pending.wallets || []).map((w) => K.clusterOfWallet(w)));
-  const pay = income
-    .map((p) => ({ payer: lc(p.payer), payTo: lc(p.payTo), amount: Number(p.amount), at: Number(p.at) }))
-    .filter((p) => (K.declaredBy.has(p.payTo) || carried.has(p.payTo)) && Number.isFinite(p.amount) && p.amount > 0 && Number.isFinite(p.at)
-      && !waitPayers.has(p.payer) && !waitClusters.has(K.clusterOfWallet(p.payTo)));
   // a payer is netted (its transfers from the agent's side read) only once it has paid minPayerUsdg over the index
   // (sdk/x402-income.mjs minPayerAtomic): one under that is never netted, so it funds no loan (GHSA-4x5r-f6w5-fhhc)
   const paidBy = new Map();
   for (const p of income) { const a = Number(p.amount); if (Number.isFinite(a) && a > 0) paidBy.set(lc(p.payer), (paidBy.get(lc(p.payer)) || 0) + a); }
   const netted = (w) => (paidBy.get(lc(w)) || 0) >= weights.components.income.minPayerUsdg * USDG;
+  const pay = income
+    .map((p) => ({ payer: lc(p.payer), payTo: lc(p.payTo), amount: Number(p.amount), at: Number(p.at) }))
+    .filter((p) => (K.declaredBy.has(p.payTo) || carried.has(p.payTo)) && Number.isFinite(p.amount) && p.amount > 0 && Number.isFinite(p.at)
+      && !waitPayers.has(p.payer) && !(waitClusters.has(K.clusterOfWallet(p.payTo)) && netted(p.payer)));
   const pairKey = (c, payer) => c + "|" + payer;
   // the share of a payer's payments into a cluster of `C` that the cluster did not send back to it (per clusters, once)
   const netters = new Map();

@@ -3,8 +3,9 @@
 //   node scripts/test-x402-income.mjs
 import assert from "node:assert/strict";
 import { ethers } from "ethers";
-import { pairPayments, pairPermit2, scanPayments, scanTransfers, TOPICS, PERMIT2_PROXIES, getLogsAdaptive, DeadlineError, readAgentWallets, readRepayers, autoRepaidPayers, updateIncome, updateBackerTenure } from "../sdk/x402-income.mjs";
-import { scoreV2, weightsFor, DEFAULT_WEIGHTS as W } from "../sdk/score-v2.mjs";
+import { readFileSync, readdirSync } from "node:fs";
+import { pairPayments, pairPermit2, scanPayments, scanTransfers, TOPICS, PERMIT2_PROXIES, getLogsAdaptive, DeadlineError, readAgentWallets, readRepayers, autoRepaidPayers, updateIncome, updateBackerTenure, INDEX_DEFAULTS } from "../sdk/x402-income.mjs";
+import { scoreV2, weightsFor, WEIGHTS_BY_VERSION, DEFAULT_WEIGHTS as W } from "../sdk/score-v2.mjs";
 import { buildInputs, scoreAll } from "../sdk/score-v2-inputs.mjs";
 
 const DAY = 86400, NOW = 1_800_000_000, $ = (n) => Math.round(n * 1e6);
@@ -935,6 +936,79 @@ await check("index: a payer under 1 USDG costs no netting scan and counts for no
   assert.equal(chain.calls.filter((c) => c.kind === "transfer" && Array.isArray(c.t1) && c.t1.length && c.t2 && c.t2.map((t) => t.toLowerCase()).includes(ethers.zeroPadValue(P1, 32).toLowerCase()) && c.from === 1).length, 0);
   const s = scoreAll(world([agent(1, W1)]), { links: { clusters: [] }, income: [pay(P1, W1, 0.9)], agentWallets: { 1: W1 } }).find((x) => x.agentId === 1);
   assert.equal(pts(s, "income"), 0);
+});
+
+// ---------------------------------------------------------------- the wait on a cluster's new wallet
+// A new agent-side wallet's netting is read over the whole chain before the payments into its cluster count
+// (`pending.wallets`), and that read covers only the payers the index nets: those whose payments add up to
+// minPayerAtomic (1 USDG). A payer under it is never read back, so holding its payments protected nothing, and a
+// cluster that gained wallets faster than one read could finish held every payment into it at every publish, 0.10 USDG
+// receipts included (docs/SCORE-v2.md, "New payers and new agents wait")
+const PUBLISHED = ["2.0.0", "2.0.1", "2.0.2", "2.0.3", "2.0.4"];
+const metaV5 = { timestamp: NOW, seatVaultV5AgentId: 98 }; // 2.0.2 on build no inputs without V5's root
+
+await check("a payer under 1 USDG paying into a cluster whose new wallet's netting is still being read shows as a receipt at once, and counts for nothing; a payer of 1 USDG or more over the index, paid here or elsewhere, still waits there; outside that cluster nothing waits", () => {
+  const OUT = A(0xe9), DUST = A(0xd1), BIG = A(0xd2), SPREAD = A(0xd3);
+  const s = { ...world([agent(1, W1), agent(2, W2), agent(3, OUT)]), meta: metaV5 };
+  const income = [
+    pay(DUST, W1, 0.1), // 0.10 USDG, all it ever paid: never netted
+    pay(BIG, W1, 2), // netted
+    pay(SPREAD, W1, 0.5), pay(SPREAD, OUT, 0.5), // 1 USDG over the index, half of it outside the cluster: netted too
+  ];
+  for (const v of PUBLISHED) {
+    const run = (pending) => scoreAll(s, { links: { clusters: [{ agents: [1, 2] }] }, weights: weightsFor(v), income, agentWallets: { 1: W1, 2: W2, 3: OUT }, pending });
+    const got = (all, id) => { const d = all.find((x) => x.agentId === id).detail; return [d.receiptPayers, d.receiptsUsdg, d.distinctPayers]; };
+    const waiting = run({ payers: [], wallets: [W2] }), read = run({}); // agent 2's wallet W2 still being read
+    assert.deepEqual(got(waiting, 1), [1, 0.1, 0], `${v}: DUST's 0.10 shows at once and counts for nothing; BIG's and SPREAD's wait`);
+    assert.equal(pts(waiting.find((x) => x.agentId === 1), "income"), 0, `${v}: no income point from it`);
+    assert.deepEqual(got(read, 1), [3, 2.6, 1], `${v}: once read, every payer shows`);
+    assert.deepEqual(got(waiting, 3), [1, 0.5, 0], `${v}: outside the cluster nothing waits`);
+  }
+});
+
+await check("the scorer nets the payers the index nets: every weights file's income.minPayerUsdg, in atomic USDG, is the index's minPayerAtomic, so a payer of exactly 1 USDG over the index waits on its cluster's new wallet and one a unit short shows", async () => {
+  const dir = new URL("../sdk/", import.meta.url);
+  const files = readdirSync(dir).filter((f) => /^score-weights\.v2[0-9.]*\.json$/.test(f)).sort();
+  const versions = files.map((f) => {
+    const w = JSON.parse(readFileSync(new URL(f, dir), "utf8"));
+    assert.equal(w.components.income.minPayerUsdg * 1e6, INDEX_DEFAULTS.minPayerAtomic, `${f}: income.minPayerUsdg ${w.components.income.minPayerUsdg} USDG, and the index nets payers from ${INDEX_DEFAULTS.minPayerAtomic} atomic USDG (sdk/x402-income.mjs minPayerAtomic): change both or neither`);
+    return w.version;
+  });
+  assert.deepEqual(versions.sort(), Object.keys(WEIGHTS_BY_VERSION).sort(), `every version the scorer knows is one of the files checked (${files.join(", ")})`);
+  const chain = fakeChain({ payments: [{ payer: P1, payTo: W1, amount: INDEX_DEFAULTS.minPayerAtomic, block: 50 }, { payer: P2, payTo: W1, amount: INDEX_DEFAULTS.minPayerAtomic - 1, block: 60 }], wallets: { 1: W1, 2: W2 } });
+  const r = await updateIncome(chain, null, opts(snapOf([agent(1, W1), agent(2, W2)]), 100));
+  assert.deepEqual(r.state.payers, [lc(P1)], "the index nets P1 (1 USDG) and not P2 (a unit short)");
+  for (const v of PUBLISHED) {
+    const i = buildInputs({ ...world([agent(1, W1), agent(2, W2)]), meta: metaV5 }, { links: { clusters: [{ agents: [1, 2] }] }, weights: weightsFor(v), income: r.state.payments, agentWallets: r.state.agentWallets, pending: { payers: [], wallets: [W2] } }).find((x) => x.agentId === 1);
+    assert.deepEqual(i.income.map((p) => p.payer), [lc(P2)], `${v}: with W2 being read, P2's payment shows and P1's waits`);
+  }
+});
+
+await check("showing them at once moves no score: against the rule before (every payment into a cluster holding a wallet being read waited), only receiptsUsdg and receiptPayers differ while a wallet is read, and nothing at all while none is", () => {
+  // lender(): agent 1 (OWNER) on root 2's line, a loan repaid while dust and netted payers paid it; agent 4 in agent 1's
+  // cluster (the clusters file), its wallet being read; agent 5 a scored agent whose owner pays; agent 6 a cluster of its own
+  const FOUR = A(0x44), FIVE = A(0x55), SIX = A(0x66), NEW = A(0x77), MIXED = A(0xd0a);
+  const s = { ...world([...lender(), agent(4, FOUR), agent(5, FIVE, { sponsor: 2 }), agent(6, SIX)], [backed(901, 50, 20, 10), { ...backed(902, 20, 30, 9), agentId: 5 }]), meta: metaV5 };
+  const income = [...clients(5, 20.2), ...[0, 1, 2].map((k) => pay(A(0xd00 + k), OWNER, 0.3, 12 + k)), pay(A(0xd09), SIX, 0.2),
+    pay(FIVE, SIX, 5), pay(FIVE, OWNER, 3, 14), pay(NEW, SIX, 3), pay(MIXED, OWNER, 0.4), pay(MIXED, SIX, 0.4)];
+  const opts = (inc, pending, v) => ({ links: { clusters: [{ agents: [1, 4] }] }, weights: weightsFor(v), income: inc, pending, repayers: { 901: OWNER, 902: FIVE },
+    transfers: [{ from: OWNER, to: A(0x500), amount: $(5) }, { from: SIX, to: FIVE, amount: $(1) }], agentWallets: { 1: OWNER, 2: OTHER, 4: FOUR, 5: FIVE, 6: SIX } });
+  const total = new Map();
+  for (const p of income) total.set(lc(p.payer), (total.get(lc(p.payer)) || 0) + p.amount);
+  const intoCluster1 = new Set([OWNER, FOUR].map(lc));
+  // the rule before, with the same scorer: the payments of payers under 1 USDG into the cluster left out of the income
+  // (each such payer's total only drops, so whom the index nets is the same)
+  const before = (pending) => income.filter((p) => !((pending.wallets || []).length && intoCluster1.has(lc(p.payTo)) && total.get(lc(p.payer)) < $(1)));
+  const noReceipts = ({ detail: { receiptsUsdg, receiptPayers, ...detail }, ...x }) => ({ ...x, detail });
+  const receipts = (all, id) => { const d = all.find((x) => x.agentId === id).detail; return [d.receiptPayers, d.receiptsUsdg]; };
+  for (const v of PUBLISHED) {
+    const reading = { payers: [NEW], wallets: [FOUR] }; // agent 4's wallet being read, NEW a new payer
+    const now = scoreAll(s, opts(income, reading, v)), was = scoreAll(s, opts(before(reading), reading, v));
+    assert.deepEqual(now.map(noReceipts), was.map(noReceipts), `${v}: every score, rung, component, flag and next step as before`);
+    assert.deepEqual([receipts(now, 1), receipts(was, 1)], [[4, 1.3], [0, 0]], `${v}: agent 1 shows its four payers under 1 USDG (1.30 USDG), the others still wait`);
+    const none = { payers: [NEW] };
+    assert.equal(JSON.stringify(scoreAll(s, opts(income, none, v))), JSON.stringify(scoreAll(s, opts(before(none), none, v))), `${v}: with no wallet being read, byte for byte`);
+  }
 });
 
 await check("index (live stall): a payment window too slow for one run gets smaller until the index moves, then grows back", async () => {

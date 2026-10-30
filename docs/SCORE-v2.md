@@ -64,8 +64,9 @@ Every result explains itself: the score, the rung, each component with its point
 raw details (USDG-days, loans, payers, and `incomeUsdg`: the x402 USDG of the payers that count, before caps and
 weights). `receiptsUsdg` and `receiptPayers` show what the agent was paid by payers outside its cluster in the window,
 net of what its side sent back but before caps and weights, dust and fresh wallets included: a customer's payment is
-shown even when it doesn't count toward the score, once that payer's netting is read (a new payer, or a payment to a new
-agent's cluster, waits until then: "New payers and new agents wait" below).
+shown even when it doesn't count toward the score. A payer of 1 USDG or more over the index shows once its netting is
+read (a new one, or one paying into a new agent's cluster, waits until then: "New payers and new agents wait" below); a
+smaller payer is never netted, so it shows at once.
 
 Each result also has `next` (since 2026-10-16): the next rung and how far the agent is on each of its conditions,
 `{ rung, name, needs: [{ key, have, need, met }], blocked }`, from the same figures the rung is judged on:
@@ -214,13 +215,17 @@ once, without holding scores back; the published `index.permit2Backfill` is `nul
 - **Netted.** USDG that any wallet of the agent's cluster sent to a payer (before or after, whole chain) is taken off
   that payer's payments: money that goes back where it came from is not income.
 - **No dust.** A payer counts once it has paid 1 USDG in the window. Below that it adds nothing and costs no scan.
-- **New payers and new agents wait, nobody else does.** A new payer's netting is read from the start of the chain;
-  until then its payments wait (they show nowhere, receipts included). A new agent's owner and declared wallet are read
-  the same way, and until then payments to every agent of its cluster wait. The reads waiting to start are made
-  together, one pass for the new payers and one for the new wallets, each taking only its own transfers and stopping
-  its wait once its own part of the chain is read. A pass in progress goes first, all of them before a new wallet's
-  past payments, 100,000 blocks a request (10,000 on a node that answers no more), and each step goes on from where the
-  last one stopped. Everyone else's scores keep publishing.
+- **New payers and new agents wait.** The index nets a payer once its payments there add up to 1 USDG; a new one's
+  netting is read from the start of the chain, and until then its payments wait (they show nowhere, receipts
+  included). A new agent's owner and declared wallet are read the same way, and until then the payments of every
+  netted payer to any agent of its cluster wait, for as long as the cluster has a wallet still being read: a cluster
+  that gains wallets faster than one read finishes holds them until its new wallets stop coming. A payer under 1 USDG
+  is never netted, so nothing it would wait for is ever read: its payments show as receipts at once, and count toward
+  nothing. The reads waiting to start are made together, one pass for the new payers and one for the new wallets, each
+  taking only its own transfers and stopping its wait once its own part of the chain is read. A pass in progress goes
+  first, all of them before a new wallet's past payments, 100,000 blocks a request (10,000 on a node that answers no
+  more), and each step goes on from where the last one stopped. Scores keep publishing meanwhile, without the payments
+  that wait.
 - **Repaid from income.** A loan that counts (backed by someone else, repaid on time by the agent's own wallets, since
   its last change of hands) and was repaid while counted income arrived is marked repaid from income, in proportion.
   Income is weighted like the income component, capped at 20 USDG per payer per loan, and each payment is spent once.
@@ -365,6 +370,12 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
   published rather than one a stake moved. No score moves on the day: until V5's roots are 30 days old (the retired
   #8641 on 2026-11-08, #8762 on 2026-11-10), 2.0.1 and 2.0.2 give every agent the same score, so on 2026-11-01 only
   the published `version` changes. 2.0.0 stays the engine's default.
+- **inputs, 2026-10-30** (all versions): a payer under 1 USDG over the index, which the index never nets, no longer
+  waits on a wallet of the paid agent's cluster still being read: its payments show as receipts at once (under the
+  rule before, a cluster gaining wallets faster than one read finishes held every payment into it at every publish,
+  0.10 USDG receipts included). A payer the index nets waits as before. No weight changes, and no score, rung or
+  component moves: while a wallet is being read only `receiptsUsdg` and `receiptPayers` can differ, and with none being
+  read nothing does (`scripts/test-x402-income.mjs`).
 - **inputs, 2026-10-28** (all versions; private report GHSA-4x5r-f6w5-fhhc): an agent with no loan before its last
   registry transfer restarts at that transfer when it came after its enrolment, as one with v1 loans has since
   2026-10-01; a transfer before the enrolment, such as the mint, changes nothing, and an agent back with the owner whose
