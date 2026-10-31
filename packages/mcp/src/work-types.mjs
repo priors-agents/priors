@@ -373,15 +373,48 @@ export function offerEntryOf(message) {
   };
 }
 /** The keys of one `hire` item on a /api/hub row (spec 6.1), in order. */
-export const HIRE_ITEM_KEYS = Object.freeze(["offer", "unit", "price", "maxUnits", "host", "source"]);
+export const HIRE_ITEM_KEYS = Object.freeze(["offer", "unit", "price", "maxUnits", "host", "path", "source"]);
+/** An offer's place on its host: its url's path and query as the URL parser writes them ("/check",
+ *  "/api/x402/check/0xff9e…?chain=rh"), or null for no url. */
+export function hirePath(url) {
+  try { const u = new URL(String(url)); return u.pathname + u.search; } catch { return null; }
+}
 /** A /api/hub row's `hire` item: from an OFFER_ENTRY (source "signed": `offer` its id), or from a declared offer the
- *  Directory's reach facts read (source "declared": `offer` and `maxUnits` null). */
+ *  Directory's reach facts read (source "declared": `offer` and `maxUnits` null). `path` is its url's (hirePath). */
 export function hireItemOf(entry, source = "signed") {
   if (source !== "signed" && source !== "declared") throw new Error("a hire offer's source is signed or declared");
   return {
     offer: source === "signed" ? entry.offerId : null, unit: entry.unit, price: entry.price,
-    maxUnits: source === "signed" ? entry.maxUnits : null, host: entry.host, source,
+    maxUnits: source === "signed" ? entry.maxUnits : null, host: entry.host, path: hirePath(entry.url), source,
   };
+}
+/**
+ * Where each of one agent's offers is, in words (`offers`: its hire items, or anything with `host` and a `path` or a
+ * `url`), in their order: its host alone, unless another of them has the same host. Then the host and as much of its
+ * path as tells it from those others: its segments up to the first one no other offer on that host has there, and "/…"
+ * when segments follow it ("?…" when only a query does): t0ll.xyz/api/x402/check/… and t0ll.xyz/api/x402/dev/…;
+ * check.blockpin.dev/check and check.blockpin.dev/launch. A path every segment of which another one shares is written
+ * whole, with its query when another has that same path. An offer with neither a path nor a url (from a data Worker of
+ * before) is its host alone, and is compared with none.
+ */
+export function offerPlaces(offers) {
+  const list = Array.isArray(offers) ? offers : [];
+  const parts = (x) => {
+    const p = x && typeof x.path === "string" ? x.path : x && x.url != null ? hirePath(x.url) : null;
+    const q = p == null ? -1 : p.indexOf("?");
+    return { host: String((x && x.host) || ""), has: p != null, segs: p == null ? [] : (q < 0 ? p : p.slice(0, q)).split("/").filter(Boolean), query: q < 0 ? "" : p.slice(q) };
+  };
+  const all = list.map(parts);
+  return all.map((me, i) => {
+    const them = all.filter((t, j) => j !== i && t.has && t.host === me.host);
+    if (!them.length || !me.has) return me.host;
+    const head = (t, k) => t.segs.slice(0, k).join("/");
+    for (let k = 1; k <= me.segs.length; k++) {
+      if (them.every((t) => head(t, k) !== head(me, k))) return `${me.host}/${head(me, k)}${k < me.segs.length ? "/…" : me.query ? "?…" : ""}`;
+    }
+    const same = them.some((t) => t.segs.join("/") === me.segs.join("/"));
+    return `${me.host}/${me.segs.join("/")}${same ? me.query : me.query ? "?…" : ""}`;
+  });
 }
 
 /* ---- what GET /api/work answers ---- */
