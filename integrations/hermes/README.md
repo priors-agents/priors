@@ -32,6 +32,12 @@ PRIORS_MAX_SPEND_DAY_USD=5                  # optional daily caps
 PRIORS_MAX_BORROW_DAY_USD=5
 ```
 
+Hermes hands the server only the variables `mcp.json` names, so these are the ones that reach it: the five above,
+`PRIORS_KEY` (instead of `PRIORS_KEY_FILE`), `PRIORS_MAX_PRICE_USD` (most a call, default 1.00),
+`PRIORS_MAX_BORROW_USD` (most a borrow, default 25), `PRIORS_MAX_SPEND_USD` and `PRIORS_MAX_BORROW_TOTAL_USD` (totals
+while the server runs, defaults 5 and 25) and `PRIORS_RPC` (another Robinhood Chain node). Any other setting stays at
+`@priors/mcp`'s default.
+
 `priors-mcp` is a Node.js command, so `node` must be on the PATH Hermes runs with. It signs nothing when
 `PRIORS_STATE_DIR` sits under a directory other users can write to (its record of sent payments and daily totals could
 be tampered with): use a directory only you can write to (`chmod 700`), with no group- or world-writable parent.

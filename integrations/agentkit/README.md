@@ -9,11 +9,8 @@ it usable with the AgentKit already on npm.
 
 ## Install
 
-The package is not on npm yet. From a clone of [priors-agents/priors](https://github.com/priors-agents/priors):
-
 ```bash
-cd priors/integrations/agentkit && npm install && npm pack        # builds, -> priors-agentkit-0.1.0.tgz
-cd /path/to/your-agent && npm install /path/to/priors-agentkit-0.1.0.tgz @coinbase/agentkit
+npm install @priors/agentkit @coinbase/agentkit
 ```
 
 ## Use

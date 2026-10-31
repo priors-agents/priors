@@ -47,6 +47,15 @@ test("parse: the URL, the agent and loan ids, the most to pay and the most to bo
   assert.equal(maxBorrowOf("pay https://x.dev at most 0.10"), 0, "no borrow named: never borrow");
   assert.equal(maxPriceOf("pay https://x.dev, borrow up to 2"), null, "the borrow amount is never taken for the price");
   assert.equal(loanIdOf("repay loan #50900"), 50900);
+  // a loan number in the same message is never taken for the agent, in either order
+  assert.equal(agentIdOf("Loan #50900 is for agent #9233, check its record."), 9233);
+  assert.equal(agentIdOf("Check agent #9233; it took loan #50900."), 9233);
+  assert.equal(agentIdOf("Check #9233 before loan #50900 is due."), 9233);
+  assert.equal(agentIdOf("repay loan #50900"), null);
+  // the borrow phrase may come before the price: each amount still comes from its own words
+  const late = "Pay https://x.dev, borrow up to 5 if the wallet is short, at most 0.10 for it.";
+  assert.equal(maxPriceOf(late), 0.1);
+  assert.equal(maxBorrowOf(late), 5);
   assert.equal(urlOf("pay http://x.dev"), null, "https only");
 });
 

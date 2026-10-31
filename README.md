@@ -238,9 +238,9 @@ on an x402 payment borrowed the gap, paid, repaid, and read the seller's record 
 
 - **Hermes Agent**: [`integrations/hermes`](integrations/hermes), a Portable Agent Plugins package with the
   hosted server, the local `priors-mcp` server and the skill (Hermes asks before each payment).
-- **elizaOS**: [`integrations/elizaos`](integrations/elizaos), `@priors/plugin-elizaos`, four actions
+- **elizaOS**: [`integrations/elizaos`](integrations/elizaos), `npm i @priors/plugin-elizaos`, four actions
   (`PRIORS_AGENT_RECORD`, `PRIORS_CREDIT_STATUS`, `PRIORS_PAY_X402`, `PRIORS_REPAY`).
-- **Coinbase AgentKit**: [`integrations/agentkit`](integrations/agentkit), `@priors/agentkit`, an action
+- **Coinbase AgentKit**: [`integrations/agentkit`](integrations/agentkit), `npm i @priors/agentkit`, an action
   provider for the AgentKit on npm (`pay_x402_with_priors_credit`, `borrow_from_priors`, `repay_priors_loan` and two
   reads).
 

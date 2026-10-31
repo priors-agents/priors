@@ -7,11 +7,8 @@ agent's repayment record.
 
 ## Install
 
-The package is not on npm yet. From a clone of [priors-agents/priors](https://github.com/priors-agents/priors):
-
 ```bash
-cd priors/integrations/elizaos && npm pack                        # -> priors-plugin-elizaos-0.1.0.tgz
-cd /path/to/your-agent && npm install /path/to/priors-plugin-elizaos-0.1.0.tgz
+npm install @priors/plugin-elizaos
 ```
 
 Add it to the character's plugins (elizaOS 1.7 or later):
