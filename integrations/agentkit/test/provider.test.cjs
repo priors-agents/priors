@@ -53,6 +53,14 @@ test("AgentKit sees the five actions under the provider's name", () => {
   assert.deepEqual(names, ["PriorsActionProvider_borrow_from_priors", "PriorsActionProvider_get_priors_agent_record", "PriorsActionProvider_get_priors_credit_line", "PriorsActionProvider_pay_x402_with_priors_credit", "PriorsActionProvider_repay_priors_loan"]);
 });
 
+test("the credit line is read from the public hub API, its amounts atomic USDG", async () => {
+  const asked = [];
+  const fetchImpl = async (url) => { asked.push(url); return Response.json({ agent: { line: { limit: 5000000, drawn: 1000000, available: 4000000 }, activeLoans: 1 } }); };
+  const out = await priorsActionProvider(fetchImpl).getCreditLine(wallet({}), { agentId: 437 });
+  assert.deepEqual(asked, ["https://priors.trade/api/hub/agent?id=437"]);
+  assert.equal(out, "Agent #437's Priors line: 5 USDG, drawn 1, available 4; open loans: 1.");
+});
+
 test("a price above maxPrice is refused before anything is signed or paid", async () => {
   paid.length = 0;
   const w = wallet({ balanceOf: 5000000n });
