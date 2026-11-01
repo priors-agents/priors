@@ -1,0 +1,55 @@
+{
+  "chainId": 4663,
+  "boardFeeSplitter": "0x49F333f2C06A47a7a881Bc5e6Da8A8b984271A0B",
+  "boardFeeSplitterBlock": 101130445,
+  "tx": "0x5cc9626f5d1c11633ce7506f8897c7b9d0273caba22ca49e307762b0d143103d",
+  "deployer": "0x140e38e4eD308e534fBb2Ee3EF057A51b98d5932",
+  "nonce": 563,
+  "constructorArgs": {
+    "usdg": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "engines": "0xb2E217C5841a968C48Eee41DCbF7D2a03cCA4F43",
+    "treasury": "0xFe8fdf43c4b0443aCF8E8CD8facD62F1B770e267",
+    "engineBps": 5000,
+    "owner": "0x20c6816B2419616238772591965E6E9AbE493fD5"
+  },
+  "constructorArgsEncoded": "0x0000000000000000000000005fc5360d0400a0fd4f2af552add042d716f1d168000000000000000000000000b2e217c5841a968c48eee41dcbf7d2a03cca4f43000000000000000000000000fe8fdf43c4b0443acf8e8cd8facd62f1b770e267000000000000000000000000000000000000000000000000000000000000138800000000000000000000000020c6816b2419616238772591965e6e9abe493fd5",
+  "source": "src/BoardFeeSplitter.sol:BoardFeeSplitter",
+  "sourceCommit": "c046738f4641e748871b63cfa274c328c7d4e28b",
+  "compiler": {
+    "solc": "0.8.26+commit.8a97fa7a",
+    "optimizer": true,
+    "runs": 200,
+    "evmVersion": "cancun",
+    "viaIR": false
+  },
+  "creationCodeHash": "0x1b5a9e492e870b8cb79a4580121ad42f08db91de5aaa35489aea12fb2c674cea",
+  "runtimeCodeHash": "0x434727fa2bbc3a7aee9ff9063097f923660654e6b062494f5a05522e1337c64b",
+  "abi": "out/BoardFeeSplitter.sol/BoardFeeSplitter.json, `abi` (forge build at sourceCommit)",
+  "verification": {
+    "sourcify": {
+      "match": "exact_match",
+      "creationMatch": "exact_match",
+      "runtimeMatch": "exact_match",
+      "verifiedAt": "2026-10-29T19:04:57Z",
+      "url": "https://sourcify.dev/server/v2/contract/4663/0x49F333f2C06A47a7a881Bc5e6Da8A8b984271A0B"
+    },
+    "blockscout": "verified (BoardFeeSplitter, standard JSON input, 2026-10-30)"
+  },
+  "feeTo": {
+    "queued": {
+      "at": "2026-10-30",
+      "v1": "0xdd940c7ec72ab40b69e7d23b3589e816f8e7de5be5e7fee9a8bd641746aa1d63",
+      "v2": "0x9868058957fd380e6065a5034760dbdd34b6dc33f4e379db8f454b51f6607b42",
+      "call": "queueFee(100, 250000, 0x49F333f2C06A47a7a881Bc5e6Da8A8b984271A0B)"
+    },
+    "applyFrom": "2026-11-01T06:45:38Z",
+    "applied": {
+      "at": "2026-11-01T06:51:48Z",
+      "v1": "0x8de156771fee011e183e603bd4742f8f0c03859cdabd963d10c47e6966de1575",
+      "v1Block": 103189432,
+      "v2": "0x29f79e39a8997af40f28e9ac66475030017667ef7db9a36e5edfee5789df331f",
+      "v2Block": 103189486,
+      "readBack": "both: fee 100 bps, minimum 250000, feeTo the splitter, nothing queued"
+    }
+  }
+}

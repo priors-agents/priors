@@ -428,6 +428,7 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | StockVault ProxyAdmin (the only way to upgrade the vault; owned by the timelock since 2026-10-07, by the Safe before; with no delay from 2026-10-11 19:49 UTC) | `0x5174A18550a295cd25aF59416a56B7e4c38C8Afc` |
 | Safe (2-of-3; proposes to the timelock, owns treasury v4 and both SeatSizers, so every other seat vault power, and the stock vault's settings) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
 | RevenueRouter (the steward's sweep and the vaults' fees go here) | `0xb2E217C5841a968C48Eee41DCbF7D2a03cCA4F43` |
+| BoardFeeSplitter (both agent markets' fees since 2026-11-01: half to treasury v5, half to the RevenueRouter; anyone may call `split()`) | `0x49F333f2C06A47a7a881Bc5e6Da8A8b984271A0B` |
 | BuyAndBack (engine 1) | `0xEe40675aBEC90E52211526845433C10c80fD569E` |
 | PriorsLiquidity (engine 2) | `0xbEC159832D05749557F3f972c4823979C8dC8451` |
 | SwapLimiter (the engines' depth guard) | `0x4535b1d92ebBe8176463dE4b58Ca9B66A231eb0E` |
@@ -521,6 +522,7 @@ src/StockVault.sol           lines against Robinhood stock tokens: per-token LTV
 src/StockVaultProxy.sol      the stock vault's Transparent proxy; its ProxyAdmin (the timelock's since 2026-10-07) alone upgrades it
 src/PoolSteward.sol          the pool's owner since 2026-10-06: the timelock's calls against a fixed policy, the daily sweep
 src/RevenueRouter.sol        where the sweep and the vaults' fees go, and their split
+src/BoardFeeSplitter.sol     the agent markets' fees: half to treasury v5, half to the RevenueRouter, on anyone's split()
 src/BuyAndBack.sol           engine 1: buys $PRIORS on its Pons pool
 src/PriorsLiquidity.sol      engine 2: $PRIORS liquidity
 src/SwapLimiter.sol          the engines' depth guard (src/libraries/PoolDepth.sol, EngineMath.sol)
