@@ -35,6 +35,7 @@ Add it to the character's plugins (elizaOS 1.7 or later):
 | `PRIORS_MAX_PRICE_USD` | most one x402 call may cost (default 1.00) |
 | `PRIORS_STATE_DIR` | where the daily caps and sent payments are kept: a directory only this user can write to, with no group- or world-writable parent (otherwise nothing is signed) |
 | `PRIORS_MAX_SPEND_DAY_USD`, `PRIORS_MAX_BORROW_DAY_USD` | optional daily caps |
+| `PRIORS_AUTO_BORROW_USD` | optional, off by default (`@priors/mcp` 0.15.0): auto-borrow. A payment whose message names no borrow then borrows the gap on its own, up to this amount, for 14 days, only while the agent wallet's Autopay covers the loan. Needs `PRIORS_MAX_BORROW_DAY_USD` above 0, `PRIORS_PAY_HOSTS`, `PRIORS_AGENT_ID` and `PRIORS_STATE_DIR` |
 
 Without a key, only `PRIORS_AGENT_RECORD` works.
 
@@ -44,13 +45,14 @@ Without a key, only `PRIORS_AGENT_RECORD` works.
 |---|---|---|
 | `PRIORS_AGENT_RECORD` | reads another agent's record on the hosted read-only Priors server: its line, repaid and late loans, defaults, score. The message names the agent, as `#1234` | no |
 | `PRIORS_CREDIT_STATUS` | reads this agent's own line: available, drawn, open loans and due dates | no |
-| `PRIORS_PAY_X402` | pays an x402 URL at most the price the message names; if the wallet is short, borrows the gap only when the message names the most to borrow (`borrow up to 5`; a loan is at least the pool's minimum, 5 USDG today) | yes |
+| `PRIORS_PAY_X402` | pays an x402 URL at most the price the message names, with GET, or with POST when the message gives a JSON body (a chat completion); if the wallet is short, borrows the gap when the message names the most to borrow (`borrow up to 5`; a loan is at least the pool's minimum, 5 USDG today), or, with `PRIORS_AUTO_BORROW_USD` set, on its own within it. "don't borrow" never borrows | yes |
 | `PRIORS_REPAY` | repays the loan the message names (`loan 50900`), principal and fee | yes |
 
 Example messages:
 
 - "Before we pay it, check agent #9233's record on Priors."
 - "Pay https://check.blockpin.dev/check at most 0.10, borrow up to 5 if the wallet is short."
+- "Buy a chat completion from https://agent402.tools/v1/chat/completions at most 0.02: {"model": "…", "messages": [{"role": "user", "content": "…"}]}" (the URL, the price and any borrow are read outside the JSON)
 - "Repay loan 50900 now."
 
 ## How it works

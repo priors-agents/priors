@@ -6,13 +6,13 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 export const HOSTED_URL = "https://mcp.priors.trade/mcp";
-export const CLIENT = { name: "elizaos-plugin-priors", version: "0.1.0" };
+export const CLIENT = { name: "elizaos-plugin-priors", version: "0.2.0" };
 
 /** The settings @priors/mcp reads, taken from the agent's settings (runtime.getSetting), else the process env. */
 export const SETTINGS = Object.freeze([
   "PRIORS_KEY_FILE", "PRIORS_KEY", "PRIORS_AGENT_ID", "PRIORS_PAY_HOSTS", "PRIORS_RPC", "PRIORS_STATE_DIR",
   "PRIORS_MAX_PRICE_USD", "PRIORS_MAX_BORROW_USD", "PRIORS_MAX_SPEND_USD", "PRIORS_MAX_BORROW_TOTAL_USD",
-  "PRIORS_MAX_SPEND_DAY_USD", "PRIORS_MAX_BORROW_DAY_USD",
+  "PRIORS_MAX_SPEND_DAY_USD", "PRIORS_MAX_BORROW_DAY_USD", "PRIORS_AUTO_BORROW_USD",
 ]);
 
 /** The env @priors/mcp is built with: the process env, with every Priors setting the agent has replacing it. */

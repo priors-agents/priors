@@ -21,6 +21,11 @@
 //   HireOffer     signed by the agent's registry owner or its registry wallet: its work for hire, per task or per minute,
 //                 paid to its registry wallet. Its id is its EIP-712 hash.
 //
+// While a lease of the agent runs (AgentLease's userOf names its renter, sdk/agent-lease.mjs), where the board serves
+// leases: its renter alone signs its new WorkTake and HireOffer messages (its owner and registry wallet only withdraw
+// their own offers), and is paid at its own address; a take records the renter as `runBy`, and that address alone
+// delivers the work and is paid for it, also once the lease is over.
+//
 // A paid request's receipt ({ tx }) is not signed: anyone posts it, and the data Worker reads that transaction (2.4).
 //
 // Nothing here signs, sends or reads the chain: the typed data is built for the signers' own wallets and keys (agents
@@ -55,7 +60,9 @@
 //                             cannot (a cancelled request); the answer works out `state` and `act` from it and drops it.
 //
 // A line of work:v1:offers also carries `wallet`, the registry wallet its offer was checked against (lower case), so the
-// hub can leave out an offer whose agent has since lost or changed its registry wallet (a transfer clears it).
+// hub can leave out an offer whose agent has since lost or changed its registry wallet (a transfer clears it). A renter's
+// line carries `run` and `start` in its place (OFFER_RUN_KEYS: the renter's address, lower case, and its lease's start),
+// so the hub shows it only while that lease runs; it pays the renter, so no registry wallet holds it.
 //
 // The board's two spaces (WORK_SPACES): the test hosts (WORK_TEST_HOSTS: test, gotest and boardtest.priors.trade) keep
 // their requests and offers apart from every other host's, so nothing posted while the board serves the test hosts alone
@@ -161,7 +168,8 @@ export const WORK_TYPES = Object.freeze({
   HireOffer: HIRE_OFFER_TYPES,
 });
 /** Who signs each message: "client" (the request's own `client`), or "agent" (the agent's registry owner or its
- *  registry wallet, getAgentWallet; for a WorkDeliver, the awarded agent's). */
+ *  registry wallet, getAgentWallet, or its renter while a lease runs; for a WorkDeliver, the awarded agent's, or the
+ *  take's `runBy` when it has one). */
 export const WORK_SIGNED_BY = Object.freeze({
   WorkRequest: "client", WorkTake: "agent", WorkAward: "client", WorkDeliver: "agent", WorkReject: "client", WorkCancel: "client", HireOffer: "agent",
 });
@@ -360,6 +368,10 @@ export function usdgUnits(text) {
 
 /** The keys of one line of work:v1:offers (OFFER_ENTRY), in order. */
 export const OFFER_ENTRY_KEYS = Object.freeze(["offerId", "agentId", "url", "host", "unit", "price", "maxUnits", "expiry"]);
+/** The keys a renter's offer carries after them, in order, in work:v1:offers and work:v1:offers:<agentId> alike: `run`,
+ *  the renter's address (lower case), and `start`, its lease's start (unix seconds), the lease data-worker/hub.mjs
+ *  shows it under. */
+export const OFFER_RUN_KEYS = Object.freeze(["run", "start"]);
 /**
  * One line of work:v1:offers, from a verified HireOffer message: { offerId, agentId, url, host, unit ("task" or
  * "minute"), price (USDG, written: "0.10"), maxUnits, expiry }.
@@ -430,12 +442,19 @@ export function offerPlaces(offers) {
  * Each take's `id` is its WorkTake's EIP-712 hash (workHash("WorkTake", message)): the bytes32 a client's WorkAward names
  * as `take`, so a client builds its award from this answer alone; `award.take` is always one of them. The WorkTake
  * message itself (its salt) is never served.
+ * A take signed by the agent's renter while its lease ran also gives `runBy`, that renter's address (lower case), last
+ * (WORK_RUN_TAKE_KEYS), and so does the award of such a take (WORK_RUN_AWARD_KEYS): the address that delivers and is
+ * paid. Every other take and award has no `runBy`, so an answer with no lease in it is as it was.
  * A row of GET /api/work ({ v, at, n, requests }: the open requests, newest first) is the same without `brief`.
  */
 export const WORK_VIEW_KEYS = Object.freeze(["id", "client", "forAgent", "job", "title", "brief", "budget", "deadline", "expiry", "bar", "state", "at", "takes", "award", "delivery", "reject", "paid", "act"]);
 export const WORK_ROW_KEYS = Object.freeze(WORK_VIEW_KEYS.filter((k) => k !== "brief"));
-/** The keys of a take in a request's `takes`, in order. */
+/** The keys of a take in a request's `takes`, in order; a renter's take ends with `runBy`. */
 export const WORK_TAKE_KEYS = Object.freeze(["id", "agentId", "at"]);
+export const WORK_RUN_TAKE_KEYS = Object.freeze([...WORK_TAKE_KEYS, "runBy"]);
+/** The keys of a request's `award`, in order; the award of a renter's take ends with `runBy`. */
+export const WORK_AWARD_KEYS = Object.freeze(["take", "agentId", "payer", "at"]);
+export const WORK_RUN_AWARD_KEYS = Object.freeze([...WORK_AWARD_KEYS, "runBy"]);
 /** The keys of a row as work:v1:open stores it: a GET /api/work row without `state` and `act`, which are computed when
  *  the board answers (see the KV keys above). */
 export const WORK_STORED_KEYS = Object.freeze(WORK_ROW_KEYS.filter((k) => k !== "state" && k !== "act"));
@@ -451,8 +470,8 @@ export const GO_ORIGINS = Object.freeze(["https://go.priors.trade", "https://got
 export const GO_PATH = "/account";
 /**
  * Each verb, what it needs and what it may carry. No amount ever travels in a link (prices are read again in Go mode),
- * and there is no rent, borrow or repay verb. A link Priors builds carries agent, do, req, job, offer, bid and origin
- * only, each at most once.
+ * and there is no borrow or repay verb. A link Priors builds carries agent, do, req, job, offer, bid and origin only,
+ * each at most once.
  *   hire      agent, offer?   the Hire sheet for that agent's offer
  *   buy       agent           the Buy sheet (read only, "not open yet", while the market has no address)
  *   sell      agent?, bid?    the Sell checklist for the account's own agent (no agent: Go mode asks which of the
@@ -470,6 +489,11 @@ export const GO_PATH = "/account";
  *   shares                    the builder shares that pay the account (Lower, Change address)
  *   handover  agent           what a sale hands over: Make it yours for its owner, After the sale for a former owner (a
  *                             key or a wallet is made or read in Go mode, never carried)
+ *   rent      agent           renting it (AgentLease, sdk/agent-lease.mjs): Rent from its owner's offer, and Add days
+ *                             and End lease for the address that rents it (the days typed and the rent read again in Go
+ *                             mode, never carried)
+ *   lease     agent?          renting out the account's own agent: Rent it out, End lease and Collect rent (no agent:
+ *                             Go mode asks which of the account's agents)
  */
 export const GO_VERBS = Object.freeze({
   hire: Object.freeze({ need: ["agent"], may: ["offer"] }),
@@ -485,6 +509,8 @@ export const GO_VERBS = Object.freeze({
   share: Object.freeze({ need: ["agent"], may: [] }),
   shares: Object.freeze({ need: [], may: [] }),
   handover: Object.freeze({ need: ["agent"], may: [] }),
+  rent: Object.freeze({ need: ["agent"], may: [] }),
+  lease: Object.freeze({ need: [], may: ["agent"] }),
 });
 /** The parameters, in the order a link writes them (bid and origin last: every link of before keeps its one form). */
 export const GO_PARAMS = Object.freeze(["agent", "do", "req", "job", "offer", "bid", "origin"]);

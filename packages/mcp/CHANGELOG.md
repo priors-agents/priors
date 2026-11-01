@@ -1,5 +1,36 @@
 # @priors/mcp changelog
 
+## 0.15.0 (2026-11-01)
+
+- **Auto-borrow, for inference on credit** (`PRIORS_AUTO_BORROW_USD`, off by default): with it set, a `pay_url` (or
+  `pay_gateway`) call that names no `max_borrow_usd` borrows the gap on its own when the wallet and the agent's
+  savings are short, up to that amount a call, for 14 days. That way an agent buying its own model calls (agent402.tools'
+  OpenAI-compatible chat, paid over x402 in USDG on Robinhood Chain) keeps working mid-task. The guards:
+  - It borrows only while this wallet's Autopay covers the new loan: plan on and current, not held or paused, its
+    limit per loan at least the loan's due, its approval enough for that due on top of the loans it already repays.
+    Otherwise nothing is borrowed or signed, and the answer says to turn Autopay on.
+  - The server does not start with it unless `PRIORS_MAX_BORROW_DAY_USD` (above 0, with `PRIORS_AGENT_ID` and
+    `PRIORS_STATE_DIR`) and `PRIORS_PAY_HOSTS` are set, and it is at most `PRIORS_MAX_BORROW_USD` and
+    `PRIORS_MAX_BORROW_TOTAL_USD`.
+  - When the day's borrow limit or the run's total has no room, a call pays from what the wallet holds and says why it
+    did not borrow, instead of being refused.
+  - The control check and the Autopay check run only once the wallet is short, so a call that needs no loan makes no
+    extra read.
+  - A call naming `max_borrow_usd` works as before (`0` never borrows).
+
+  `pay_url`'s description, its answers, the instructions and `credit_status` say when it is on.
+
+- **The market tools claim on an agent's lease around a change of hands, once this package carries AgentLease's
+  record** (`deployments/4663.agent-lease.json`, written by the lease's deploy; AgentLease isn't deployed, so there is
+  none yet, and every tool, read and answer is as before). With it, `market_buy` and `market_accept` read the lease
+  stored on the agent (`leaseOf`) and, while one is stored, send `claim` on the lease before the change of hands and
+  after it (gas only), the client rule of `docs/AGENT-LEASE.md`, so each day's rent goes to whoever held the agent when
+  the day ended. The lease is confirmed at the first market call (its `market()` must be this package's AgentMarketV2),
+  else every market tool refuses. `market_agent` says who runs a rented agent and until when. A claim after the change
+  of hands that can't be sent, or doesn't go through, leaves the change as it is, and the answer says so, a retry's
+  from the market record too. The lease's seam (`src/agent-lease.mjs`, `sdk/agent-lease.mjs` in the repository) is
+  bundled byte for byte.
+
 ## 0.14.1 (2026-10-30)
 
 On @priors/x402 0.8.4, whose @x402 packages are 2.29.0 or later.

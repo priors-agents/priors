@@ -1,5 +1,28 @@
 # @priors/x402 changelog
 
+## 0.8.5 (2026-11-01)
+
+- **A merchant can confirm a USDG settlement by its receipt before the paid response is released**: `confirm: true`
+  on `createResourceServer`, and, exported from the package root with the version that ships this, `confirmSettlements(client,
+  { rpcUrl })` around any facilitator client and `receiptPaysUsdg`. USDG does not
+  revert `transferWithAuthorization` on an authorization already used or cancelled: the transaction succeeds (status 1),
+  logs `AuthorizationAlreadyUsed` and moves nothing. A payer can spend its nonce between a facilitator's verify and its
+  settle (a signed `cancelAuthorization`, which anyone can send, or a second authorization with the same nonce), and a
+  facilitator that reads only the status answers success. With `confirm`, a settlement of USDG on `eip155:4663` stays a
+  success only when its receipt holds USDG's `AuthorizationUsed(payer, nonce)` followed by its `Transfer(payer -> payTo)`
+  of at least the amount. Otherwise the answer is `settlement_moved_nothing` and @x402's
+  middleware withholds the response. A receipt the RPC can't give within `waitMs` (3 s; each read ends by then) keeps
+  the facilitator's answer. Off by default: the Priors facilitator itself decides by these logs.
+- **Two borrow options for a caller that borrows on its own** (`createPayer` and `borrowGap`; @priors/mcp's
+  auto-borrow uses both):
+  - `beforeBorrow({ agentId, amount, fee, term, due })` is called once the loan is known and before anything is sent
+    for it (a SeatVaultV5 refresh, a `noteDelegate`, the borrow). A throw refuses the borrow: nothing is sent or
+    signed, and `pay()` rejects with that error.
+  - `fitTerm: true` makes `termSeconds` the term wanted, not required. It is brought down to the pool's `maxTerm` and,
+    on a SeatVaultV5 line, to the 10 days V5 lends for, instead of being refused.
+
+  Without them, everything is as before.
+
 ## 0.8.4 (2026-10-30)
 
 - **@x402/core, @x402/evm and @x402/fetch ^2.29.0 (from ^2.27.0), and the optional peers @x402/express and @x402/mcp

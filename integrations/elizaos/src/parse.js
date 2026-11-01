@@ -38,6 +38,37 @@ export function maxPriceOf(text) {
 
 /** The most to borrow: "borrow up to 1", "borrow at most $0.50", "borrow 1"; 0 when the message names none. */
 export function maxBorrowOf(text) {
-  const m = String(text || "").match(BORROW);
-  return m ? num(m[1]) ?? 0 : 0;
+  return borrowOf(text) ?? 0;
+}
+
+/** The borrow the message names: its amount, 0 for "don't borrow", "no borrowing", "without borrowing" or "never
+ * borrow", null when it names none (then @priors/mcp's own setting decides: never, or its auto-borrow). */
+export function borrowOf(text) {
+  const t = String(text || "");
+  if (/\b(?:do not|don't|dont|never|no|without)\s+borrow/i.test(t)) return 0;
+  const m = t.match(BORROW);
+  return m ? num(m[1]) ?? 0 : null;
+}
+
+/**
+ * A JSON object the message gives as the request body (a chat completion's {"model", "messages"}): the first ``` fence
+ * holding one, else the first balanced {...} that parses. { body: the object as compact JSON, raw: the text it was read
+ * from }, or null. The caller reads the URL and the amounts from the rest of the message, so nothing inside the body
+ * (a prompt that says "up to 3") is ever taken for the price or a borrow.
+ */
+export function bodyOf(text) {
+  const t = String(text || "");
+  const obj = (s) => { try { const v = JSON.parse(s); return v && typeof v === "object" && !Array.isArray(v) ? JSON.stringify(v) : null; } catch { return null; } };
+  for (const m of t.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) { const body = obj(m[1].trim()); if (body) return { body, raw: m[0] }; }
+  const start = t.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < t.length; i++) {
+    const c = t[i];
+    if (inStr) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === "\"") inStr = false; continue; }
+    if (c === "\"") inStr = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) { const raw = t.slice(start, i + 1); const body = obj(raw); return body ? { body, raw } : null; }
+  }
+  return null;
 }

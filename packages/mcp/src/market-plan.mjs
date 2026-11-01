@@ -3,12 +3,13 @@
 // one plain transaction at a time. @priors/mcp's market tools (packages/mcp/src/market-tools.mjs) run it; the package
 // holds a byte-for-byte copy (scripts/test-packages.mjs fails on any drift). Pure: no network, no clock, no file.
 //
-//   1. kindReads(market): which market answers at the address, v1 or V2, at one block (marketKindOf). v1's bidSpender()
-//      reverts with no data; V2's is CREATE(market, 1) (market-bids spenderOf), whose market() is the market. Its
-//      registry and USDG must be the package's record's. A V2 with the builder share (the P5 spec, section 2) answers
-//      MAX_BUILDER_BPS(); one without it reverts with no data, and every sale then pays no share. Its owner's switch,
-//      buildersOn() (false until the Safe calls enableBuilders(), once, for good), is read with each agent's reads, at
-//      the plan's block, never kept: while it is off no share can be set, and none is reported.
+//   1. kindReads(market, lease): which market answers at the address, v1 or V2, at one block (marketKindOf). v1's
+//      bidSpender() reverts with no data; V2's is CREATE(market, 1) (market-bids spenderOf), whose market() is the
+//      market. Its registry and USDG must be the package's record's. A V2 with the builder share (the P5 spec, section 2)
+//      answers MAX_BUILDER_BPS(); one without it reverts with no data, and every sale then pays no share. Its owner's
+//      switch, buildersOn() (false until the Safe calls enableBuilders(), once, for good), is read with each agent's
+//      reads, at the plan's block, never kept: while it is off no share can be set, and none is reported. With the
+//      package's AgentLease record, the lease's market() must be this market (addr.lease).
 //   2. agentReads, accountReads, bidReads, then moreReads (the agent's sponsor's followsLine, the seller's and the
 //      makers' accounts): one Multicall3 aggregate3 each, every call allowed to fail, all at one block. readsOut decodes
 //      them into `c`, the object every plan reads; a read that failed is null, and a plan given null answers "unread",
@@ -16,15 +17,23 @@
 //   3. sellPlan, buyPlan, cancelPlan, bidPlan, bidAnyPlan, cancelBidPlan, acceptPlan: the contract's rules in its order
 //      (web/board-wallet-core.js sellState and buyPlan, web/board-wallet-bids-core.js, which a test holds this to), then
 //      the steps, each one transaction: { steps, pins, ... } or { error: kind, ...vars }.
-//   4. stepCalls(step, o): a step's { to, data }, from market-abi's MARKET_IFACE and market-bids' call builders.
+//   4. stepCalls(step, o): a step's { to, data }, from market-abi's MARKET_IFACE, market-bids' call builders and the
+//      lease seam's handoverCalls (sdk/agent-lease.mjs).
 //   5. MARKET_ERRORS and errorKindOf(revertData, role): a revert's kind; PLAN_WORDS and planWords(kind, vars): its words.
 //
 // What a sale leaves the seller is computed in netOf alone: price - fee - the builder's share, the share only where the
 // market answers builderOf (P5), else price - fee. An open asking price and an open bid are worded; a price paid or taken
 // is never worded after the fact.
+//
+// Renting (AgentLease, docs/AGENT-LEASE.md): only where the package records the lease (addr.lease) does agentReads read
+// the lease stored on the agent (leaseOf), and while one is stored (its renter not zero: running, or ended and not paid
+// out) buyPlan and acceptPlan claim on the lease before and after the change of hands, as every change of hands on
+// Priors does (the client rule): "claimBefore" pays each day ended to whoever held the agent when it ended, and
+// "claimAfter" records the new holder at once. Without the lease's record every read, plan and call is as before.
 import { ethers } from "ethers";
 import { MARKET_IFACE, LISTING_RULES, feeOf } from "./market-abi.mjs";
 import { BID_RULES, BID_WORDS, spenderOf, idsRootOf, listOf, inRoot, reserveCall, bidCall, bidAnyCall, cancelBidCall, acceptCall } from "./market-bids.mjs";
+import { LEASE_IFACE, LEASE_WORDS, handoverCalls } from "./agent-lease.mjs";
 
 /* ---- small helpers ---- */
 
@@ -58,8 +67,9 @@ const BID = "tuple(address maker, uint64 expiry, uint16 left, bool any, uint96 p
 const AGENT_V2 = "tuple(bool enrolled, bool isRoot, bool defaulted, bool frozen, bool importedFromV1, uint64 enrolledAt, uint64 lastBorrowAt, uint64 lastRepayAt, uint256 sponsor, uint256 delegatedIn, uint256 delegatedOut, uint256 principalOut, uint256 activeLoans, uint256 premiumBps, uint256 premiumCap, uint256 loansRepaid, uint256 volumeRepaid, uint256 feesPaid, uint256 recourseHonored, uint256 childrenDefaulted, uint256 qualifiedRepaid, uint256 dollarSecondsRepaid)";
 const AGENT_V1 = "tuple(bool enrolled, bool isRoot, bool defaulted, uint64 enrolledAt, uint256 sponsor, uint256 delegatedIn, uint256 delegatedOut, uint256 earned, uint256 stake, uint256 principalOut, uint256 activeLoans, uint256 loansRepaid, uint256 volumeRepaid, uint256 feesPaid, uint256 recourseHonored, uint256 childrenDefaulted, uint64 epochStart, uint256 earnedThisEpoch, uint256 qualifiedRepaid, uint256 dollarSecondsRepaid)";
 /** Every view a plan reads, by the contract that answers it (src/AgentMarket.sol, src/AgentMarketV2.sol, BidSpender,
- *  the ERC-8004 registry, CreditPoolV2, CreditPool v1, InviteBond v1 and V2, USDG). Pool v1 and the two bonds answer
- *  their own structs under the same selectors, so each contract has its own Interface. */
+ *  the ERC-8004 registry, CreditPoolV2, CreditPool v1, InviteBond v1 and V2, USDG, and AgentLease as the lease's seam
+ *  names it: leaseOf and market()). Pool v1 and the two bonds answer their own structs under the same selectors, so each
+ *  contract has its own Interface. */
 export const READS = Object.freeze({
   market: new ethers.Interface([
     `function listingOf(uint256 id) view returns (${LISTING})`, "function feeBps() view returns (uint256)", "function minFee() view returns (uint256)",
@@ -79,6 +89,7 @@ export const READS = Object.freeze({
   bondV1: new ethers.Interface(["function bonds(uint256 id) view returns (tuple(address depositor, uint64 at, uint256 amount, uint256 qualifiedAt))"]),
   bondV2: new ethers.Interface(["function bonds(uint256 id) view returns (tuple(address depositor, uint64 at, uint256 amount))", "function amount() view returns (uint256)"]),
   usdg: new ethers.Interface(["function balanceOf(address account) view returns (uint256)", "function allowance(address owner, address spender) view returns (uint256)"]),
+  lease: LEASE_IFACE,
 });
 
 /** One read: { key, to, data, as: [contract, fn] }. A read on a zero address is never made (that contract isn't on
@@ -134,27 +145,30 @@ export function readsOut(reads, results, into = null) {
 }
 
 /** Which market answers at `market`, and its own addresses: the spender's market() is read in the same call, at the
- *  address V2's spender would have (spenderOf). */
-export function kindReads(market) {
+ *  address V2's spender would have (spenderOf); with `lease` (the package's AgentLease record), the lease's market(). */
+export function kindReads(market, lease = null) {
   const out = [], add = adder(out), m = lc(market);
   for (const k of ["bidSpender", "feeBps", "previous", "registry", "usdg", "poolV2", "poolV1", "inviteBond", "inviteBondV2", "MAX_BUILDER_BPS"]) add(k, m, "market", k);
   add("spenderMarket", spenderOf(m), "spender", "market");
+  add("leaseMarket", lease, "lease", "market");
   return out;
 }
 /**
  * The market `c` (kindReads' answers) shows, against the package's `record` ({ registry, usdg }): { kind: "v1" | "v2",
  * addr: { market, registry, usdg, poolV2, poolV1, inviteBond, inviteBondV2, spender (V2's), previous (V2's v1, or
- * null) }, shares (V2 with the builder share) }, or { error }: "unread" (a read failed: try again), "mismatch" (its
- * registry or USDG isn't the record's), "unknown" (neither v1's nor V2's answers).
+ * null), lease (only with `lease`) }, shares (V2 with the builder share) }, or { error }: "unread" (a read failed: try
+ * again), "mismatch" (its registry or USDG isn't the record's), "unknown" (neither v1's nor V2's answers),
+ * "unknownLease" (`lease`, the package's AgentLease, answers no market() or another market's: it reads this market's
+ * sales, so only this one's lease is claimed on).
  */
-export function marketKindOf(c, { market, record }) {
+export function marketKindOf(c, { market, record, lease = null }) {
   const f = c.failed || {}, z = (a) => (isAddr(a) ? lc(a) : null);
   if (c.registry == null || c.usdg == null || c.poolV2 == null) return { error: f.registry === "empty" || f.usdg === "empty" ? "unknown" : "unread" };
   if (!same(c.registry, record && record.registry) || !same(c.usdg, record && record.usdg)) return { error: "mismatch" };
   const addr = { market: lc(market), registry: lc(c.registry), usdg: lc(c.usdg), poolV2: z(c.poolV2), poolV1: z(c.poolV1), inviteBond: z(c.inviteBond), inviteBondV2: z(c.inviteBondV2), spender: null, previous: null };
   if (c.bidSpender == null && f.bidSpender === "empty") {
     if (c.feeBps == null) return { error: "unread" };
-    return { kind: "v1", addr, shares: false };
+    return leaseIn({ kind: "v1", addr, shares: false }, c, { market, lease });
   }
   if (c.bidSpender == null) return { error: f.bidSpender === "reverted" ? "unknown" : "unread" };
   const spender = spenderOf(market);
@@ -163,12 +177,21 @@ export function marketKindOf(c, { market, record }) {
   if (c.MAX_BUILDER_BPS != null) shares = true;
   else if (f.MAX_BUILDER_BPS === "empty") shares = false;
   if (shares === null) return { error: "unread" };
-  return { kind: "v2", addr: { ...addr, spender, previous: z(c.previous) }, shares };
+  return leaseIn({ kind: "v2", addr: { ...addr, spender, previous: z(c.previous) }, shares }, c, { market, lease });
+}
+/** Market `k` with the package's `lease` confirmed (its market(), `c.leaseMarket`, is `market`): k.addr.lease. No
+ *  lease: `k` as it is. */
+function leaseIn(k, c, { market, lease }) {
+  if (lease == null) return k;
+  if (c.leaseMarket == null) return { error: c.failed && ["empty", "reverted"].includes(c.failed.leaseMarket) ? "unknownLease" : "unread" };
+  if (!isAddr(lease) || !same(c.leaseMarket, market)) return { error: "unknownLease" };
+  return { ...k, addr: { ...k.addr, lease: lc(lease) } };
 }
 
 /** What a sale reads of agent `id` (round one): its listing on the market and on `previous`, owner, approval, token
- *  URI, the market's record pin, both pools' records, both bonds and the bond's amount, its last sale, and its builder
- *  share where the market has one, with the owner's switch for shares (buildersOn) at the same block. */
+ *  URI, the market's record pin, both pools' records, both bonds and the bond's amount, its last sale, its builder
+ *  share where the market has one, with the owner's switch for shares (buildersOn) at the same block, and the lease
+ *  stored on it where the package records AgentLease (addr.lease). */
 export function agentReads({ addr, id, shares = false }) {
   const a = addr || {}, i = big(id), out = [], add = adder(out);
   add("listing", a.market, "market", "listingOf", [i]);
@@ -184,6 +207,7 @@ export function agentReads({ addr, id, shares = false }) {
   add("bondAmount", a.inviteBondV2, "bondV2", "amount");
   add("soldAt", a.market, "market", "lastSoldAt", [i]);
   if (shares) { add("builder", a.market, "market", "builderOf", [i]); add("saleSplit", a.market, "market", "saleSplit", [i]); add("buildersOn", a.market, "market", "buildersOn"); }
+  add("lease", a.lease, "lease", "leaseOf", [i]);
   return out;
 }
 /** The wallet's own (`me`): its standing (the pool's custodian and marks, the market's refusal), the pause and the
@@ -344,6 +368,23 @@ function builderIn(c, shares) {
   if (big(b.bps) > 500n) return { error: "unread" };
   return { builder: { to: lc(b.to), bps: big(b.bps) } };
 }
+/**
+ * The claims on the lease around a change of hands of the agent `c` read (the client rule, docs/AGENT-LEASE.md), where
+ * the package records AgentLease (addr.lease): while leaseOf names a renter (a lease that runs, or one that ended and
+ * isn't paid out yet), "claimBefore" first, so each day ended goes to whoever held the agent when it ended, and
+ * "claimAfter" last, so the new holder is recorded at once. A later plan of the same call gives `leased` (the first
+ * plan's: the bracket holds whatever leaseOf says now, since the claim before may close a lease that ran out and a
+ * claim with nothing stored returns 0) and `claimed` (the claim before was sent). { steps, leased } with the claims;
+ * { steps } as they are without them; { error: "unread" } while the lease's read failed.
+ */
+function bracket(c, steps, { addr, leased = false, claimed = false }) {
+  if (!addr || !isAddr(addr.lease)) return { steps };
+  if (!leased) {
+    if (c.lease == null) return { error: "unread" };
+    if (!isAddr(c.lease.renter)) return { steps };
+  }
+  return { steps: [...(claimed ? [] : ["claimBefore"]), ...steps, "claimAfter"], leased: true };
+}
 
 /**
  * Listing agent `id` from `me` (sellState with the terms): `price` (USDG units, 5 USDG or more), `days` (1 to 30) or
@@ -434,11 +475,12 @@ export function listingBlock(c, { addr, now }) {
  * "relisted" with `price` (a nonce or price other than `seen`'s), "changed" with `price` (above `maxPrice`), "self",
  * "paused", "account", "marked", takeChecks' kinds, "record" with `n` and `m` (fewer repaid loans than `minRecord`),
  * "short" with `short` and `cash`), or { steps ("approveUsdg": exactly the price, while the USDG approved to the market
- * is short of it; "buy"), listing, follows (the treasury line comes with it), line, bond (what the buyer locks before it
- * borrows on it), fee, share, net (the seller's), pins: { price, nonce, uriHash (the token URI's bytes hashed here),
- * recordHash (the market's own, at the same block) } }.
+ * is short of it; "buy"; "claimBefore" first and "claimAfter" last while a lease is stored, with `leased`: bracket's,
+ * from its `leased` and `claimed`), listing, follows (the treasury line comes with it), line, bond (what the buyer locks
+ * before it borrows on it), fee, share, net (the seller's), pins: { price, nonce, uriHash (the token URI's bytes hashed
+ * here), recordHash (the market's own, at the same block) } }.
  */
-export function buyPlan(c, { addr, me, now, maxPrice, seen = null, minRecord = 0n, shares = false }) {
+export function buyPlan(c, { addr, me, now, maxPrice, seen = null, minRecord = 0n, shares = false, leased = false, claimed = false }) {
   c = c || {};
   if (noAgent(c)) return { error: "gone" };
   if (unread(c.listing, c.owner, c.approved)) return { error: "unread" };
@@ -465,8 +507,10 @@ export function buyPlan(c, { addr, me, now, maxPrice, seen = null, minRecord = 0
   // what the seller gets: the market's own split when it answers one (the lower fee and share of list and now), else
   // the fee and the share now
   const split = shares && c.saleSplit ? { fee: big(c.saleSplit.fee), share: big(c.saleSplit.share), net: big(c.saleSplit.net) } : netOf(listing.price, { ...feesOf(c), builder: bi.builder, seller: listing.seller });
+  const br = bracket(c, [...(big(c.allowance) < listing.price ? ["approveUsdg"] : []), "buy"], { addr, leased, claimed });
+  if (br.error) return br;
   return {
-    steps: [...(big(c.allowance) < listing.price ? ["approveUsdg"] : []), "buy"], listing, follows, line: follows ? lent : 0n, bond: wants ? big(c.bondAmount) : 0n,
+    steps: br.steps, ...(br.leased ? { leased: true } : {}), listing, follows, line: follows ? lent : 0n, bond: wants ? big(c.bondAmount) : 0n,
     fee: split.fee, share: split.share, net: split.net,
     pins: { price: listing.price, nonce: listing.nonce, uriHash, recordHash: lc(c.record) },
   };
@@ -604,11 +648,11 @@ export function cancelBidPlan(c, { me, now, bidIds, myBids = [] }) {
  * seller, the maker's pins, the net. { error } ("unread", "gone", "notInBid", "taken", "selfAccept", "maker",
  * "unfunded", "paused", saleChecks' kinds, "repaid" (`n`, `m`), "lineBelow" (`line`), "card", "noNet" (`price`, `fee`:
  * the fee takes the whole price, which the contract allows only when the bid is at the minimum fee)), or { steps
- * ("cancelOldPrev", "cancelOld", "bondApprove", "bond", "approve", "accept", in acceptCalls' order), price, maker,
- * proof, fee, share, net (minNet: exact at the read block; a fee changes only after the market's 48 h, and a share only
- * lower), bond, pins }.
+ * ("cancelOldPrev", "cancelOld", "bondApprove", "bond", "approve", "accept", in acceptCalls' order; "claimBefore" first
+ * and "claimAfter" last while a lease is stored, with `leased`, as buyPlan's), price, maker, proof, fee, share, net
+ * (minNet: exact at the read block; a fee changes only after the market's 48 h, and a share only lower), bond, pins }.
  */
-export function acceptPlan(c, { addr, me, now, bidId, id, proof = [], shares = false }) {
+export function acceptPlan(c, { addr, me, now, bidId, id, proof = [], shares = false, leased = false, claimed = false }) {
   c = c || {};
   const key = String(bidId), b = c.bids.get(key);
   if (b == null) return { error: "unread" };
@@ -634,10 +678,11 @@ export function acceptPlan(c, { addr, me, now, bidId, id, proof = [], shares = f
   const approved = same(c.approved, addr.market), mine = ownListing(c.listing, me, now);
   let prevMine = null;
   if (addr.previous) { if (c.prevListing == null) return { error: "unread" }; prevMine = ownListing(c.prevListing, me, now); }
-  const steps = [...(prevMine ? ["cancelOldPrev"] : []), ...(mine && !approved ? ["cancelOld"] : []), ...(s.bond > 0n && s.bondApprove ? ["bondApprove"] : []),
-    ...(s.bond > 0n ? ["bond"] : []), ...(approved ? [] : ["approve"]), "accept"];
+  const br = bracket(c, [...(prevMine ? ["cancelOldPrev"] : []), ...(mine && !approved ? ["cancelOld"] : []), ...(s.bond > 0n && s.bondApprove ? ["bondApprove"] : []),
+    ...(s.bond > 0n ? ["bond"] : []), ...(approved ? [] : ["approve"]), "accept"], { addr, leased, claimed });
+  if (br.error) return br;
   const pr = b.any ? proof.map(lc) : [];
-  return { steps, price: big(b.price), maker: lc(b.maker), any: b.any === true, proof: pr, fee, share, net, bond: s.bond,
+  return { steps: br.steps, ...(br.leased ? { leased: true } : {}), price: big(b.price), maker: lc(b.maker), any: b.any === true, proof: pr, fee, share, net, bond: s.bond,
     pins: { bidId: key, id: big(id), price: big(b.price), maker: lc(b.maker), minNet: net } };
 }
 
@@ -648,8 +693,9 @@ const REGISTRY = new ethers.Interface(["function approve(address to, uint256 tok
 const BOND_V2 = new ethers.Interface(["function deposit(uint256 agentId)"]);
 const to_ = (a) => ethers.getAddress(a).toLowerCase();
 /**
- * One step's transaction: { to, data }. `o`: { addr (marketKindOf's), id, now (the block's time, for the bids' terms),
- * and the plan's own: price, expiry, bond, pins, reserve, proof, net, root, count, uriHash, minRepaid, minLine }.
+ * One step's transaction: { to, data }. `o`: { addr (marketKindOf's; its `lease` for the claims), id, now (the block's
+ * time, for the bids' terms), and the plan's own: price, expiry, bond, pins, reserve, proof, net, root, count, uriHash,
+ * minRepaid, minLine }. "claimBefore" and "claimAfter" are the seam's handoverCalls: claim(id) on the lease.
  */
 export function stepCalls(step, o) {
   const a = o.addr, id = o.id == null ? null : big(o.id);
@@ -667,6 +713,7 @@ export function stepCalls(step, o) {
   if (step === "bidAny") return bidAnyCall({ market: a.market, root: o.root, count: o.count, price: o.price, expiry: o.expiry, now: o.now, minRepaid: o.minRepaid, minLine: o.minLine });
   if (step.startsWith("cancelBid:")) return cancelBidCall({ market: a.market, bidId: step.slice("cancelBid:".length) });
   if (step === "accept") return acceptCall({ market: a.market, bidId: o.pins.bidId, id, proof: o.proof || [], minNet: o.pins.minNet });
+  if (step === "claimBefore" || step === "claimAfter") { const h = handoverCalls({ lease: a.lease, id, leased: true }); return (step === "claimBefore" ? h.before : h.after)[0]; }
   throw new Error(`no such step: ${step}`);
 }
 /** What a step's receipt must hold from the market: the event, by name, the final step of each tool ends with. */
@@ -678,7 +725,8 @@ export const STEP_EVENTS = Object.freeze({ list: "Listed", cancel: "Cancelled", 
  * Every error a step can revert with, by signature, and its kind: AgentMarket's and AgentMarketV2's (src/AgentMarket.sol
  * 123-151, src/AgentMarketV2.sol 151-190, the builder share's of the P5 spec 2.8), the pause's (src/GuardianPause.sol
  * 27-32), BidSpender's (src/BidSpender.sol 22), USDG's two as deployed, the registry's approve from a wallet that doesn't
- * hold the agent, and InviteBondV2's deposit's. The board's ERR set (web/board-wallet-core.js) and the bids' (web/
+ * hold the agent, InviteBondV2's deposit's, and AgentLease's claim's (src/AgentLease.sol: its payout's PayOutOfGas is
+ * the builder share's selector). The board's ERR set (web/board-wallet-core.js) and the bids' (web/
  * board-wallet-bids-core.js), one table. "failed": nothing a plan checks; the step's own words.
  */
 export const MARKET_ERRORS = Object.freeze({
@@ -705,6 +753,8 @@ export const MARKET_ERRORS = Object.freeze({
   // USDG as deployed, the registry, InviteBondV2's deposit
   "InsufficientAllowance()": "allowance", "InsufficientFunds()": "short", "ERC721InvalidApprover(address)": "notOwner", "ERC721NonexistentToken(uint256)": "cantSell",
   "NotOwner(uint256)": "notOwner", "AgentDefaulted(uint256)": "defaulted", "LoanOpen(uint256)": "loan", "NotTreasuryLine(uint256)": "line", "AlreadyBonded(uint256)": "failed",
+  // AgentLease's claim around a change of hands: never paused, it waits while the registry doesn't answer
+  "RegistryFailed(uint256)": "registry",
 });
 const SELECTORS = new Map(Object.entries(MARKET_ERRORS).map(([sig, kind]) => [ethers.id(sig).slice(0, 10), { sig, kind }]));
 /**
@@ -797,6 +847,9 @@ export const PLAN_WORDS = Object.freeze({
   // the hub
   hubDown: "Priors' hub at {hub} didn't answer, so {what} can't be read. Try again later.",
   noSet: "Priors' hub has no list for {origin} now. Bid on one agent instead.",
+  // the lease's claims around a change of hands (AgentLease, where the package records it)
+  unknownLease: "The lease at {lease} doesn't answer as the lease of the market this server knows. Update @priors/mcp.",
+  registry: LEASE_WORDS.errors.registry,
 });
 /** A bid's and an accept's refusals: market-bids' BID_WORDS.errors as they are, but "over" (this server's own limit),
  *  the two that name Go mode's buttons, which this server doesn't have, "notInBid", said here without the list's day

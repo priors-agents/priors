@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "priors",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pay x402 APIs on credit: an ERC-8004 agent borrows the gap in USDG from its Priors line, pays, repays, and reads another agent's repayment record before paying it.",
   "author": {
     "name": "Priors",

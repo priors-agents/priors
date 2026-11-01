@@ -266,11 +266,16 @@ export async function v5BeforeBorrow({ signer, pool, v5, v5Root, agentId, term, 
  * borrow step; every refusal happens before any transaction (a SeatVaultV5 line's refresh, v5BeforeBorrow, comes
  * first: it is what gives the line its room), but V5_DELEGATE_WAIT for a key V5 had not recorded, which is recorded
  * first (noteDelegate: its 24 h start then).
+ * `fitTerm`: `termSeconds` is the term wanted, not required: it is brought down to the pool's maxTerm and, on a
+ * SeatVaultV5 line, to the 10 days V5 lends for, instead of being refused. `beforeBorrow({ agentId, amount, fee, term,
+ * due })`, when given, is the caller's last word once the loan is known and before anything is sent (a refresh, a
+ * noteDelegate or the borrow): a throw refuses the borrow, and the error is the caller's.
  * @param {{ signer: any, pool: any, agentId?: bigint|number|string, price: bigint, balance: bigint, maxBorrow: bigint,
- *   termSeconds?: bigint|number, maxFee?: bigint, me?: string }} o
+ *   termSeconds?: bigint|number, maxFee?: bigint, me?: string, fitTerm?: boolean,
+ *   beforeBorrow?: (loan: { agentId: bigint, amount: bigint, fee: bigint, term: bigint, due: bigint }) => any }} o
  * @returns {Promise<{ borrowed: bigint, loanId: bigint|null, dueAt: bigint|null, fee: bigint, term: bigint }>}
  */
-export async function borrowGap({ signer, pool, agentId, price, balance, maxBorrow, termSeconds, maxFee, me, v5, v5Root, ownerOf, agentWalletOf }) {
+export async function borrowGap({ signer, pool, agentId, price, balance, maxBorrow, termSeconds, maxFee, me, v5, v5Root, ownerOf, agentWalletOf, fitTerm = false, beforeBorrow }) {
   const cap = BigInt(maxBorrow ?? 0n);
   if (price > cap) throw new PayError("PRICE_ABOVE_MAX_BORROW", `pay: price ${price} is above maxBorrow ${cap}; not borrowing`, { price, maxBorrow: cap });
   const poolC = pool ? poolContract(pool, signer) : null;
@@ -285,10 +290,12 @@ export async function borrowGap({ signer, pool, agentId, price, balance, maxBorr
   if (amount > p.maxLoan) throw new PayError("ABOVE_MAX_LOAN", `pay: ${amount} is above the pool's maxLoan ${p.maxLoan}`);
   let term = termSeconds === undefined ? BigInt(DEFAULT_TERM_SECONDS) : BigInt(termSeconds);
   if (term < p.minTerm) term = p.minTerm;
-  if (termSeconds === undefined && term > p.maxTerm) term = p.maxTerm;
+  if ((termSeconds === undefined || fitTerm) && term > p.maxTerm) term = p.maxTerm;
+  if (fitTerm && v5 && v5Root && BigInt(v5Root) !== 0n && term > BigInt(V5_MAX_TERM_S) && BigInt((await poolC.getAgent(agentId)).sponsor) === BigInt(v5Root)) term = BigInt(V5_MAX_TERM_S);
   if (term > p.maxTerm) throw new PayError("TERM_OUT_OF_RANGE", `pay: term ${term} is above the pool's maxTerm ${p.maxTerm}`);
   const [fee] = await poolC.quoteFee(agentId, amount, term);
   if (maxFee !== undefined && fee > BigInt(maxFee)) throw new PayError("FEE_TOO_HIGH", `pay: loan fee ${fee} is above maxFee ${maxFee}`);
+  if (typeof beforeBorrow === "function") await beforeBorrow({ agentId: BigInt(agentId), amount, fee, term, due: amount + fee });
   const to = me || (await signer.getAddress());
   await v5BeforeBorrow({ signer, pool: poolC, v5, v5Root, agentId, term, ownerOf });
   // Simulate first: a doomed borrow says why (its custom error) before any gas is spent.

@@ -1,10 +1,11 @@
 // @priors/plugin-elizaos: Priors credit for elizaOS agents. Four actions over the two Priors MCP servers (priors.js):
 // read another agent's repayment record, read the agent's own line, pay an x402 URL that borrows the gap when the
 // wallet is short, and repay a loan. Every amount and URL comes from the user's own message (parse.js); a payment
-// borrows only when the message names the most to borrow. The caps, the host allowlist and the signing are
-// @priors/mcp's own.
+// borrows only when the message names the most to borrow, or, with the agent's PRIORS_AUTO_BORROW_USD set, on its own
+// within that setting (a message saying not to borrow never does). A JSON body in the message is sent with POST (a
+// chat completion bought over x402). The caps, the host allowlist and the signing are @priors/mcp's own.
 import { priorsOf } from "./priors.js";
-import { urlOf, agentIdOf, loanIdOf, maxPriceOf, maxBorrowOf } from "./parse.js";
+import { urlOf, agentIdOf, loanIdOf, maxPriceOf, borrowOf, bodyOf } from "./parse.js";
 
 const textOf = (message) => String((message && message.content && message.content.text) || "");
 
@@ -48,21 +49,28 @@ export const creditStatusAction = {
 export const payX402Action = {
   name: "PRIORS_PAY_X402",
   similes: ["PAY_X402", "PAY_HTTP_402", "BUY_API_CALL"],
-  description: "Pay an HTTP 402 (x402) URL in USDG from this agent's wallet. If the wallet is short, it borrows the gap from the agent's Priors line, only when the message names the most to borrow. The message must name the URL and the most to pay. Real money.",
+  description: "Pay an HTTP 402 (x402) URL in USDG from this agent's wallet, with GET, or with POST when the message gives a JSON body (a chat completion, for one). If the wallet is short, it borrows the gap from the agent's Priors line, when the message names the most to borrow, or, with the agent's PRIORS_AUTO_BORROW_USD set, on its own within that setting while Autopay covers the loan. The message must name the URL and the most to pay. Real money.",
   validate: async (_runtime, message) => !!urlOf(textOf(message)) && /\bpay|buy|call|fetch/i.test(textOf(message)),
   handler: async (runtime, message, _state, _options, callback) => {
     const text = textOf(message);
-    const url = urlOf(text), maxPrice = maxPriceOf(text), maxBorrow = maxBorrowOf(text);
+    const b = bodyOf(text);
+    const rest = b ? text.replace(b.raw, " ") : text;
+    const url = urlOf(rest), maxPrice = maxPriceOf(rest), borrow = borrowOf(rest);
+    if (!url) return answer(callback, "PRIORS_PAY_X402", false, "Nothing was paid. Name the https URL to pay outside the request body.", {});
     if (maxPrice === null || maxPrice <= 0) {
       return answer(callback, "PRIORS_PAY_X402", false, `Nothing was paid. Say the most to pay for ${url}, for example "at most 0.10", and if the wallet may borrow, the most to borrow, for example "borrow up to 1".`, { url });
     }
-    const args = { url, max_price_usd: maxPrice, ...(maxBorrow > 0 ? { max_borrow_usd: maxBorrow } : {}) };
+    // a borrow the message names, 0 included, is passed as said; none named leaves it to @priors/mcp's own setting
+    const args = { url, max_price_usd: maxPrice, ...(borrow !== null ? { max_borrow_usd: borrow } : {}), ...(b ? { method: "POST", body: b.body } : {}) };
     const r = await priorsOf(runtime).wallet("pay_url", args);
-    return answer(callback, "PRIORS_PAY_X402", r.ok, r.text, { url, maxPrice, maxBorrow });
+    return answer(callback, "PRIORS_PAY_X402", r.ok, r.text, { url, maxPrice, maxBorrow: borrow ?? 0, ...(b ? { method: "POST" } : {}) });
   },
   examples: [[
     { name: "{{user1}}", content: { text: "Pay https://check.blockpin.dev/check at most 0.10, borrow up to 5 if the wallet is short." } },
     { name: "{{agentName}}", content: { text: "Paid 0.10 USDG; the wallet was short, so it borrowed 5 USDG, the pool's minimum loan, from the Priors line (loan #50900, due 6 November).", actions: ["PRIORS_PAY_X402"] } },
+  ], [
+    { name: "{{user1}}", content: { text: "Buy one chat completion from https://agent402.tools/v1/chat/completions at most 0.02: {\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"Summarise x402 in one line.\"}]}" } },
+    { name: "{{agentName}}", content: { text: "Paid 0.02 USDG to agent402.tools with POST; the model answered: \"x402 lets an API charge per call over HTTP 402.\"", actions: ["PRIORS_PAY_X402"] } },
   ]],
 };
 

@@ -8,11 +8,12 @@
 //                       bond: USDG approve, deposit], registry approve(market, id), list
 //   market_cancel       cancel, on the market and/or on V2's v1
 //   market_buy          [USDG approve(market, exactly the price)], buy with the listing's nonce, the URI's hash and the
-//                       market's own record pin
+//                       market's own record pin; [claim on the agent's lease before and after]
 //   market_bid          (V2) [USDG approve(spender, exactly what all open bids take)], bid
 //   market_bid_any      (V2) [the same approve], bidAny on the hub's list for an origin, checked against its root
 //   market_cancel_bid   (V2) cancelBid ×1-10, then the reserve trimmed to what is left
-//   market_accept       (V2) [the two cancels], [the bond], registry approve(market, id), acceptBid with minNet exact
+//   market_accept       (V2) [the two cancels], [the bond], registry approve(market, id), acceptBid with minNet exact;
+//                       [claim on the agent's lease before and after]
 //
 // sdk/market-plan.mjs (./market-plan.mjs here, a byte-for-byte copy) checks every rule of the contract on reads taken at
 // one block before anything is signed; each step is then simulated just before it is signed, and before each later step
@@ -20,6 +21,15 @@
 // answer says what the steps already mined leave standing. The market is the package's own record
 // (deployments/4663.agent-market-v2.json when it is there, else 4663.agent-market.json), confirmed on chain at the first
 // market call of the process; there is no address setting, so no page or model can steer an approval elsewhere.
+//
+// Renting: once the package carries AgentLease's record (deployments/4663.agent-lease.json, beside V2's; none before
+// the lease is deployed), its address is confirmed with the market (the lease's market() is V2), and market_buy and
+// market_accept claim on the lease before and after the change of hands while a lease is stored on the agent, as every
+// change of hands on Priors does (docs/AGENT-LEASE.md, the client rule): each day's rent then goes to whoever held the
+// agent when it ended. The claim after is sent once the change of hands is mined, with nothing read or planned again
+// (a claim with nothing stored returns 0); one that can't be sent, or doesn't go through, leaves the change as it is,
+// and the answer says so, a retry's from the market record too. Without the record every tool, read and answer is as
+// before.
 //
 // What keeps a planted instruction from costing the wallet: selling is off unless PRIORS_MARKET_SELL allows the agent,
 // never the agent the server acts for (PRIORS_AGENT_ID), never under PRIORS_MARKET_MIN_SELL_USD; a buy or a bid is held
@@ -39,10 +49,17 @@ import { z } from "zod";
 import * as M from "./market-plan.mjs";
 import { LISTING_RULES, LISTING_WORDS } from "./market-abi.mjs";
 import { MARKET_V2_IFACE, bidView, proofOf, idsRootOf, inRoot } from "./market-bids.mjs";
+import { leaseView } from "./agent-lease.mjs";
 import { dailyLedger, ledgerOwners } from "./daily.mjs";
 
 const V1_TOOLS = ["market_agent", "market_list", "market_cancel", "market_buy"];
 const V2_TOOLS = [...V1_TOOLS, "market_bid", "market_bid_any", "market_cancel_bid", "market_accept"];
+/** The claims on the lease around a change of hands (market-plan's bracket): the change itself is the last step that
+ *  isn't one. */
+const CLAIMS = new Set(["claimBefore", "claimAfter"]);
+const mainStep = (steps, stage = (x) => x.step) => [...steps].reverse().find((x) => !CLAIMS.has(stage(x))) || steps[steps.length - 1];
+/** The change of hands of each tool that claims around one, as the claims' words name it ("tx .. before the buy"). */
+const CHANGE = Object.freeze({ market_buy: "the buy", market_accept: "the sale" });
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
 const lc = (a) => String(a).toLowerCase();
 const same = (a, b) => a != null && b != null && lc(a) === lc(b);
@@ -107,14 +124,19 @@ export function marketSettings(env, { looksLikeKey, stateDir }) {
   };
 }
 
+/** A record in this package's deployments/, parsed, or null when it isn't there. */
+const packageRecord = (f) => { const u = new URL(`../deployments/${f}`, import.meta.url); return existsSync(u) ? JSON.parse(readFileSync(u, "utf8")) : null; };
 /** The market this package knows (8.3): V2 once deployments/4663.agent-market-v2.json is in it, with v1 as its
- *  `previous`; else v1. { kind, market, previous, adapters } (the NFT adapters that hold agents no market sells). */
-export function marketRecord() {
-  const read = (f) => { const u = new URL(`../deployments/${f}`, import.meta.url); return existsSync(u) ? JSON.parse(readFileSync(u, "utf8")) : null; };
-  const v1 = read("4663.agent-market.json"), v2 = read("4663.agent-market-v2.json"), op = read("origin-platforms.4663.json");
+ *  `previous`; else v1. { kind, market, previous, adapters } (the NFT adapters that hold agents no market sells), and
+ *  `lease` once deployments/4663.agent-lease.json is in it too (AgentLease, written by its deploy: `agentLease`, and
+ *  `market`, which must be V2's). A lease record beside v1 alone, or naming another market, stops the start. `read`: a
+ *  test's records by file name. */
+export function marketRecord(read = packageRecord) {
+  const v1 = read("4663.agent-market.json"), v2 = read("4663.agent-market-v2.json"), op = read("origin-platforms.4663.json"), leaseRec = read("4663.agent-lease.json");
   const adapters = (op && Array.isArray(op.adapters) ? op.adapters : []).filter(isAddr).map(lc);
   const v2At = v2 && (v2.agentMarketV2 || v2.agentMarket || v2.market);
-  if (isAddr(v2At)) return { kind: "v2", market: lc(v2At), previous: v1 && isAddr(v1.agentMarket) ? lc(v1.agentMarket) : null, adapters };
+  if (leaseRec && (!isAddr(v2At) || !isAddr(leaseRec.agentLease) || !same(leaseRec.market, v2At))) throw new Error("this package's AgentLease record (deployments/4663.agent-lease.json) doesn't name a lease of its AgentMarketV2 (deployments/4663.agent-market-v2.json)");
+  if (isAddr(v2At)) return { kind: "v2", market: lc(v2At), previous: v1 && isAddr(v1.agentMarket) ? lc(v1.agentMarket) : null, adapters, ...(leaseRec ? { lease: lc(leaseRec.agentLease) } : {}) };
   if (!v1 || !isAddr(v1.agentMarket)) throw new Error("this package has no AgentMarket record (deployments/4663.agent-market.json)");
   return { kind: "v1", market: lc(v1.agentMarket), previous: null, adapters };
 }
@@ -165,14 +187,16 @@ export function registerMarketTools(ctx) {
     const call = M.aggregateCall(reads);
     return M.aggregateOut(await withinTime(provider.call({ to: call.to, data: call.data, blockTag }), left()));
   }
-  // the market, confirmed once a process (8.3): a failed read is tried again at the next call
+  // the market, confirmed once a process (8.3), with the package's lease when it has one: a failed read is tried again
+  // at the next call
   let kindCache = null;
   async function marketOf(left) {
     if (kindCache) return kindCache;
     let c;
-    try { const reads = M.kindReads(REC.market); c = M.readsOut(reads, await multicall(reads, "latest", left)); } catch (e) { throw refuse("unread"); }
-    const k = M.marketKindOf(c, { market: REC.market, record: { registry: addresses.registry, usdg: addresses.usdg } });
+    try { const reads = M.kindReads(REC.market, REC.lease); c = M.readsOut(reads, await multicall(reads, "latest", left)); } catch (e) { throw refuse("unread"); }
+    const k = M.marketKindOf(c, { market: REC.market, record: { registry: addresses.registry, usdg: addresses.usdg }, lease: REC.lease });
     if (k.error === "unread") throw refuse("unread");
+    if (k.error === "unknownLease") throw refuse("unknownLease", { lease: ethers.getAddress(REC.lease) });
     if (k.error || k.kind !== REC.kind || (k.kind === "v2" && REC.previous && !same(k.addr.previous, REC.previous))) throw refuse("unknownMarket", { market: ethers.getAddress(REC.market) });
     kindCache = k;
     return k;
@@ -297,9 +321,10 @@ export function registerMarketTools(ctx) {
   /**
    * 2. At each market call: settle the step an earlier call sent (8.7). Pending, or not known to the node while its
    * nonce is unused: TX_UNCONFIRMED, nothing new is sent. Mined: marked; once every step of it is settled it joins
-   * `done`, answered again for a retry of the same call for 10 minutes from now. Another server's call still between its
-   * steps: OTHER_SESSION. This server's own (it ended: one call of a server runs at a time), and one that sent nothing,
-   * hold nothing.
+   * `done`, answered again for a retry of the same call for 10 minutes from now, as does a buy or an accept whose every
+   * step but the claim on the lease after it is mined (that claim mined or not, the answer says which). Another
+   * server's call still between its steps: OTHER_SESSION. This server's own (it ended: one call of a server runs at a
+   * time), and one that sent nothing, hold nothing.
    */
   async function settleRecord(T) {
     let r = readRec();
@@ -321,12 +346,21 @@ export function registerMarketTools(ctx) {
     }
     // mined steps: their receipts, for the answer of the call that sent them
     for (const s of steps) if (s.state === "mined" && !rcs.has(s.hash)) { const seen = await lookupTx(s.hash, T.end); if (seen && seen.state === "mined") rcs.set(s.hash, seen.rc); }
-    const finished = op.steps.length > 0 && steps.length === op.plan.length && steps.every((s) => s.state === "mined");
-    // a call of another server, still between its steps: never overtaken
-    if (!finished && steps.length && steps.every((s) => s.state === "mined") && op.by !== SESSION && Date.now() - op.at * 1000 < 2 * callBudgetMs) throw fail(`Another session of this wallet is running ${op.tool} now. ${NOTHING} Call again in a minute.`);
-    const k = kindCache, at = nowS();
-    const made = k ? steps.filter((s) => s.state === "mined").flatMap((s) => (rcs.get(s.hash) ? bidMadeIn(rcs.get(s.hash), k, wallet.address).map((id) => ({ id, block: Number(BigInt(rcs.get(s.hash).blockNumber)), at })) : [])) : [];
-    const answer = finished ? `${cap1(stageWords(steps[steps.length - 1].stage, op.id))} went through (tx ${steps.map((s) => s.hash).join(", ")})${made.length ? `: bid #${made.map((b) => b.id).join(", #")}` : ""}.` : null;
+    const n = op.plan.length, mined = (s) => s.state === "mined";
+    // a call of another server, still between its steps: never overtaken (its claim on the lease after the change of
+    // hands included, while it may still send it)
+    if (steps.length && steps.length < n && steps.every(mined) && op.by !== SESSION && Date.now() - op.at * 1000 < 2 * callBudgetMs) throw fail(`Another session of this wallet is running ${op.tool} now. ${NOTHING} Call again in a minute.`);
+    // the claim on the lease after a change of hands is best effort (execute): once every step before it is mined the
+    // change went through, whether that claim then landed, was dropped or reverted ("failed"), or was never sent
+    // ("unsent")
+    const claimLeft = op.plan[n - 1] === "claimAfter" && steps.length >= n - 1 && steps.slice(0, n - 1).every(mined);
+    const finished = op.steps.length > 0 && ((steps.length === n && steps.every(mined)) || claimLeft);
+    const missed = !claimLeft || (steps.length === n && mined(steps[n - 1])) ? null : steps.length < n ? "unsent" : "failed";
+    const k = kindCache, at = nowS(), ok = steps.filter(mined);
+    const made = k ? ok.flatMap((s) => (rcs.get(s.hash) ? bidMadeIn(rcs.get(s.hash), k, wallet.address).map((id) => ({ id, block: Number(BigInt(rcs.get(s.hash).blockNumber)), at })) : [])) : [];
+    // named by its change of hands, not the claim on the lease after it: the steps mined, and the claims' line when the
+    // claim after didn't go through
+    const answer = finished ? `${cap1(stageWords(mainStep(steps, (x) => x.stage).stage, op.id))} went through (tx ${ok.map((s) => s.hash).join(", ")})${made.length ? `: bid #${made.map((b) => b.id).join(", #")}` : ""}.${missed ? ` ${claimsWords(ok.map((s) => ({ step: s.stage, hash: s.hash })), { leased: true }, op.id, CHANGE[op.tool], missed).join(" ")}` : ""}` : null;
     try { r = await writeRec({ op: null, done: [...r.done, ...(answer ? [{ tool: op.tool, key: op.key, at, answer }] : [])], bids: [...r.bids, ...made] }, r.rev); } catch (e) {
       if (e?.code === "OTHER_SESSION") throw fail(`another session of this wallet changed its market record just now. ${NOTHING} Call again in a minute.`);
       throw fail(`the market record (${recFile}) could not be written (${e?.message || e}). ${NOTHING} Fix PRIORS_STATE_DIR, then call again.`);
@@ -366,6 +400,8 @@ export function registerMarketTools(ctx) {
     if (stage === "bidAny") return "the bid on an origin's agents";
     if (stage.startsWith("cancelBid:")) return `the cancel of bid #${stage.slice(10)}`;
     if (stage === "accept") return `the accept of a bid for ${a}`;
+    if (stage === "claimBefore") return `the claim on ${a}'s lease before it changes hands`;
+    if (stage === "claimAfter") return `the claim on ${a}'s lease after it changed hands`;
     return stage;
   }
   /** What a step already mined leaves standing, said when a call stops after it. */
@@ -384,10 +420,12 @@ export function registerMarketTools(ctx) {
   // ceilings, about 1.25 times each step's gas on an anvil fork of chain 4663 at block 99,412,584 (2026-10-27: v1 list
   // 316,483, buy 282,356, cancel 49,272; V2 list 326,793, bid 242,570, bidAny 133,439, cancelBid 36,028 to 38,892,
   // acceptBid 319,757; the registry's approve 53,244, USDG's 57,964); InviteBondV2's deposit, not measured there, keeps
-  // first_line's ceiling for InviteBond's. Each step is estimated again before it is signed. Ceiling: a chain or
+  // first_line's ceiling for InviteBond's. AgentLease's claim isn't deployed, so not measured: it pays at most three
+  // transfers (the holder at the last payout, the owner now, the fee), and 20 of them are to fit the gas gate's 3M a
+  // call, so 250,000 leaves room. Each step is estimated again before it is signed. Ceiling: a chain or
   // contract change that makes a step cost more. Upgrade trigger: a call that stops on gas after its first step.
   const GAS = { cancelOldPrev: 65_000n, cancelOld: 65_000n, cancel: 65_000n, cancelPrev: 65_000n, bondApprove: 75_000n, bond: 400_000n, approve: 70_000n, list: 410_000n,
-    approveUsdg: 75_000n, buy: 360_000n, approveReserve: 75_000n, bid: 305_000n, bidAny: 170_000n, cancelBid: 50_000n, accept: 400_000n };
+    approveUsdg: 75_000n, buy: 360_000n, approveReserve: 75_000n, bid: 305_000n, bidAny: 170_000n, cancelBid: 50_000n, accept: 400_000n, claimBefore: 250_000n, claimAfter: 250_000n };
   const gasOf = (stage) => GAS[stage.startsWith("cancelBid:") ? "cancelBid" : stage] ?? 300_000n;
   async function feeNow(T, tail) {
     let fee;
@@ -525,10 +563,11 @@ export function registerMarketTools(ctx) {
 
   /**
    * Steps 2 to 12 for one write tool. `o`: { name, role, args, id, me, dry, read (the snapshot's options, from the
-   * record), plan (s, k, first) => a plan (first: the first plan, null for it), check (plan, s, rec) => throws a
-   * refusal of the first plan, facts (plan, s) => lines for dry_run, keep (plan) => what leaves the wallet (keep back;
-   * null: nothing), day (plan) => the day's reservation, counted (step, plan) => what a broadcast step counts, done
-   * (ctx) => the answer }.
+   * record), plan (s, k, first, T, sent) => a plan (first: the first plan, null for it; sent: the steps mined so far),
+   * check (plan, s, rec) => throws a refusal of the first plan, facts (plan, s) => lines for dry_run, keep (plan) =>
+   * what leaves the wallet (keep back; null: nothing), day (plan) => the day's reservation, counted (step, plan) =>
+   * what a broadcast step counts, done (ctx) => the answer (ctx.missed: "time" when the call's time left no room for
+   * the claim on the lease after the change of hands, "failed" when it didn't go through, else null) }.
    */
   async function execute(o, deadline) {
     const T = timing(deadline), me = o.me;
@@ -562,9 +601,15 @@ export function registerMarketTools(ctx) {
       rec = { ...rec, op: null };
       const sent = [];
       const first = plan;
-      let steps = stepsAll;
+      let steps = stepsAll, missed = null;
       while (steps.length) {
-        if (sent.length) {
+        const step = steps[0];
+        // the claim on the lease after a change of hands: the change is mined, so nothing is read or planned again (a
+        // claim with nothing stored returns 0); one the call's time leaves no room for, or that doesn't go through,
+        // leaves the change as it is, and the answer says so
+        const after = step === "claimAfter";
+        if (after && T.end - Date.now() < stepMs) { missed = "time"; break; }
+        if (sent.length && !after) {
           // 10.1: read everything again at the latest block and plan again; the rest and the terms must be the same
           let again;
           try { s = await snapshot(k, await o.read(rec, k, T, sent), T.left); again = await o.plan(s, k, first, T, sent); } catch (e) {
@@ -575,7 +620,6 @@ export function registerMarketTools(ctx) {
           if (why) throw fail(`Sent ${sentWords(sent, o)}, then stopped. ${cap1(why)} ${NOTHING_MORE}${standing(sent[sent.length - 1].step)}`);
           plan = again;
         }
-        const step = steps[0];
         // 6 again, on the new reads, before a later step that takes USDG or raises what the bids may take: USDG
         // that left the wallet since the first read (another session's pay_url, an autopay pull) counts
         const out2 = sent.length && o.keep && TAKES.has(step) ? o.keep(plan) : null;
@@ -585,15 +629,25 @@ export function registerMarketTools(ctx) {
           }
         }
         const call = M.stepCalls(step, { addr: k.addr, id: o.id, now: s.now, ...plan });
-        const r = await sendStep({ step, call, o: { id: o.id, vars: { ...o.vars, id: o.id }, ...plan }, rec, opBase, sent, T, role: o.role });
+        let r;
+        try { r = await sendStep({ step, call, o: { id: o.id, vars: { ...o.vars, id: o.id }, ...plan }, rec, opBase, sent, T, role: o.role }); } catch (e) {
+          // a claim after that was sent and not seen yet stays in the record as any step does (TX_UNCONFIRMED)
+          if (!after || !(e instanceof ToolError) || /^TX_UNCONFIRMED/.test(e.message)) throw e;
+          missed = "failed";
+          // the record as the step left it (one mined and reverted is kept so), while its op is still this call's: the
+          // answer below is then kept for a retry; another session's op is never written over
+          try { const cur = readRec(); if (cur.op && cur.op.by === SESSION && cur.op.key === key && cur.op.at === opBase.at) rec = cur; } catch (_) { /* settled next time */ }
+          break;
+        }
         counted += o.counted ? o.counted(step, plan) : 0n;
         rec = r.rec;
         sent.push({ step, hash: r.hash, rc: r.rc, o: plan });
         steps = steps.slice(1);
       }
-      // 11. read back: the market's event in the final receipt, and the chain now
+      // 11. read back: the market's event in the change of hands' receipt (the final one, but for a claim on the lease
+      // after it), and the chain now
       const last = sent[sent.length - 1];
-      const answer = await o.done({ k, sent, plan, first, events: eventsOf(last.rc, k), T, s });
+      const answer = await o.done({ k, sent, plan, first, events: eventsOf(mainStep(sent).rc, k), T, s, missed });
       const made = bidMadeIn(last.rc, k, me).map((id) => ({ id, block: Number(BigInt(last.rc.blockNumber)), at: nowS() }));
       // the record's bids: those bidOf last showed closed, and those this call cancelled, are dropped
       const gone = new Set(sent.filter((x) => x.step.startsWith("cancelBid:")).map((x) => x.step.slice(10)));
@@ -629,6 +683,30 @@ export function registerMarketTools(ctx) {
   const ceiling = (amount) => { if (amount > S.maxMarket) throw refuse("ceiling", { amount, max: S.maxMarket }); };
   const sellerWords = (p) => `${amt(p.price)} USDG. Fee ${amt(p.fee)}.${p.share > 0n ? ` Builder share ${amt(p.share)}.` : ""}`;
   const holdNow = (c) => { const t = Number(c.soldAt ?? 0); return t === 0 ? 0 : t + LISTING_RULES.holdS; };
+
+  /* ---- the lease's claims around a change of hands (only where the package records AgentLease) ---- */
+  /** A later plan's part of market-plan's bracket: the first plan's, and whether the claim before was sent. */
+  const claimsOf = (first, sent = []) => ({ leased: !!(first && first.leased), claimed: sent.some((x) => x.step === "claimBefore") });
+  /** The lease that runs on the agent `c` read, as every surface says it ("Run by 0x12..ab until 30 Nov"), or null. */
+  const runOf = (c, now) => (c && c.lease ? leaseView(c.lease, { nowS: now }) : null);
+  /** What a buyer of a rented agent gets (the seam's Sell words, LEASE_WORDS.sell, say the same to a seller). */
+  const RENTED = "A buyer gets it with the lease and the rent of each day that ends after the sale.";
+  /** dry_run's line for a plan with the claims (`what`: CHANGE's): the lease that runs, and the claims. */
+  const leaseFacts = (p, s, id, what) => {
+    if (!p.leased) return [];
+    const run = runOf(s.c, s.now);
+    return [`${run ? `${run.words}. ${RENTED} ` : ""}A claim on its lease comes before ${what} and after it, so each day ended goes to whoever held #${id} when it ended; the claims cost this wallet gas only.`];
+  };
+  /** The answer's line on the claims once the change of hands is mined (`what`: CHANGE's; `missed`: execute's, "time"
+   *  for a claim after the call's time left no room for and "failed" for one that didn't go through, or the record's
+   *  settling, "unsent" for one never sent and "failed" for one dropped or reverted). */
+  const claimsWords = (sent, first, id, what, missed) => {
+    if (!first.leased) return [];
+    const b = sent.find((x) => x.step === "claimBefore"), a = sent.find((x) => x.step === "claimAfter");
+    const said = [b && `tx ${b.hash} before ${what}`, a && `tx ${a.hash} after it`].filter(Boolean).join(", ");
+    const miss = missed === "time" ? "The claim after it wasn't sent: this call's time ran out." : missed === "unsent" ? "The claim after it wasn't sent." : missed ? "The claim after it didn't go through." : "";
+    return [[said ? `Claims on its lease: ${said}.` : "", miss && `${miss} The lease's next claim, by anyone, records #${id}'s new holder.`].filter(Boolean).join(" ")];
+  };
   const agentIdIn = z.number().int().nonnegative().describe("The agent's ERC-8004 id on Robinhood Chain.");
   const dryRun = z.boolean().optional().describe("true: read and plan, list the transactions in order, send nothing.");
   const daysIn = z.number().int().min(1).max(30).optional().describe("How long it stands, 1 to 30 days. Default 7.");
@@ -638,7 +716,7 @@ export function registerMarketTools(ctx) {
   /* ---- market_agent ---- */
   tool("market_agent", {
     title: "Read an agent on the market",
-    description: `Read one agent on Priors' agent market (AgentMarket${kind === "v2" ? "V2" : ""} on Robinhood Chain), from the chain: who holds it (and whether that is this wallet), its listing (the asking price, the fee, what the seller gets, until when${kind === "v2" ? "; also its listing on the older market" : ""}), its 14-day hold, whether its treasury line goes with it and the bond a buyer locks, and whether this server may sell it.${kind === "v2" ? " With its open bids from Priors' hub, each read again on chain: the bid id, the price, what the owner gets, the maker's pins and, for a bid on an origin, the proof market_accept takes." : ""} Read-only.`,
+    description: `Read one agent on Priors' agent market (AgentMarket${kind === "v2" ? "V2" : ""} on Robinhood Chain), from the chain: who holds it (and whether that is this wallet)${REC.lease ? ", who runs it under a lease and until when (a buyer gets it with the lease)" : ""}, its listing (the asking price, the fee, what the seller gets, until when${kind === "v2" ? "; also its listing on the older market" : ""}), its 14-day hold, whether its treasury line goes with it and the bond a buyer locks, and whether this server may sell it.${kind === "v2" ? " With its open bids from Priors' hub, each read again on chain: the bid id, the price, what the owner gets, the maker's pins and, for a bid on an origin, the proof market_accept takes." : ""} Read-only.`,
     inputSchema: { agent_id: agentIdIn },
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, async ({ agent_id }) => {
@@ -654,6 +732,11 @@ export function registerMarketTools(ctx) {
     if (c.owner == null) throw fail(c.failed.owner === "reverted" ? `#${id} isn't an agent on Robinhood Chain's registry.` : M.planWords("unread"));
     const lines = [], data = { agentId: String(id), market: ethers.getAddress(k.addr.market), kind: k.kind, owner: c.owner, yours: same(c.owner, me), listing: null, previousListing: null, holdUntil: null, line: null, bond: null, sell: null, bids: [] };
     lines.push(`#${id} is held by ${ethers.getAddress(c.owner)}${same(c.owner, me) ? " (this wallet)" : ""}.`);
+    // the lease that runs on it, where the package records AgentLease: an address and a date, as for every agent (a
+    // lease that couldn't be read is said, as market_buy and market_accept wait for it)
+    const run = k.addr.lease ? runOf(c, s.now) : null;
+    if (run) { data.runBy = { by: run.by, until: run.until }; lines.push(`${run.words}. ${RENTED}`); }
+    else if (k.addr.lease && c.lease == null) lines.push(`Whether #${id} is rented couldn't be read just now.`);
     const a = c.agent, follows = a && BigInt(a.sponsor) !== 0n && c.followed === true, lent = a ? BigInt(a.delegatedIn) : 0n;
     const shares = k.shares && c.builder && isAddr(c.builder.to) ? { to: c.builder.to, bps: BigInt(c.builder.bps) } : null;
     const view = (l, where) => {
@@ -775,7 +858,7 @@ export function registerMarketTools(ctx) {
   /* ---- market_buy ---- */
   tool("market_buy", {
     title: "Buy an agent",
-    description: `Buy an agent listed on Priors' agent market from this wallet's USDG, at its asking price, only if that is at most max_price_usd (required, no default): an approval of exactly the price when the USDG approved is short, then buy, pinned to the listing it read (its nonce, the agent's file and its record), so a listing changed meanwhile is refused on chain. The agent comes with its on-chain record, and a treasury line comes with it (lock your own bond before it borrows); its agent wallet is cleared by the transfer. Held to PRIORS_MAX_MARKET_USD (${amt(S.maxMarket)} USDG) a buy and PRIORS_MAX_MARKET_DAY_USD a day, only agents with PRIORS_MARKET_MIN_REPAID repaid loans or more, and never leaving less USDG (savings included) than agent #${S.agentId}'s open loans owe. Moves real money: state the agent, the price and the fee to the user and get their go-ahead first; dry_run: true lists the transactions without sending. Needs ETH for gas.`,
+    description: `Buy an agent listed on Priors' agent market from this wallet's USDG, at its asking price, only if that is at most max_price_usd (required, no default): an approval of exactly the price when the USDG approved is short, then buy, pinned to the listing it read (its nonce, the agent's file and its record), so a listing changed meanwhile is refused on chain.${REC.lease ? " A rented agent comes with its lease: while a lease is stored on it, a claim on the lease comes before and after the buy, so each day's rent goes to whoever held the agent when the day ended (gas only)." : ""} The agent comes with its on-chain record, and a treasury line comes with it (lock your own bond before it borrows); its agent wallet is cleared by the transfer. Held to PRIORS_MAX_MARKET_USD (${amt(S.maxMarket)} USDG) a buy and PRIORS_MAX_MARKET_DAY_USD a day, only agents with PRIORS_MARKET_MIN_REPAID repaid loans or more, and never leaving less USDG (savings included) than agent #${S.agentId}'s open loans owe. Moves real money: state the agent, the price and the fee to the user and get their go-ahead first; dry_run: true lists the transactions without sending. Needs ETH for gas.`,
     inputSchema: { agent_id: agentIdIn, max_price_usd: z.number().positive().describe("The most to pay, in US dollars of USDG (required)."), dry_run: dryRun },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, serial(async ({ agent_id, max_price_usd, dry_run = false }, deadline) => {
@@ -785,16 +868,16 @@ export function registerMarketTools(ctx) {
     return execute({
       name: "market_buy", role: "buy", args: { agent_id, max_price_usd }, id, me, dry: dry_run, vars: { max },
       read: async () => ({ id, me, self: S.agentId }),
-      plan: (s, k, first) => M.buyPlan(s.c, { addr: k.addr, me, now: s.now, maxPrice: max, seen: first ? first.pins : null, minRecord: S.minRepaid, shares: k.shares }),
+      plan: (s, k, first, T, sent) => M.buyPlan(s.c, { addr: k.addr, me, now: s.now, maxPrice: max, seen: first ? first.pins : null, minRecord: S.minRepaid, shares: k.shares, ...claimsOf(first, sent) }),
       changed: (p, f) => (p.pins.recordHash !== f.pins.recordHash ? M.planWords("recordMoved", { id }) : p.pins.nonce !== f.pins.nonce || p.pins.price !== f.pins.price ? M.planWords("relisted", { id, price: p.listing.price }) : "Its terms changed since the first read."),
       keep: (p) => p.listing.price, day: (p) => p.listing.price, counted: (step, p) => (step === "buy" ? p.listing.price : 0n),
-      facts: (p) => [`Buys #${id} for ${amt(p.listing.price)} USDG from ${ethers.getAddress(p.listing.seller)}. Fee ${amt(p.fee)}.${p.share > 0n ? ` Builder share ${amt(p.share)}.` : ""} The seller gets ${amt(p.net)}.`, ...(p.follows ? [`Its ${amt(p.line)} USDG line from the treasury comes with it.${p.bond > 0n ? ` Lock your own ${amt(p.bond)} USDG bond before it borrows.` : ""}`] : [])],
-      done: async ({ k, sent, plan, events, T }) => {
-        const txs = sent.map((x) => x.hash), buyTx = txs[txs.length - 1];
+      facts: (p, s) => [`Buys #${id} for ${amt(p.listing.price)} USDG from ${ethers.getAddress(p.listing.seller)}. Fee ${amt(p.fee)}.${p.share > 0n ? ` Builder share ${amt(p.share)}.` : ""} The seller gets ${amt(p.net)}.`, ...(p.follows ? [`Its ${amt(p.line)} USDG line from the treasury comes with it.${p.bond > 0n ? ` Lock your own ${amt(p.bond)} USDG bond before it borrows.` : ""}`] : []), ...leaseFacts(p, s, id, CHANGE.market_buy)],
+      done: async ({ k, sent, plan, first, events, T, missed }) => {
+        const txs = sent.map((x) => x.hash), buyTx = mainStep(sent).hash, approval = sent.find((x) => x.step === "approveUsdg");
         const ev = events.find((e) => e.name === "Sold" && BigInt(e.args.agentId) === id && same(e.args.buyer, me));
         const cash = await usdgOf(me, T.left);
         if (!ev) return { text: `${cap1(stageWords("buy", id))} was mined (tx ${buyTx}), but its receipt carries no Sold event from the market for #${id} and this wallet. ${NOTHING_MORE} market_agent shows who holds it.`, structured: { tool: "market_buy", agentId: String(id), txs, bought: null } };
-        const lines = [`Bought #${id}. Tx ${buyTx}${txs.length > 1 ? ` (approval ${txs[0]})` : ""}. #${id} is this wallet's now, with its record.${cash != null ? ` This wallet holds ${amt(cash)} USDG now.` : ""}`];
+        const lines = [`Bought #${id}. Tx ${buyTx}${approval ? ` (approval ${approval.hash})` : ""}. #${id} is this wallet's now, with its record.${cash != null ? ` This wallet holds ${amt(cash)} USDG now.` : ""}`, ...claimsWords(sent, first, id, CHANGE.market_buy, missed)];
         if (plan.follows && plan.line > 0n) lines.push(`Its ${amt(plan.line)} USDG line from the treasury came with it. Lock your own ${amt(plan.bond || LISTING_RULES.bond)} USDG bond before it borrows.`);
         lines.push("Its agent wallet was cleared by the transfer. Run `priors-mcp link-wallet` to set one.");
         return { text: lines.join("\n"), structured: { tool: "market_buy", agentId: String(id), txs, bought: true, owner: me, usdg: cash == null ? null : amt(cash), line: plan.follows ? amt(plan.line) : null, bond: plan.bond > 0n ? amt(plan.bond) : null } };
@@ -946,7 +1029,7 @@ export function registerMarketTools(ctx) {
   const bondWords = (bond, id, done = false) => (bond > 0n ? (done ? ` This wallet's ${amt(bond)} USDG bond stays on #${id}'s line, at stake for it, until its new owner bonds, and then comes back.` : ` Before it, this wallet's ${amt(bond)} USDG bond goes on its line. The bond stays on #${id} after the sale, at stake for that line, until its new owner bonds, and then comes back.`) : "");
   tool("market_accept", {
     title: "Accept a bid",
-    description: `Accept bid bid_id for agent agent_id, which this wallet holds: the agent goes to the bid's maker at once, and this wallet gets the price less the fee and any builder share set on the agent (market_agent shows each open bid, its id and, for a bid on an origin, its proof). The steps, each its own transaction from this wallet: cancel this wallet's own dormant listing of it first (approving would bring it back), InviteBondV2's bond when its treasury line needs one, the registry's approval of this one agent to the market, then acceptBid with what this wallet gets pinned exactly. A proof given is checked against the bid's list, never trusted; without one it is built from Priors' hub's list, checked against the bid's root. Only agents PRIORS_MARKET_SELL allows, never the agent this server acts for (PRIORS_AGENT_ID), never leaving less than PRIORS_MARKET_MIN_SELL_USD (${amt(S.minSell)} USDG) after the fee and any builder share. Moves an agent: state the bid, the price, the fee, any bond and what this wallet gets to the user and get their go-ahead first; dry_run: true lists the transactions without sending. Needs ETH for gas.`,
+    description: `Accept bid bid_id for agent agent_id, which this wallet holds: the agent goes to the bid's maker at once, and this wallet gets the price less the fee and any builder share set on the agent (market_agent shows each open bid, its id and, for a bid on an origin, its proof). The steps, each its own transaction from this wallet: cancel this wallet's own dormant listing of it first (approving would bring it back), InviteBondV2's bond when its treasury line needs one, the registry's approval of this one agent to the market, then acceptBid with what this wallet gets pinned exactly.${REC.lease ? " A rented agent goes with its lease: while a lease is stored on it, a claim on the lease comes before and after, so each day's rent goes to whoever held the agent when the day ended (gas only)." : ""} A proof given is checked against the bid's list, never trusted; without one it is built from Priors' hub's list, checked against the bid's root. Only agents PRIORS_MARKET_SELL allows, never the agent this server acts for (PRIORS_AGENT_ID), never leaving less than PRIORS_MARKET_MIN_SELL_USD (${amt(S.minSell)} USDG) after the fee and any builder share. Moves an agent: state the bid, the price, the fee, any bond and what this wallet gets to the user and get their go-ahead first; dry_run: true lists the transactions without sending. Needs ETH for gas.`,
     inputSchema: { bid_id: z.number().int().positive().describe("The bid to accept."), agent_id: agentIdIn, proof: z.array(z.string().regex(/^0x[0-9a-fA-F]{64}$/)).max(32).optional().describe("For a bid on an origin: the proof that the agent is in its list, as market_agent shows it."), dry_run: dryRun },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, serial(async ({ bid_id, agent_id, proof, dry_run = false }, deadline) => {
@@ -957,7 +1040,7 @@ export function registerMarketTools(ctx) {
     return execute({
       name: "market_accept", role: "accept", args: { bid_id, agent_id, proof }, id, me, dry: dry_run, vars: { bidId },
       read: async () => ({ id, me, self: S.agentId, bidIds: [bidId] }),
-      plan: async (s, k, first, T) => {
+      plan: async (s, k, first, T, sent) => {
         const b = s.c.bids.get(bidId);
         if (b && isAddr(b.maker) && b.any && pr == null) {
           const got = await originSet(`root=${lc(b.target)}`, T.left);
@@ -966,18 +1049,20 @@ export function registerMarketTools(ctx) {
           pr = proofOf(got.set.ids, String(id));
           if (pr == null) return { error: "notInBid" };
         }
-        const p = M.acceptPlan(s.c, { addr: k.addr, me, now: s.now, bidId, id, proof: pr || [], shares: k.shares });
+        const p = M.acceptPlan(s.c, { addr: k.addr, me, now: s.now, bidId, id, proof: pr || [], shares: k.shares, ...claimsOf(first, sent) });
         if (!p.error && p.net < S.minSell) return { error: "floorNet", net: p.net, floor: S.minSell, and: p.share > 0n ? " and the builder share" : "" };
         return p;
       },
       changed: (p, f) => (p.pins && f.pins && p.pins.minNet !== f.pins.minNet ? M.planWords("fee", {}, "accept") : "the bid or the agent changed since the first read."),
       keep: (p) => (p.bond > 0n ? p.bond : null), day: (p) => p.bond, counted: (step, p) => (step === "bond" ? p.bond : 0n),
-      facts: (p) => [`Accepts bid #${bidId} for #${id}: ${ethers.getAddress(p.maker)} pays ${amt(p.price)} USDG. Fee ${amt(p.fee)}.${p.share > 0n ? ` Builder share ${amt(p.share)}.` : ""} This wallet gets ${amt(p.net)}, and #${id} goes to them at once.${bondWords(p.bond, id)}`],
-      done: async ({ sent, plan, first, events, T }) => {
+      facts: (p, s) => [`Accepts bid #${bidId} for #${id}: ${ethers.getAddress(p.maker)} pays ${amt(p.price)} USDG. Fee ${amt(p.fee)}.${p.share > 0n ? ` Builder share ${amt(p.share)}.` : ""} This wallet gets ${amt(p.net)}, and #${id} goes to them at once.${bondWords(p.bond, id)}`, ...leaseFacts(p, s, id, CHANGE.market_accept)],
+      done: async ({ sent, plan, first, events, T, missed }) => {
         const txs = sent.map((x) => x.hash), ev = events.find((e) => e.name === "BidTaken" && BigInt(e.args.agentId) === id && same(e.args.seller, me) && String(e.args.bidId) === bidId);
+        // the accept, and its steps before it but the claim on the lease (said on its own line, with the one after)
+        const acc = mainStep(sent), before = sent.slice(0, sent.indexOf(acc)).filter((x) => !CLAIMS.has(x.step));
         const cash = await usdgOf(me, T.left);
-        if (!ev) return { text: `${cap1(stageWords("accept", id))} was mined (tx ${txs[txs.length - 1]}), but its receipt carries no BidTaken event for #${id} and bid #${bidId}. ${NOTHING_MORE} market_agent shows who holds it.`, structured: { tool: "market_accept", agentId: String(id), bid: bidId, txs, accepted: null } };
-        return { text: `Accepted bid #${bidId}. #${id} went to ${ethers.getAddress(ev.args.maker)}. Tx ${txs[txs.length - 1]}${txs.length > 1 ? ` (before it: ${sent.slice(0, -1).map((x) => `${stageWords(x.step, id, x.o)} ${x.hash}`).join(", ")})` : ""}.${cash != null ? ` This wallet holds ${amt(cash)} USDG now.` : ""}${sent.some((x) => x.step === "bond") ? bondWords(first.bond, id, true) : ""}`,
+        if (!ev) return { text: `${cap1(stageWords("accept", id))} was mined (tx ${acc.hash}), but its receipt carries no BidTaken event for #${id} and bid #${bidId}. ${NOTHING_MORE} market_agent shows who holds it.`, structured: { tool: "market_accept", agentId: String(id), bid: bidId, txs, accepted: null } };
+        return { text: [`Accepted bid #${bidId}. #${id} went to ${ethers.getAddress(ev.args.maker)}. Tx ${acc.hash}${before.length ? ` (before it: ${before.map((x) => `${stageWords(x.step, id, x.o)} ${x.hash}`).join(", ")})` : ""}.${cash != null ? ` This wallet holds ${amt(cash)} USDG now.` : ""}${sent.some((x) => x.step === "bond") ? bondWords(first.bond, id, true) : ""}`, ...claimsWords(sent, first, id, CHANGE.market_accept, missed)].join("\n"),
           structured: { tool: "market_accept", agentId: String(id), bid: bidId, txs, accepted: true, to: lc(ev.args.maker), usdg: cash == null ? null : amt(cash) } };
       },
     }, deadline);

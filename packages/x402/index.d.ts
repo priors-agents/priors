@@ -90,8 +90,21 @@ export interface PriorsFacilitatorOptions {
 /** Config for `new HTTPFacilitatorClient(...)`, with per-path auth headers {verify, settle, supported}. */
 export declare function priorsFacilitator(opts?: PriorsFacilitatorOptions): FacilitatorConfig;
 export declare function priorsFacilitatorClient(opts?: PriorsFacilitatorOptions): HTTPFacilitatorClient;
-/** An x402ResourceServer on the Priors facilitator with eip155:4663 priced in USDG. */
-export declare function createResourceServer(opts?: PriorsFacilitatorOptions & { asset?: string; facilitatorClient?: any }): x402ResourceServer;
+/** Where `confirm` reads each settlement's receipt, and how long it waits for one. */
+export interface ConfirmSettlementsOptions {
+  /** A chain 4663 JSON-RPC endpoint. Default robinhood.rpcUrl (https; http for localhost only). */
+  rpcUrl?: string;
+  /** The USDG address settlements are confirmed for. Default robinhood.usdg. */
+  asset?: string;
+  fetch?: typeof fetch;
+  /** How long to wait for the receipt, ms (default 3000; each read ends by then); past it the facilitator's answer stands. */
+  waitMs?: number;
+  pollMs?: number;
+  /** Called when the receipt could not be read (the facilitator's success was kept). */
+  onUnconfirmed?: (o: { transaction: string; reason: string }) => void;
+}
+/** An x402ResourceServer on the Priors facilitator with eip155:4663 priced in USDG; `confirm` reads each USDG settlement's receipt. */
+export declare function createResourceServer(opts?: PriorsFacilitatorOptions & { asset?: string; facilitatorClient?: any; confirm?: boolean | ConfirmSettlementsOptions }): x402ResourceServer;
 
 // ---- agent -------------------------------------------------------------------------------------------------
 
@@ -108,6 +121,12 @@ export interface CreatePayerOptions {
   maxPrice?: UsdgAmount;
   /** Loan term when borrowing; default 7 days, clamped to the pool's range (an explicit term above maxTerm is refused). */
   termSeconds?: bigint | number;
+  /** `termSeconds` is the term wanted, not required: brought down to the pool's maxTerm and, on a SeatVaultV5 line, to
+   *  the 10 days V5 lends for, instead of being refused. */
+  fitTerm?: boolean;
+  /** Called once a loan is known and before anything is sent for it; a throw refuses the borrow (nothing is sent or
+   *  signed) and pay() rejects with that error. */
+  beforeBorrow?: (loan: { agentId: bigint; amount: bigint; fee: bigint; term: bigint; due: bigint }) => void | Promise<void>;
   /** Refuse a loan whose fee is above this (atomic USDG). */
   maxFee?: bigint;
   /** Signed authorizations are valid at most this long (≤ 600 s, the default). */

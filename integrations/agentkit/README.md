@@ -35,13 +35,28 @@ const agentKit = await AgentKit.from({ walletProvider, actionProviders: [priorsA
 
 Then hand `agentKit` to your framework as usual (`getVercelAITools(agentKit)`, `getLangChainTools(agentKit)`, ...).
 
+**Inference on credit (0.2.0).** Give the provider `autoBorrow`, set by you in code, never by the model:
+
+```ts
+priorsActionProvider(undefined, { autoBorrow: { perCall: "5", perDay: "10", hosts: ["agent402.tools"] } })
+```
+
+With it, `pay_x402_with_priors_credit` borrows the gap on its own when the wallet is short, for the listed hosts only.
+The limits are `perCall` USDG a call and `perDay` USDG a UTC day in the process, for 14 days (or the pool's maximum
+term). It borrows only while this wallet's Autopay (AutoRepay v2) covers the new loan: the wallet is the agent's
+declared wallet, the plan is on under the agent's current owner, not held or paused, its limit per loan and its USDG
+approval cover the loan's due. Otherwise nothing is borrowed or paid, and the answer says to turn Autopay on. Autopay
+then repays the loan in its window. The model's `maxBorrow` can only lower the amount. A chat completion is one call:
+`url` `https://agent402.tools/v1/chat/completions`, `body` the OpenAI-style request as JSON (sent with POST),
+`maxPrice` `"0.02"`.
+
 ## Actions
 
 | Action | What it does | Moves money |
 |---|---|---|
 | `get_priors_agent_record` | reads an agent's repayment record: loans repaid, late repayments, defaults, score | no |
 | `get_priors_credit_line` | reads an agent's line: size, drawn, available | no |
-| `pay_x402_with_priors_credit` | pays an x402 URL in USDG, at most `maxPrice`; if the wallet is short, first borrows the gap (at least the pool's minimum loan, 5 USDG today) only when `maxBorrow` covers it | yes |
+| `pay_x402_with_priors_credit` | pays an x402 URL in USDG, at most `maxPrice`, with GET or with POST and a `body`; if the wallet is short, first borrows the gap (at least the pool's minimum loan, 5 USDG today) when `maxBorrow` covers it, or, with `autoBorrow`, on its own within its limits | yes |
 | `borrow_from_priors` | borrows USDG from the agent's line into the wallet | yes |
 | `repay_priors_loan` | repays a loan in full; approves exactly what is due | yes |
 

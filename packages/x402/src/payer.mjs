@@ -479,7 +479,7 @@ export const SKEW_SECONDS = 60;
  * @returns {import("../index.d.ts").Payer}
  */
 export function createPayer(opts = {}) {
-  const { signer, agentId, pool, termSeconds, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = DEFAULT_TIMEOUT_MS, signal, maxValiditySeconds = MAX_VALIDITY_SECONDS, topUp, onSigned, reserve, v5, v5Root, baseProvider, baseReserve } = opts;
+  const { signer, agentId, pool, termSeconds, fitTerm, beforeBorrow, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = DEFAULT_TIMEOUT_MS, signal, maxValiditySeconds = MAX_VALIDITY_SECONDS, topUp, onSigned, reserve, v5, v5Root, baseProvider, baseReserve } = opts;
   if (!signer || typeof signer.getAddress !== "function" || typeof signer.signTypedData !== "function") {
     throw new PayError("NO_SIGNER", "createPayer: `signer` must be an ethers v6 Signer (a Wallet connected to a Robinhood Chain provider)");
   }
@@ -654,7 +654,7 @@ export function createPayer(opts = {}) {
 
       if (keptShort() || (kept > 0n && balance < price)) throw Object.assign(new PayError("RESERVE", `pay: this payment would cut into the ${formatUsdg(kept)} USDG kept for Autopay loans due in the next 24 h; nothing was signed or borrowed`, { price, reserve: kept }), savings ? { savings } : {});
       if (balance < price) {
-        try { stopIfAborted(); loan = await borrowGap({ signer, pool: poolC, agentId, price, balance, maxBorrow, termSeconds, maxFee, me, v5, v5Root }); } catch (e) {
+        try { stopIfAborted(); loan = await borrowGap({ signer, pool: poolC, agentId, price, balance, maxBorrow, termSeconds, fitTerm, beforeBorrow, maxFee, me, v5, v5Root }); } catch (e) {
           if (savings && e && typeof e === "object") e.savings = savings; // what the top-up did is not lost with the error
           throw e;
         }

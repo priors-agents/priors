@@ -16,7 +16,7 @@ It bundles two MCP servers and one skill:
 ## Install
 
 ```bash
-npm install -g @priors/mcp@0.14.1        # the priors-mcp command
+npm install -g @priors/mcp@0.15.0        # the priors-mcp command
 hermes plugins install priors            # once listed in Hermes's plugin catalog
 hermes plugins enable priors             # portable packages install disabled
 ```
@@ -35,8 +35,15 @@ PRIORS_MAX_BORROW_DAY_USD=5
 Hermes hands the server only the variables `mcp.json` names, so these are the ones that reach it: the five above,
 `PRIORS_KEY` (instead of `PRIORS_KEY_FILE`), `PRIORS_MAX_PRICE_USD` (most a call, default 1.00),
 `PRIORS_MAX_BORROW_USD` (most a borrow, default 25), `PRIORS_MAX_SPEND_USD` and `PRIORS_MAX_BORROW_TOTAL_USD` (totals
-while the server runs, defaults 5 and 25) and `PRIORS_RPC` (another Robinhood Chain node). Any other setting stays at
-`@priors/mcp`'s default.
+while the server runs, defaults 5 and 25), `PRIORS_AUTO_BORROW_USD` (auto-borrow, off by default, below) and
+`PRIORS_RPC` (another Robinhood Chain node). Any other setting stays at `@priors/mcp`'s default.
+
+Inference on credit (`@priors/mcp` 0.15.0 or later): `pay_url` can buy one OpenAI-style chat completion from
+agent402.tools (`url` `https://agent402.tools/v1/chat/completions`, `method` `POST`, the request as `body`, paid in
+USDG on Robinhood Chain). With `PRIORS_AUTO_BORROW_USD` set (for example `5`, with `PRIORS_MAX_BORROW_DAY_USD=10` and
+`agent402.tools` in `PRIORS_PAY_HOSTS`), a call that names no `max_borrow_usd` borrows the gap on its own, for 14
+days, only while the agent wallet's Autopay covers the loan, which then repays it in its window. Unset, borrowing stays
+the `max_borrow_usd` the user approves in each call.
 
 `priors-mcp` is a Node.js command, so `node` must be on the PATH Hermes runs with. It signs nothing when
 `PRIORS_STATE_DIR` sits under a directory other users can write to (its record of sent payments and daily totals could
@@ -62,7 +69,9 @@ Without a key only the read-only `priors` server is useful: records, sellers, po
   every payment, borrow and repayment. The plugin never auto-approves one. Where nobody can answer (`hermes chat -q`,
   cron, the messaging gateway without a prompt), Hermes declines the call and nothing is paid.
 - `pay_url` pays only the hosts in `PRIORS_PAY_HOSTS`, never more than `max_price_usd` a call (and the server's
-  `PRIORS_MAX_PRICE_USD`, 1.00 by default), and borrows only when `max_borrow_usd` is given. The server's own totals
+  `PRIORS_MAX_PRICE_USD`, 1.00 by default), and borrows only when `max_borrow_usd` is given, or, with
+  `PRIORS_AUTO_BORROW_USD` set by the user, on its own within that setting while Autopay covers the loan (the approval
+  prompt shows the call's arguments, not that setting). The server's own totals
   (`PRIORS_MAX_SPEND_USD` 5 and `PRIORS_MAX_BORROW_TOTAL_USD` 25 by default while it runs, and the daily caps above)
   bound what one session can spend or borrow.
 - A loan more than three days late can be marked defaulted, which ends the agent's record on Priors.

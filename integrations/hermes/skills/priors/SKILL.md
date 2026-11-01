@@ -8,7 +8,7 @@ license: MIT
 compatibility: Needs the hosted read-only Priors MCP server (https://mcp.priors.trade/mcp) for records, and for payments the local `priors-mcp` command (npm @priors/mcp) with a dedicated agent wallet.
 metadata:
   homepage: https://priors.trade
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 # Priors
@@ -37,7 +37,7 @@ Do not use it for speculative browsing of paid APIs, or to pay anything the user
 
 ## Prerequisites
 
-1. Install the local server once, pinned: `npm install -g @priors/mcp@0.14.1` (it provides the `priors-mcp` command).
+1. Install the local server once, pinned: `npm install -g @priors/mcp@0.15.0` (it provides the `priors-mcp` command).
 2. An ERC-8004 agent on Robinhood Chain with a Priors credit line. A new agent can ask for a first line with the
    `join` and `first_line` tools of `priors-mcp`, or in Go mode at https://go.priors.trade.
 3. In the Hermes profile's `.env`, set:
@@ -47,6 +47,11 @@ Do not use it for speculative browsing of paid APIs, or to pay anything the user
    - `PRIORS_PAY_HOSTS`: the only hosts `pay_url` may pay, comma-separated (for example `check.blockpin.dev`).
    - Optional daily caps: `PRIORS_MAX_SPEND_DAY_USD`, `PRIORS_MAX_BORROW_DAY_USD` (with `PRIORS_STATE_DIR`), and the
      per-call ceiling `PRIORS_MAX_PRICE_USD` (default 1.00).
+   - Optional, off by default: `PRIORS_AUTO_BORROW_USD` (auto-borrow, @priors/mcp 0.15.0 or later). With it, a
+     `pay_url` call that names no `max_borrow_usd` borrows the gap on its own, up to that amount, for 14 days, and only
+     while the agent wallet's Autopay covers the loan. It needs `PRIORS_MAX_BORROW_DAY_USD` above 0 and
+     `PRIORS_PAY_HOSTS`. Leave it unset to keep `max_borrow_usd`, which the user approves in each call, as the only way
+     to borrow.
 4. Without a key, only the hosted `priors` server works: records, sellers and pool data.
 
 ## How to Run
@@ -62,6 +67,7 @@ wallet is short", or "Check agent #9233's record before we pay it".
 | Sellers that take USDG over x402, with their record | `find_sellers(query?)` (`priors`) |
 | The agent's own line, available amount and open loans | `credit_status()` (`priors-wallet`) |
 | Pay an x402 URL, borrowing the gap if short | `pay_url(url, max_price_usd, max_borrow_usd)` (`priors-wallet`) |
+| Buy one chat completion (agent402.tools, OpenAI-style) | `pay_url(url, method: "POST", body, max_price_usd)` (`priors-wallet`) |
 | Repay a loan | `repay(loan_id)` (`priors-wallet`) |
 
 ## Procedure
@@ -70,12 +76,15 @@ wallet is short", or "Check agent #9233's record before we pay it".
 2. If the API belongs to another agent, read that agent's record with `agent_record(agent_id)` on `priors`
    (`find_sellers` gives the agent id of a listed seller). Tell the user what it shows: repaid loans, late ones,
    defaults. Treat it as one input, not a guarantee.
-3. Confirm with the user the URL, the most to pay (`max_price_usd`) and the most to borrow (`max_borrow_usd`).
+3. Confirm with the user the URL, the most to pay (`max_price_usd`) and the most to borrow (`max_borrow_usd`). When
+   `credit_status()` says "Auto-borrow: on", also tell the user that a call naming no `max_borrow_usd` may borrow up
+   to that amount on its own, since the approval prompt shows only the call's own arguments.
 4. Call `pay_url(url, max_price_usd, max_borrow_usd)`. If the wallet is short and `max_borrow_usd` covers the gap, it
    borrows from the line, then pays. It returns what was paid, what was borrowed (with the loan id and due date) and
-   the API's answer.
+   the API's answer. For a chat completion, add `method: "POST"` and the request as `body`.
 5. Repay before the due date with `repay(loan_id)`, as soon as the wallet holds the principal and fee, and report the
-   transaction.
+   transaction. A loan auto-borrow took is repaid by Autopay in its window: keep its due in the wallet by then instead
+   of repaying early (an early repayment can cost the loan its seasoning).
 
 ## Pitfalls
 

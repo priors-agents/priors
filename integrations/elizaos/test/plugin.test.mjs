@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import plugin, { agentRecordAction, creditStatusAction, payX402Action, repayAction } from "../src/index.js";
 import { priorsOf, priorsFor, envOf, SETTINGS } from "../src/priors.js";
-import { urlOf, agentIdOf, loanIdOf, maxPriceOf, maxBorrowOf } from "../src/parse.js";
+import { urlOf, agentIdOf, loanIdOf, maxPriceOf, maxBorrowOf, borrowOf, bodyOf } from "../src/parse.js";
 
 /** A runtime whose Priors calls are recorded and answered with `answers[tool]` (default: "ok"). */
 function fakeRuntime(settings = {}, answers = {}) {
@@ -93,6 +93,34 @@ test("PRIORS_PAY_X402 pays the URL at most the price named, and borrows only up 
   assert.match(said[0].text, /Nothing was paid/);
 });
 
+test("PRIORS_PAY_X402 with a JSON body: POST with the body as given, the URL and amounts read outside it (a prompt's numbers are never the price); a borrow named, 0 included, is passed as said, none leaves it to @priors/mcp's auto-borrow", async () => {
+  const { runtime, calls } = fakeRuntime();
+  const body = { model: "m", messages: [{ role: "user", content: "list up to 3 points, max 2 lines" }] };
+  await run(payX402Action, runtime, `Buy a chat completion from https://agent402.tools/v1/chat/completions at most 0.02: ${JSON.stringify(body)}`);
+  await run(payX402Action, runtime, `Pay https://agent402.tools/v1/chat/completions at most 0.02, don't borrow:\n\`\`\`json\n${JSON.stringify(body, null, 2)}\n\`\`\``);
+  await run(payX402Action, runtime, "Pay https://check.blockpin.dev/check at most 0.10, borrow up to 0.");
+  assert.deepEqual(calls.map((c) => c.args), [
+    { url: "https://agent402.tools/v1/chat/completions", max_price_usd: 0.02, method: "POST", body: JSON.stringify(body) },
+    { url: "https://agent402.tools/v1/chat/completions", max_price_usd: 0.02, max_borrow_usd: 0, method: "POST", body: JSON.stringify(body) },
+    { url: "https://check.blockpin.dev/check", max_price_usd: 0.1, max_borrow_usd: 0 },
+  ]);
+  // a message whose only URL is inside the body names no URL to pay
+  const before = calls.length;
+  const { out } = await run(payX402Action, runtime, `pay at most 0.02 ${JSON.stringify({ url: "https://agent402.tools/v1/chat/completions" })}`);
+  assert.equal(calls.length, before);
+  assert.equal(out.success, false);
+});
+
+test("parse: borrowOf and bodyOf", () => {
+  assert.equal(borrowOf("pay it, borrow up to 5"), 5);
+  assert.equal(borrowOf("pay it without borrowing"), 0);
+  assert.equal(borrowOf("never borrow for this"), 0);
+  assert.equal(borrowOf("pay it at most 0.10"), null);
+  assert.equal(bodyOf("no body here"), null);
+  assert.equal(bodyOf("a broken {\"model\": } body"), null);
+  assert.deepEqual(bodyOf('x {"a": "a } in a string", "b": {"c": 1}} y'), { body: '{"a":"a } in a string","b":{"c":1}}', raw: '{"a": "a } in a string", "b": {"c": 1}}' });
+});
+
 test("PRIORS_REPAY repays the loan the message names", async () => {
   const { runtime, calls } = fakeRuntime();
   assert.equal(await repayAction.validate(runtime, msg("repay loan 50900")), true);
@@ -113,5 +141,6 @@ test("a failed call answers what failed, and the connection is opened again on t
 test("envOf: the agent's settings replace the process env for the Priors settings only", () => {
   const env = envOf({ getSetting: (k) => ({ PRIORS_AGENT_ID: "437", OPENROUTER_API_KEY: "no" })[k] }, { PATH: "/bin", PRIORS_AGENT_ID: "1" });
   assert.deepEqual([env.PRIORS_AGENT_ID, env.PATH, "OPENROUTER_API_KEY" in env], ["437", "/bin", false]);
-  assert.ok(SETTINGS.includes("PRIORS_PAY_HOSTS") && SETTINGS.includes("PRIORS_KEY_FILE"));
+  assert.ok(SETTINGS.includes("PRIORS_PAY_HOSTS") && SETTINGS.includes("PRIORS_KEY_FILE") && SETTINGS.includes("PRIORS_AUTO_BORROW_USD"));
+  assert.equal(envOf({ getSetting: (k) => ({ PRIORS_AUTO_BORROW_USD: "5" })[k] }, {}).PRIORS_AUTO_BORROW_USD, "5", "the agent's auto-borrow setting reaches @priors/mcp");
 });

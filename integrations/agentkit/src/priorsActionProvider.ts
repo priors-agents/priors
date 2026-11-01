@@ -11,10 +11,16 @@ import {
   RepaySchema,
 } from "./schemas";
 import {
+  AUTO_TERM_DAYS,
+  AUTOREPAY,
+  AUTOREPAY_ABI,
+  DEFAULT_TERM_DAYS,
   LOAN_ACTIVE,
   POOL_ABI,
   PRIORS_API,
   PRIORS_POOL,
+  REGISTRY,
+  REGISTRY_ABI,
   ROBINHOOD_CHAIN_ID,
   ROBINHOOD_NETWORK,
   USDG,
@@ -23,6 +29,19 @@ import {
 
 const usdg = (atomic: bigint) => formatUnits(atomic, USDG_DECIMALS);
 const sameAddress = (a: unknown, b: string) => String(a).toLowerCase() === b.toLowerCase();
+const utcDay = () => new Date().toISOString().slice(0, 10);
+
+/**
+ * Auto-borrow, set by the owner in code (never by the model): pay_x402_with_priors_credit borrows the gap on its own,
+ * up to `perCall` USDG a call and `perDay` USDG a UTC day in this process, for the `hosts` listed only (exact host
+ * names), for 14 days, and only while this wallet's Autopay (AutoRepay v2) covers the new loan. The model's maxBorrow
+ * can only lower the amount.
+ */
+export type AutoBorrowOptions = { perCall: string; perDay: string; hosts: string[] };
+export type PriorsOptions = { autoBorrow?: AutoBorrowOptions };
+
+/** A refusal before anything is sent (its message is the answer). */
+class Refusal extends Error {}
 
 type Requirement = {
   scheme?: string;
@@ -37,15 +56,33 @@ type Requirement = {
  * the gap when the wallet is short, borrow and repay, and read another agent's repayment record before paying it.
  */
 export class PriorsActionProvider extends ActionProvider<EvmWalletProvider> {
+  private readonly auto: { perCall: bigint; perDay: bigint; hosts: Set<string> } | null;
+  private borrowedToday = { day: "", amount: 0n };
+
   /**
    * Constructor for the PriorsActionProvider.
    *
    * @param fetchImpl - The fetch used for Priors' API and the x402 URLs (injectable for tests).
+   * @param options - `autoBorrow` (off unless given): see AutoBorrowOptions.
    */
   constructor(
     private readonly fetchImpl: typeof fetch = (input, init) => globalThis.fetch(input, init),
+    options: PriorsOptions = {},
   ) {
     super("priors", []);
+    const a = options.autoBorrow;
+    if (!a) {
+      this.auto = null;
+      return;
+    }
+    const perCall = parseUnits(String(a.perCall), USDG_DECIMALS);
+    const perDay = parseUnits(String(a.perDay), USDG_DECIMALS);
+    if (perCall <= 0n) throw new Error("autoBorrow.perCall must be above 0");
+    if (perDay < perCall) throw new Error("autoBorrow.perDay must be at least autoBorrow.perCall");
+    const hosts = (a.hosts ?? []).map(h => String(h).trim().toLowerCase());
+    if (!hosts.length || hosts.some(h => !/^[a-z0-9.-]+(:\d{1,5})?$/.test(h)))
+      throw new Error("autoBorrow.hosts must list the host names it may borrow to pay, e.g. [\"agent402.tools\"]");
+    this.auto = { perCall, perDay, hosts: new Set(hosts) };
   }
 
   /**
@@ -249,15 +286,19 @@ Inputs:
     name: "pay_x402_with_priors_credit",
     description: `
 This tool fetches a URL that charges per call with x402 (HTTP 402) and pays it in USDG on Robinhood Chain from this
-wallet. If the wallet is short of the price, it first borrows the gap from the agent's Priors line, only when maxBorrow
-covers it. Real money: confirm the URL, the price and the most to borrow with the user first.
+wallet, with GET, or with POST and a body (an OpenAI-style chat completion, for one). If the wallet is short of the
+price, it first borrows the gap from the agent's Priors line, only when maxBorrow covers it, or, when the provider was
+set up with autoBorrow, on its own within the owner's limits while Autopay covers the loan. Real money: confirm the URL,
+the price and the most to borrow with the user first.
 
 Inputs:
 - url: the https URL.
 - agentId: the agent's ERC-8004 id whose line may be drawn.
 - maxPrice: the most to pay for this call, in USDG (e.g. 0.10).
-- maxBorrow: the most to borrow if the wallet is short, in USDG (default 0: never borrow).
-- days: the term of a loan taken for the gap (default 7).`,
+- maxBorrow: the most to borrow if the wallet is short, in USDG (default 0: never borrow; with autoBorrow, its amount
+  per call, which this can only lower).
+- days: the term of a loan taken for the gap (default 7; 14 with autoBorrow).
+- method, body: POST and its body (default GET with no body).`,
     schema: PayX402WithCreditSchema,
   })
   async payX402WithCredit(
@@ -266,9 +307,37 @@ Inputs:
   ): Promise<string> {
     try {
       if (!/^https:\/\//i.test(args.url)) return "Error: only https URLs are paid.";
+      const method = args.method ?? (args.body !== undefined ? "POST" : "GET");
+      if (method === "GET" && args.body !== undefined)
+        return "Error: a GET request cannot carry a body: use POST.";
+      let json = false;
+      if (args.body !== undefined) {
+        try {
+          JSON.parse(args.body);
+          json = true;
+        } catch {
+          json = false;
+        }
+      }
+      const init = (): RequestInit =>
+        args.body !== undefined
+          ? { method, body: args.body, headers: { "content-type": json ? "application/json" : "text/plain; charset=utf-8" } }
+          : { method };
       const maxPrice = parseUnits(args.maxPrice, USDG_DECIMALS);
-      const maxBorrow = parseUnits(args.maxBorrow || "0", USDG_DECIMALS);
-      const probe = await this.fetchImpl(args.url);
+      // autoBorrow: the owner's amount per call, which the model's maxBorrow can only lower, and only for its hosts
+      const auto = this.auto;
+      const host = new URL(args.url).host.toLowerCase();
+      const autoHere = !!auto && auto.hosts.has(host);
+      const named = parseUnits(args.maxBorrow ?? "0", USDG_DECIMALS);
+      const maxBorrow = !auto
+        ? named
+        : !autoHere
+          ? 0n
+          : args.maxBorrow === undefined || named > auto.perCall
+            ? auto.perCall
+            : named;
+      const days = args.days ?? (auto ? AUTO_TERM_DAYS : DEFAULT_TERM_DAYS);
+      const probe = await this.fetchImpl(args.url, init());
       if (probe.status !== 402)
         return `No payment asked (HTTP ${probe.status}):\n${(await probe.text()).slice(0, 2000)}`;
       const requirement = await this.usdgRequirement(probe);
@@ -290,14 +359,35 @@ Inputs:
           address: PRIORS_POOL,
           abi: POOL_ABI,
           functionName: "getParams",
-        })) as { minLoan: bigint };
+        })) as { minLoan: bigint; maxTerm: bigint };
         const gap = price - balance;
         const amount = gap > params.minLoan ? gap : params.minLoan;
+        if (auto && !autoHere)
+          return `Error: the wallet holds ${usdg(balance)} USDG, short of ${usdg(price)}, and auto-borrow borrows only to pay ${[...auto.hosts].join(", ")}. Nothing was borrowed or paid.`;
         if (amount > maxBorrow) {
-          return `Error: the wallet holds ${usdg(balance)} USDG, short of ${usdg(price)}; borrowing ${usdg(amount)} (the pool's minimum loan is ${usdg(params.minLoan)}) is above maxBorrow ${args.maxBorrow || "0"}. Nothing was paid.`;
+          return `Error: the wallet holds ${usdg(balance)} USDG, short of ${usdg(price)}; borrowing ${usdg(amount)} (the pool's minimum loan is ${usdg(params.minLoan)}) is above ${auto ? `the most this call may borrow, ${usdg(maxBorrow)}` : `maxBorrow ${args.maxBorrow || "0"}`}. Nothing was paid.`;
         }
-        const loan = await this.borrowAmount(walletProvider, args.agentId, amount, args.days);
-        borrowed = `Borrowed ${usdg(loan.amount)} USDG first: loan #${loan.loanId}, fee ${usdg(loan.fee)}, due ${loan.dueAt} (transaction ${loan.hash}). Repay it with repay_priors_loan before then.\n`;
+        // auto: the day's room is taken here, before any await, so two calls running at once never both pass the
+        // limit; it is given back only when the borrow is refused before anything is sent (a borrow sent whose answer
+        // was lost stays counted, the safe direction)
+        let reserved: { day: string; amount: bigint } | null = null;
+        if (auto) {
+          const today = utcDay();
+          if (this.borrowedToday.day !== today) this.borrowedToday = { day: today, amount: 0n };
+          if (this.borrowedToday.amount + amount > auto.perDay)
+            return `Error: the wallet holds ${usdg(balance)} USDG, short of ${usdg(price)}, and auto-borrow's limit of ${usdg(auto.perDay)} USDG a day has ${usdg(auto.perDay - this.borrowedToday.amount)} left in this process, less than ${usdg(amount)}. Nothing was borrowed or paid.`;
+          this.borrowedToday.amount += amount;
+          reserved = { day: today, amount };
+        }
+        // auto: 14 days, brought down to the pool's maxTerm; otherwise the term asked, as before
+        const termDays = auto && params.maxTerm !== undefined && BigInt(days) * 86400n > BigInt(params.maxTerm) ? Number(BigInt(params.maxTerm) / 86400n) : days;
+        const loan = await this.borrowAmount(walletProvider, args.agentId, amount, termDays,
+          auto ? (fee: bigint) => this.autopayCovers(walletProvider, args.agentId, amount + fee) : undefined)
+          .catch((error: unknown) => {
+            if (reserved && error instanceof Refusal && this.borrowedToday.day === reserved.day) this.borrowedToday.amount -= reserved.amount;
+            throw error;
+          });
+        borrowed = `Borrowed ${usdg(loan.amount)} USDG first: loan #${loan.loanId}, fee ${usdg(loan.fee)}, due ${loan.dueAt} (transaction ${loan.hash}). ${auto ? "Auto-borrow: Autopay repays it from this wallet in its window, the last hours before it is due; keep its due in the wallet by then." : "Repay it with repay_priors_loan before then."}\n`;
       }
       const client = new x402Client()
         .register(ROBINHOOD_NETWORK, new ExactEvmScheme(walletProvider.toSigner()))
@@ -309,13 +399,60 @@ Inputs:
               BigInt((r as Requirement).amount ?? "0") <= maxPrice,
           ),
         );
-      const paid = await wrapFetchWithPayment(this.fetchImpl, client)(args.url);
+      const paid = await wrapFetchWithPayment(this.fetchImpl, client)(args.url, init());
       const receipt =
         paid.headers.get("payment-response") || paid.headers.get("x-payment-response");
       return `${borrowed}Paid ${usdg(price)} USDG to ${requirement.payTo} (HTTP ${paid.status})${receipt ? `; settlement: ${receipt.slice(0, 200)}` : ""}.\nResponse:\n${(await paid.text()).slice(0, 2000)}`;
     } catch (error) {
+      if (error instanceof Refusal) return `Error: ${error.message}`;
       return `Error paying ${args.url} with Priors credit: ${error}`;
     }
+  }
+
+  /**
+   * Auto-borrow's condition, read before the borrow is sent: this wallet is the agent's declared wallet, its Autopay
+   * plan is on and set under the agent's current owner and key, not held or paused, its limit per loan is at least
+   * `due`, and its USDG approval to AutoRepay covers `due` on top of the agent's open loans it already repays (those
+   * within its limit), as @priors/mcp's check. Throws a Refusal saying what to turn on otherwise.
+   *
+   * @param walletProvider - The wallet provider.
+   * @param agentId - The agent id.
+   * @param due - The new loan's principal plus fee, atomic USDG.
+   */
+  private async autopayCovers(walletProvider: EvmWalletProvider, agentId: number, due: bigint) {
+    const me = walletProvider.getAddress() as Hex;
+    const id = BigInt(agentId);
+    const read = (address: Hex, abi: typeof REGISTRY_ABI | typeof AUTOREPAY_ABI | typeof erc20Abi, functionName: string, args: unknown[] = []) =>
+      walletProvider.readContract({ address, abi, functionName, args } as never) as Promise<unknown>;
+    const [wallet, owner, plan, epoch, held, pausedUntil, allowance] = (await Promise.all([
+      read(REGISTRY, REGISTRY_ABI, "getAgentWallet", [id]),
+      read(REGISTRY, REGISTRY_ABI, "ownerOf", [id]),
+      read(AUTOREPAY, AUTOREPAY_ABI, "planOf", [me, id]),
+      read(AUTOREPAY, AUTOREPAY_ABI, "epochOf", [id]),
+      read(AUTOREPAY, AUTOREPAY_ABI, "held", [me]),
+      read(AUTOREPAY, AUTOREPAY_ABI, "pausedUntil"),
+      read(USDG, erc20Abi, "allowance", [me, AUTOREPAY]),
+    ])) as [string, string, readonly [number | bigint, string, boolean, boolean, boolean, number | bigint], readonly [number | bigint, boolean], boolean, bigint, bigint];
+    const no = (why: string) =>
+      new Refusal(`auto-borrow borrows only when Autopay covers the new loan (${usdg(due)} USDG due), and ${why}. Nothing was borrowed or paid. Turn Autopay on for this wallet with a limit of at least ${usdg(due)} USDG per loan (Go mode, or @priors/mcp's autopay_on).`);
+    const [cap, planOwner, on, , , planEpoch] = plan;
+    if (!sameAddress(wallet, me)) throw no(`this wallet is not agent #${agentId}'s declared wallet`);
+    if (!on) throw no("Autopay is off for this wallet");
+    if (!sameAddress(planOwner, owner) || BigInt(planEpoch) !== BigInt(epoch[0]))
+      throw no("this wallet's Autopay plan was set under an earlier owner or key of the agent");
+    if (held) throw no("Autopay is on hold for this wallet");
+    if (BigInt(pausedUntil) > BigInt(Math.floor(Date.now() / 1000))) throw no("Autopay is paused by the Safe");
+    if (BigInt(cap) < due) throw no(`Autopay's limit is ${usdg(BigInt(cap))} USDG per loan`);
+    // what the agent's open loans already need from that approval: each active loan within the plan's limit
+    const ids = (await walletProvider.readContract({ address: PRIORS_POOL, abi: POOL_ABI, functionName: "loansOf", args: [id] })) as readonly bigint[];
+    let owed = 0n;
+    for (const loanId of ids) {
+      const l = (await walletProvider.readContract({ address: PRIORS_POOL, abi: POOL_ABI, functionName: "getLoan", args: [loanId] })) as { principal: bigint; fee: bigint; status: number };
+      const loanDue = BigInt(l.principal) + BigInt(l.fee);
+      if (Number(l.status) === LOAN_ACTIVE && loanDue <= BigInt(cap)) owed += loanDue;
+    }
+    if (BigInt(allowance) < owed + due)
+      throw no(`Autopay may pull ${usdg(BigInt(allowance))} USDG from this wallet, and its open loans already need ${usdg(owed)} USDG`);
   }
 
   /**
@@ -368,6 +505,7 @@ Inputs:
    * @param agentId - The agent id.
    * @param amount - Atomic USDG.
    * @param days - The term in days.
+   * @param check - Called with the quoted fee before the borrow is sent; a throw refuses it.
    * @returns The loan.
    */
   private async borrowAmount(
@@ -375,6 +513,7 @@ Inputs:
     agentId: number,
     amount: bigint,
     days: number,
+    check?: (fee: bigint) => Promise<void>,
   ) {
     const me = walletProvider.getAddress() as Hex;
     const term = BigInt(days * 86400);
@@ -384,6 +523,7 @@ Inputs:
       functionName: "quoteFee",
       args: [BigInt(agentId), amount, term],
     })) as readonly [bigint, bigint, bigint, bigint];
+    if (check) await check(fee);
     const hash = await walletProvider.sendTransaction({
       to: PRIORS_POOL,
       data: encodeFunctionData({
@@ -415,5 +555,5 @@ Inputs:
   }
 }
 
-export const priorsActionProvider = (fetchImpl?: typeof fetch) =>
-  new PriorsActionProvider(fetchImpl);
+export const priorsActionProvider = (fetchImpl?: typeof fetch, options?: PriorsOptions) =>
+  new PriorsActionProvider(fetchImpl, options);

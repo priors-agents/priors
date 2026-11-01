@@ -46,6 +46,15 @@ app.listen(3000);
 The merchant key comes from registering your `payTo` with the facilitator (`POST /merchants/register`, or the
 merchant page of x402.priors.trade). `createResourceServer({ apiKey })` does the first two lines in one call.
 
+On USDG, a facilitator's success, or a transaction's status, is not proof of payment. USDG does not revert a transfer
+on an authorization already used or cancelled: the transaction succeeds and moves nothing, and a payer can cancel its
+authorization between the facilitator's verify and its settle. The Priors facilitator decides by USDG's own logs. To
+check them on your side too (another facilitator, or defense in depth), pass `confirm: true` (or `{ rpcUrl }`) to
+`createResourceServer`: a settlement whose receipt has no USDG
+`AuthorizationUsed` followed by its `Transfer` to your `payTo` answers `settlement_moved_nothing`, and the paid response
+is withheld. If the receipt can't be read within `waitMs` (3 s; every read ends by then, so a node that hangs holds the
+response no longer), the facilitator's answer stands.
+
 ## Merchant: Hono
 
 ```js

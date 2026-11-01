@@ -129,6 +129,13 @@ again: a listing, a nonce, a pin or a net that changed stops the call, and the a
 mined leave standing (an approval lets only this wallet's own list, buy or bids use it). A sale's net is the price less
 the fee, and less the agent's builder share where the market has one.
 
+Renting (AgentLease), once this package carries the lease's record (`deployments/4663.agent-lease.json`, written by its
+deploy; there is none before): a rented agent changes hands with its lease, and `market_buy` and `market_accept` claim
+on the lease before and after the change of hands while a lease is stored on the agent (`claim`, gas only), as every
+change of hands on Priors does, so each day's rent goes to whoever held the agent when the day ended. `market_agent`
+says who runs a rented agent and until when. A claim after that can't be sent, or doesn't go through, leaves the change
+as it is, and the answer says so, a retry's from the market record too.
+
 | Setting | Meaning | Default |
 |---|---|---|
 | `PRIORS_MARKET` | `on`: register the market tools | off |
@@ -294,6 +301,7 @@ may spend. Rows marked (0.8.0) take effect from that version; 0.7.x ignores them
 | `PRIORS_MAX_SPEND_DAY_USD` | none | (0.8.0) most `pay_url` (with `pay_gateway`) may sign per UTC day for the agent and for its wallet, across restarts and every process sharing `PRIORS_STATE_DIR`; needs `PRIORS_AGENT_ID` and a state directory, or the server does not start; (0.12.0) `first_line`'s bond counts against it too |
 | `PRIORS_MAX_BORROW_DAY_USD` | none | (0.8.0) most `borrow`, `pay_url`, `pay_gateway` and `fund_base` may borrow per UTC day for the agent and for its wallet, the same way; `0` turns borrowing off |
 | `PRIORS_PAY_HOSTS` | any public https host | (0.8.0) the only hosts `pay_url` (and `pay_gateway`, at `keyring.vantis.sh`) pays, comma-separated, matched exactly (no wildcard; a port only when named) |
+| `PRIORS_AUTO_BORROW_USD` | off | (0.15.0) auto-borrow: `pay_url` (and `pay_gateway`) borrow the gap on their own, up to this amount a call, when the call names no `max_borrow_usd` and the wallet and savings are short; only while this wallet's Autopay covers the new loan, for 14 days. Needs `PRIORS_MAX_BORROW_DAY_USD` above 0 and `PRIORS_PAY_HOSTS`, and at most `PRIORS_MAX_BORROW_USD` and `PRIORS_MAX_BORROW_TOTAL_USD`, or the server does not start. See "Inference on credit" below |
 | `PRIORS_ALLOW_LOCAL` | off | `1` lets `pay_url` reach `http://localhost` and private addresses (local testing only) |
 | `PRIORS_SCORE_V2` | `https://priors.trade/api/score-v2` | where `score_of` reads Priors Score v2; `off` shows the on-chain score only |
 | `PRIORS_STOCK_VAULT` | the bundled deployments file's `stockVault` | the stock vault the stock tools and `credit_status` read |
@@ -336,7 +344,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.14.1"],
+      "args": ["-y", "@priors/mcp@0.15.0"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -358,7 +366,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.14.1"],
+      "args": ["-y", "@priors/mcp@0.15.0"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -371,7 +379,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 or, for your user only, from a macOS or Linux terminal:
 
 ```sh
- (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.14.1' priors-mcp ~/.config/priors/agent.key
+ (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.15.0' priors-mcp ~/.config/priors/agent.key
 ```
 
 It waits for the key without showing it (paste it, then Enter), saves it in a file only you can read, and gives Claude
@@ -422,12 +430,32 @@ internationalised names in their `xn--` form), so a look-alike spelled with othe
 the list is refused before any request; pay_url never follows a redirect, and every request the payer sends is checked
 against the list too. A wildcard, a URL or a path in the list stops the server at start.
 
+**Inference on credit (`PRIORS_AUTO_BORROW_USD`, 0.15.0).** An agent that buys its own model calls, such as
+agent402.tools' OpenAI-compatible chat paid over x402 in USDG on Robinhood Chain, can keep working when its wallet
+runs short mid-task. With `PRIORS_AUTO_BORROW_USD` set, a `pay_url` call that names no `max_borrow_usd` takes the
+agent's savings first, then borrows the gap from its Priors line. The loan is the larger of the gap and the pool's
+minimum loan (5 USDG, so one loan pays many 0.02 USDG calls), for 14 days. It borrows only when this wallet's Autopay
+covers the new loan: the plan is on and current, its limit per loan is at least the loan's due, and its approval covers
+that due on top of the loans it already repays. Otherwise nothing is borrowed or signed, and the answer says to turn
+Autopay on (`autopay_on`). Autopay then repays the loan from the wallet in its window, the last hours before it is due,
+which keeps the loan seasoned. The day's borrow limit and the run's total still hold: once either has no room, a call
+pays from what the wallet holds and says why it did not borrow. A call that names `max_borrow_usd` works as before
+(`0` never borrows). Suggested settings for an agent buying inference:
+
+```json
+"PRIORS_AUTO_BORROW_USD": "5", "PRIORS_MAX_BORROW_DAY_USD": "10", "PRIORS_PAY_HOSTS": "agent402.tools",
+"PRIORS_AGENT_ID": "7311", "PRIORS_STATE_DIR": "~/.local/state/priors-mcp"
+```
+
+Then a chat call: `pay_url` with `url` `https://agent402.tools/v1/chat/completions`, `method` `POST`, `body` the
+OpenAI-style request (`{"model": "…", "messages": […]}`) and `max_price_usd` `0.02`.
+
 **A block per runtime.** The hosted connector (`https://mcp.priors.trade/mcp`, no key) reads records and asks the owner
 to approve a borrow; this package, with the key, pays for APIs. With borrowing off, the agent asks and its owner
 approves each loan in Priors' Go mode. ElizaOS (`@elizaos/plugin-mcp`):
 
 ```ts
-"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.14.1"],
+"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.15.0"],
   env: { PRIORS_KEY_FILE: "/home/agent/.config/priors/agent-7311.key", PRIORS_AGENT_ID: "7311",
     PRIORS_MAX_BORROW_USD: "0", PRIORS_MAX_BORROW_DAY_USD: "0", PRIORS_MAX_SPEND_DAY_USD: "1", PRIORS_MAX_PRICE_USD: "0.10",
     PRIORS_PAY_HOSTS: "api.example.com" } }
@@ -439,7 +467,7 @@ OpenClaw (`mcp.servers`, JSON5) takes the same `command`, `args` and `env`; Herm
 mcp_servers:
   priors-wallet:
     command: npx
-    args: ["-y", "@priors/mcp@0.14.1"]
+    args: ["-y", "@priors/mcp@0.15.0"]
     env:
       PRIORS_KEY_FILE: /home/agent/.config/priors/agent-7311.key
       PRIORS_AGENT_ID: "7311"
@@ -466,7 +494,7 @@ key proves it is there: it signs the ERC-8004 identity registry's `AgentWalletSe
 agent's).
 
 ```sh
-PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.14.1 link-wallet --agent 7311
+PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.15.0 link-wallet --agent 7311
 ```
 
 It reads the registry's EIP-712 domain and refuses to sign for any other, takes the owner from the chain (`--owner`
