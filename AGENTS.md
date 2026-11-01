@@ -84,7 +84,7 @@ bash scripts/check-public.sh  # fails if any credential reached a tracked file
   timelock's delay is 48 h until 2026-10-11 19:49 UTC and none from then): a
   source change only reaches users
   through a new deployment or that upgrade. `src/` for deployed contracts must stay byte-identical to what was
-  verified on chain (`forge fmt` skips `src/StockVault.sol` for that reason; never format it).
+  verified on chain (`forge fmt` skips `src/StockVault.sol` and `src/AutoRepayV2.sol` for that reason; never format them).
 - `sdk/priors-v2.mjs` (v2) and `sdk/priors.mjs` (v1) are the contract surfaces (ABIs included);
   `sdk/float.mjs` is the x402 client; `sdk/env.mjs` resolves chain/deployment/signer (`resolveV2()` for v2).
   Use them rather than hand-rolling calls; the 6-decimal conversions, the consent signature and the USDG approval

@@ -49,7 +49,10 @@ on a line V5 sponsors take V5's step before the borrow, from `seatVaultV5` and `
 is refused unless `PRIORS_ALLOW_CUSTOM_ADDRESSES=1` is exported in the shell (a `.env` cannot set it). The same opt-in
 governs the v1 tools' `POOL`, `TREASURY` and `USDC` overrides on a real chain. `autoRepay` (since block
 `autoRepayBlock` 92,968,789, 2026-10-20) is AutoRepay v2, the contract Autopay approves and enrolls with
-(`@priors/mcp`'s `autopay_on`, whose `PRIORS_AUTOREPAY` defaults to it); its source is not in this repository.
+(`@priors/mcp`'s `autopay_on`, whose `PRIORS_AUTOREPAY` defaults to it); its source is `src/AutoRepayV2.sol`,
+byte-identical to the one verified on chain. `incomeRouter` (since block `incomeRouterBlock` 103,454,457, 2026-11-01) is the
+IncomeRouter (`src/IncomeRouter.sol`), each agent's income box for Repay from income; deployed, not switched on yet in
+any Priors service. Its deploy record is `4663.income-router.json`.
 
 ```json
 {

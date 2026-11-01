@@ -45,5 +45,7 @@
   "inviteBondV2": "0x346d3360B7258a18E8a2a55fe20E0F467113a53A",
   "inviteBondV2Block": 88669162,
   "autoRepay": "0x72B510AF4e66e5960aB9b975e0BdCf80239e83A0",
-  "autoRepayBlock": 92968789
+  "autoRepayBlock": 92968789,
+  "incomeRouter": "0x496744225Ed59a5215DD4D1A551A6b6350f58aCe",
+  "incomeRouterBlock": 103454457
 }

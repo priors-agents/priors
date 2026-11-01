@@ -13,7 +13,9 @@ additional_compiler_profiles = [{ name = "pool-v2", via_ir = true, optimizer_run
 compilation_restrictions = [{ paths = "src/CreditPoolV2.sol", via_ir = true, optimizer_runs = 1 }]
 # TreasurySponsorV5 and InviteBondV2 import CreditPoolV2's source, so their tests join its via-IR job and need a lot of
 # memory: they run on their own, FOUNDRY_PROFILE=v5 forge test --match-path 'test/{InviteBondV2,TreasurySponsorV5}*.t.sol'
-skip = ["test/TreasurySponsorV5*.t.sol", "test/InviteBondV2.t.sol"]
+# test/income runs in its own scratch project (bash test/income/forge.sh test), as in the private repository: it
+# deploys CreditPoolV2 from its build artifact, so the pool's source is never compiled with it.
+skip = ["test/TreasurySponsorV5*.t.sol", "test/InviteBondV2.t.sol", "test/income/**"]
 
 # TreasurySponsorV5 and InviteBondV2 with the rest of the suite
 [profile.v5]
@@ -22,8 +24,9 @@ skip = []
 [fmt]
 line_length = 120
 tab_width = 4
-# StockVault.sol stays byte-identical to the source verified on chain (formatting it would change that source).
-ignore = ["src/StockVault.sol"]
+# StockVault.sol and AutoRepayV2.sol stay byte-identical to the sources verified on chain (formatting either would
+# change that source).
+ignore = ["src/StockVault.sol", "src/AutoRepayV2.sol"]
 
 [rpc_endpoints]
 anvil = "http://127.0.0.1:8545"

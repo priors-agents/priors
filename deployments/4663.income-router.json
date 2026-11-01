@@ -1,0 +1,26 @@
+{
+  "chainId": 4663,
+  "incomeRouter": "0x496744225Ed59a5215DD4D1A551A6b6350f58aCe",
+  "incomeRouterBlock": 103454457,
+  "tx": "0xa1ba6917a4daeb58b5beabe38a4c54d237dfeb15017871c6d42e46542bac4b20",
+  "deployer": "0x140e38e4eD308e534fBb2Ee3EF057A51b98d5932",
+  "nonce": 576,
+  "constructorArgs": {
+    "pool": "0x281210097f0de7A8FB6F87310AF0f089c9C8DE21",
+    "pauser": "0x20c6816B2419616238772591965E6E9AbE493fD5",
+    "window": 21600
+  },
+  "constructorArgsEncoded": "0x000000000000000000000000281210097f0de7a8fb6f87310af0f089c9c8de2100000000000000000000000020c6816b2419616238772591965e6e9abe493fd50000000000000000000000000000000000000000000000000000000000005460",
+  "source": "src/IncomeRouter.sol:IncomeRouter",
+  "sourceCommit": "fb78894f4ffd98cf6d3cfd1238b41da7be124535",
+  "compiler": {
+    "solc": "0.8.26+commit.8a97fa7a",
+    "optimizer": true,
+    "runs": 200,
+    "evmVersion": "cancun",
+    "viaIR": false
+  },
+  "creationCodeHash": "0x7efb58cf181d8f65e41957614be64d9ef09bef9f0e92e0292615c7c1d22fa065",
+  "runtimeCodeHash": "0x279c51d9f2406cb1d87f0c3996528eb7e57196536c7233362a4eb37a7711f414",
+  "abi": "out/IncomeRouter.sol/IncomeRouter.json, `abi` (forge build src/IncomeRouter.sol at sourceCommit)"
+}
