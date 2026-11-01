@@ -52,7 +52,9 @@ governs the v1 tools' `POOL`, `TREASURY` and `USDC` overrides on a real chain. `
 (`@priors/mcp`'s `autopay_on`, whose `PRIORS_AUTOREPAY` defaults to it); its source is `src/AutoRepayV2.sol`,
 byte-identical to the one verified on chain. `incomeRouter` (since block `incomeRouterBlock` 103,454,457, 2026-11-01) is the
 IncomeRouter (`src/IncomeRouter.sol`), each agent's income box for Repay from income; deployed, not switched on yet in
-any Priors service. Its deploy record is `4663.income-router.json`.
+any Priors service. Its deploy record is `4663.income-router.json`. AgentLease (`src/AgentLease.sol`, `docs/AGENT-LEASE.md`), renting an agent
+out by the day, has its own record, `4663.agent-lease.json`: `agentLease`, `agentLeaseBlock` (103,660,343, 2026-11-01, the
+deploy's block, to read its logs from), `market` (AgentMarketV2), and the deploy's arguments, compiler settings and code hashes.
 
 ```json
 {
