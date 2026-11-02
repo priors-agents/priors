@@ -4,8 +4,8 @@
 
 - **Auto-borrow, for inference on credit** (`PRIORS_AUTO_BORROW_USD`, off by default): with it set, a `pay_url` (or
   `pay_gateway`) call that names no `max_borrow_usd` borrows the gap on its own when the wallet and the agent's
-  savings are short, up to that amount a call, for 14 days. That way an agent buying its own model calls (agent402.tools'
-  OpenAI-compatible chat, paid over x402 in USDG on Robinhood Chain) keeps working mid-task. The guards:
+  savings are short, up to that amount a call, for 14 days. That way an agent buying its own model calls (from an
+  OpenAI-compatible model API it chooses, paid over x402 in USDG on Robinhood Chain) keeps working mid-task. The guards:
   - It borrows only while this wallet's Autopay covers the new loan: plan on and current, not held or paused, its
     limit per loan at least the loan's due, its approval enough for that due on top of the loans it already repays.
     Otherwise nothing is borrowed or signed, and the answer says to turn Autopay on.

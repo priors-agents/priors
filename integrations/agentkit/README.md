@@ -38,17 +38,19 @@ Then hand `agentKit` to your framework as usual (`getVercelAITools(agentKit)`, `
 **Inference on credit (0.2.0).** Give the provider `autoBorrow`, set by you in code, never by the model:
 
 ```ts
-priorsActionProvider(undefined, { autoBorrow: { perCall: "5", perDay: "10", hosts: ["agent402.tools"] } })
+priorsActionProvider(undefined, { autoBorrow: { perCall: "5", perDay: "10", hosts: ["models.example"] } })
 ```
 
 With it, `pay_x402_with_priors_credit` borrows the gap on its own when the wallet is short, for the listed hosts only.
+There is no default host: `hosts` names each one, exactly (here `models.example` stands for the model API you choose).
 The limits are `perCall` USDG a call and `perDay` USDG a UTC day in the process, for 14 days (or the pool's maximum
 term). It borrows only while this wallet's Autopay (AutoRepay v2) covers the new loan: the wallet is the agent's
 declared wallet, the plan is on under the agent's current owner, not held or paused, its limit per loan and its USDG
 approval cover the loan's due. Otherwise nothing is borrowed or paid, and the answer says to turn Autopay on. Autopay
-then repays the loan in its window. The model's `maxBorrow` can only lower the amount. A chat completion is one call:
-`url` `https://agent402.tools/v1/chat/completions`, `body` the OpenAI-style request as JSON (sent with POST),
-`maxPrice` `"0.02"`.
+then repays the loan in its window. The model's `maxBorrow` can only lower the amount. A chat completion is one call
+to an OpenAI-compatible model API you choose that charges over x402 in USDG on Robinhood Chain: `url` its chat
+completions URL (for example `https://models.example/v1/chat/completions`, its host in `hosts`), `body` the
+OpenAI-style request as JSON (sent with POST), `maxPrice` the most to pay for the call (for example `"0.02"`).
 
 ## Actions
 

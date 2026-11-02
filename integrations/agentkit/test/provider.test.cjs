@@ -94,8 +94,8 @@ test("repay approves exactly what is due, then repays it", async () => {
 });
 
 // ---- autoBorrow (0.2.0): the owner's option, never the model's -------------------------------------------------
-const CHAT = "https://agent402.tools/v1/chat/completions";
-const AUTO = { autoBorrow: { perCall: "6", perDay: "10", hosts: ["agent402.tools"] } };
+const CHAT = "https://models.example/v1/chat/completions";
+const AUTO = { autoBorrow: { perCall: "6", perDay: "10", hosts: ["models.example"] } };
 /** The reads of a short wallet whose Autopay covers a 5 USDG loan: declared wallet, plan on under the owner, limit 25. */
 const covered = (o = {}) => ({
   balanceOf: 0n, getParams: { minLoan: 5000000n, maxTerm: 30n * 86400n }, quoteFee: [11666n, 0n, 0n, 0n],
@@ -103,11 +103,12 @@ const covered = (o = {}) => ({
 });
 const borrowTx = (amount, term) => ({ to: PRIORS_POOL, data: encodeFunctionData({ abi: POOL_ABI, functionName: "borrow", args: [437n, amount, term, ME, 11666n] }) });
 
-test("autoBorrow: the option is checked at construction (an amount per call above 0, a day limit at least that, the hosts)", () => {
-  assert.throws(() => priorsActionProvider(undefined, { autoBorrow: { perCall: "0", perDay: "10", hosts: ["agent402.tools"] } }), /perCall/);
-  assert.throws(() => priorsActionProvider(undefined, { autoBorrow: { perCall: "6", perDay: "5", hosts: ["agent402.tools"] } }), /perDay/);
+test("autoBorrow: the option is checked at construction (an amount per call above 0, a day limit at least that, the hosts, with no default host)", () => {
+  assert.throws(() => priorsActionProvider(undefined, { autoBorrow: { perCall: "0", perDay: "10", hosts: ["models.example"] } }), /perCall/);
+  assert.throws(() => priorsActionProvider(undefined, { autoBorrow: { perCall: "6", perDay: "5", hosts: ["models.example"] } }), /perDay/);
+  assert.throws(() => priorsActionProvider(undefined, { autoBorrow: { perCall: "6", perDay: "10" } }), /hosts/);
   assert.throws(() => priorsActionProvider(undefined, { autoBorrow: { perCall: "6", perDay: "10", hosts: [] } }), /hosts/);
-  assert.throws(() => priorsActionProvider(undefined, { autoBorrow: { perCall: "6", perDay: "10", hosts: ["https://agent402.tools/v1"] } }), /hosts/);
+  assert.throws(() => priorsActionProvider(undefined, { autoBorrow: { perCall: "6", perDay: "10", hosts: ["https://models.example/v1"] } }), /hosts/);
 });
 
 test("autoBorrow, Autopay covering: a short wallet borrows the minimum loan for 14 days with no maxBorrow named, then pays", async () => {
@@ -143,7 +144,7 @@ test("autoBorrow, no Autopay covering the loan: nothing is borrowed or paid, and
 test("autoBorrow: only for its hosts; the model's maxBorrow only lowers it; the day's limit holds in the process; the term is brought to the pool's maxTerm", async () => {
   const p = priorsActionProvider(ask402("20000"), AUTO);
   const other = wallet(covered());
-  assert.match(await p.payX402WithCredit(other, { url: URL_, agentId: 437, maxPrice: "0.10", maxBorrow: "5" }), /borrows only to pay agent402\.tools/);
+  assert.match(await p.payX402WithCredit(other, { url: URL_, agentId: 437, maxPrice: "0.10", maxBorrow: "5" }), /borrows only to pay models\.example/);
   assert.deepEqual(other.sent, []);
   const low = wallet(covered());
   assert.match(await p.payX402WithCredit(low, { url: CHAT, agentId: 437, maxPrice: "0.02", maxBorrow: "1" }), /above the most this call may borrow, 1/);
@@ -163,12 +164,12 @@ test("autoBorrow: only for its hosts; the model's maxBorrow only lowers it; the 
 });
 
 test("autoBorrow: two calls at once never both pass the day's limit, and a refused borrow gives its room back", async () => {
-  const p = priorsActionProvider(ask402("20000"), { autoBorrow: { perCall: "6", perDay: "6", hosts: ["agent402.tools"] } });
+  const p = priorsActionProvider(ask402("20000"), { autoBorrow: { perCall: "6", perDay: "6", hosts: ["models.example"] } });
   const [a, b] = [wallet(covered()), wallet(covered())];
   const outs = await Promise.all([a, b].map((w) => p.payX402WithCredit(w, { url: CHAT, agentId: 437, maxPrice: "0.02" })));
   assert.equal(a.sent.length + b.sent.length, 1, outs.join(" | "));
   assert.ok(outs.some((o) => /limit of 6 USDG a day/.test(o)), outs.join(" | "));
-  const q = priorsActionProvider(ask402("20000"), { autoBorrow: { perCall: "6", perDay: "6", hosts: ["agent402.tools"] } });
+  const q = priorsActionProvider(ask402("20000"), { autoBorrow: { perCall: "6", perDay: "6", hosts: ["models.example"] } });
   const refused = wallet(covered({ held: true }));
   assert.match(await q.payX402WithCredit(refused, { url: CHAT, agentId: 437, maxPrice: "0.02" }), /on hold/);
   const after = wallet(covered());

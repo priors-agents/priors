@@ -96,17 +96,17 @@ test("PRIORS_PAY_X402 pays the URL at most the price named, and borrows only up 
 test("PRIORS_PAY_X402 with a JSON body: POST with the body as given, the URL and amounts read outside it (a prompt's numbers are never the price); a borrow named, 0 included, is passed as said, none leaves it to @priors/mcp's auto-borrow", async () => {
   const { runtime, calls } = fakeRuntime();
   const body = { model: "m", messages: [{ role: "user", content: "list up to 3 points, max 2 lines" }] };
-  await run(payX402Action, runtime, `Buy a chat completion from https://agent402.tools/v1/chat/completions at most 0.02: ${JSON.stringify(body)}`);
-  await run(payX402Action, runtime, `Pay https://agent402.tools/v1/chat/completions at most 0.02, don't borrow:\n\`\`\`json\n${JSON.stringify(body, null, 2)}\n\`\`\``);
+  await run(payX402Action, runtime, `Buy a chat completion from https://models.example/v1/chat/completions at most 0.02: ${JSON.stringify(body)}`);
+  await run(payX402Action, runtime, `Pay https://models.example/v1/chat/completions at most 0.02, don't borrow:\n\`\`\`json\n${JSON.stringify(body, null, 2)}\n\`\`\``);
   await run(payX402Action, runtime, "Pay https://seller.example/check at most 0.10, borrow up to 0.");
   assert.deepEqual(calls.map((c) => c.args), [
-    { url: "https://agent402.tools/v1/chat/completions", max_price_usd: 0.02, method: "POST", body: JSON.stringify(body) },
-    { url: "https://agent402.tools/v1/chat/completions", max_price_usd: 0.02, max_borrow_usd: 0, method: "POST", body: JSON.stringify(body) },
+    { url: "https://models.example/v1/chat/completions", max_price_usd: 0.02, method: "POST", body: JSON.stringify(body) },
+    { url: "https://models.example/v1/chat/completions", max_price_usd: 0.02, max_borrow_usd: 0, method: "POST", body: JSON.stringify(body) },
     { url: "https://seller.example/check", max_price_usd: 0.1, max_borrow_usd: 0 },
   ]);
   // a message whose only URL is inside the body names no URL to pay
   const before = calls.length;
-  const { out } = await run(payX402Action, runtime, `pay at most 0.02 ${JSON.stringify({ url: "https://agent402.tools/v1/chat/completions" })}`);
+  const { out } = await run(payX402Action, runtime, `pay at most 0.02 ${JSON.stringify({ url: "https://models.example/v1/chat/completions" })}`);
   assert.equal(calls.length, before);
   assert.equal(out.success, false);
 });

@@ -67,7 +67,7 @@ the wallet is short", or "Check agent #1234's record before we pay it".
 | Sellers that take USDG over x402, with their record | `find_sellers(query?)` (`priors`) |
 | The agent's own line, available amount and open loans | `credit_status()` (`priors-wallet`) |
 | Pay an x402 URL, borrowing the gap if short | `pay_url(url, max_price_usd, max_borrow_usd)` (`priors-wallet`) |
-| Buy one chat completion (agent402.tools, OpenAI-style) | `pay_url(url, method: "POST", body, max_price_usd)` (`priors-wallet`) |
+| Buy one chat completion (an OpenAI-compatible model API the user chose) | `pay_url(url, method: "POST", body, max_price_usd)` (`priors-wallet`) |
 | Repay a loan | `repay(loan_id)` (`priors-wallet`) |
 
 ## Procedure

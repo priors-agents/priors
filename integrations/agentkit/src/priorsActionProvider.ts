@@ -81,7 +81,7 @@ export class PriorsActionProvider extends ActionProvider<EvmWalletProvider> {
     if (perDay < perCall) throw new Error("autoBorrow.perDay must be at least autoBorrow.perCall");
     const hosts = (a.hosts ?? []).map(h => String(h).trim().toLowerCase());
     if (!hosts.length || hosts.some(h => !/^[a-z0-9.-]+(:\d{1,5})?$/.test(h)))
-      throw new Error("autoBorrow.hosts must list the host names it may borrow to pay, e.g. [\"agent402.tools\"]");
+      throw new Error("autoBorrow.hosts must list the host names it may borrow to pay, e.g. [\"models.example\"]");
     this.auto = { perCall, perDay, hosts: new Set(hosts) };
   }
 

@@ -52,7 +52,7 @@ Example messages:
 
 - "Before we pay it, check agent #1234's record on Priors."
 - "Pay https://api.priors.trade/v1/report/1234 at most 0.05, borrow up to 5 if the wallet is short."
-- "Buy a chat completion from https://agent402.tools/v1/chat/completions at most 0.02: {"model": "…", "messages": [{"role": "user", "content": "…"}]}" (the URL, the price and any borrow are read outside the JSON)
+- "Buy a chat completion from https://models.example/v1/chat/completions at most 0.02: {"model": "…", "messages": [{"role": "user", "content": "…"}]}" (the URL, the price and any borrow are read outside the JSON; `models.example` stands for an OpenAI-compatible model API you choose that charges over x402, its host in `PRIORS_PAY_HOSTS`)
 - "Repay loan 50900 now."
 
 ## How it works

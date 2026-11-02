@@ -430,9 +430,9 @@ internationalised names in their `xn--` form), so a look-alike spelled with othe
 the list is refused before any request; pay_url never follows a redirect, and every request the payer sends is checked
 against the list too. A wildcard, a URL or a path in the list stops the server at start.
 
-**Inference on credit (`PRIORS_AUTO_BORROW_USD`, 0.15.0).** An agent that buys its own model calls, such as
-agent402.tools' OpenAI-compatible chat paid over x402 in USDG on Robinhood Chain, can keep working when its wallet
-runs short mid-task. With `PRIORS_AUTO_BORROW_USD` set, a `pay_url` call that names no `max_borrow_usd` takes the
+**Inference on credit (`PRIORS_AUTO_BORROW_USD`, 0.15.0).** An agent that buys its own model calls, from an
+OpenAI-compatible model API you choose that charges over x402 in USDG on Robinhood Chain, can keep working when its
+wallet runs short mid-task. With `PRIORS_AUTO_BORROW_USD` set, a `pay_url` call that names no `max_borrow_usd` takes the
 agent's savings first, then borrows the gap from its Priors line. The loan is the larger of the gap and the pool's
 minimum loan (5 USDG, so one loan pays many 0.02 USDG calls), for 14 days. It borrows only when this wallet's Autopay
 covers the new loan: the plan is on and current, its limit per loan is at least the loan's due, and its approval covers
@@ -440,15 +440,17 @@ that due on top of the loans it already repays. Otherwise nothing is borrowed or
 Autopay on (`autopay_on`). Autopay then repays the loan from the wallet in its window, the last hours before it is due,
 which keeps the loan seasoned. The day's borrow limit and the run's total still hold: once either has no room, a call
 pays from what the wallet holds and says why it did not borrow. A call that names `max_borrow_usd` works as before
-(`0` never borrows). Suggested settings for an agent buying inference:
+(`0` never borrows). There is no default host: auto-borrow pays only the hosts in `PRIORS_PAY_HOSTS`. Suggested
+settings for an agent buying inference (`models.example` stands for the model API's host):
 
 ```json
-"PRIORS_AUTO_BORROW_USD": "5", "PRIORS_MAX_BORROW_DAY_USD": "10", "PRIORS_PAY_HOSTS": "agent402.tools",
+"PRIORS_AUTO_BORROW_USD": "5", "PRIORS_MAX_BORROW_DAY_USD": "10", "PRIORS_PAY_HOSTS": "models.example",
 "PRIORS_AGENT_ID": "7311", "PRIORS_STATE_DIR": "~/.local/state/priors-mcp"
 ```
 
-Then a chat call: `pay_url` with `url` `https://agent402.tools/v1/chat/completions`, `method` `POST`, `body` the
-OpenAI-style request (`{"model": "…", "messages": […]}`) and `max_price_usd` `0.02`.
+Then a chat call: `pay_url` with `url` the API's chat completions URL (for example
+`https://models.example/v1/chat/completions`), `method` `POST`, `body` the OpenAI-style request
+(`{"model": "…", "messages": […]}`) and `max_price_usd` the most to pay for the call (for example `0.02`).
 
 **A block per runtime.** The hosted connector (`https://mcp.priors.trade/mcp`, no key) reads records and asks the owner
 to approve a borrow; this package, with the key, pays for APIs. With borrowing off, the agent asks and its owner

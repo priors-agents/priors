@@ -1,6 +1,6 @@
 {
   "name": "@priors/plugin-elizaos",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Priors credit for elizaOS agents: pay x402 APIs and borrow the gap in USDG from the agent's Priors line on Robinhood Chain, repay it, and read another agent's repayment record before paying it.",
   "type": "module",
   "main": "./src/index.js",

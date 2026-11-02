@@ -38,12 +38,13 @@ Hermes hands the server only the variables `mcp.json` names, so these are the on
 while the server runs, defaults 5 and 25), `PRIORS_AUTO_BORROW_USD` (auto-borrow, off by default, below) and
 `PRIORS_RPC` (another Robinhood Chain node). Any other setting stays at `@priors/mcp`'s default.
 
-Inference on credit (`@priors/mcp` 0.15.0 or later): `pay_url` can buy one OpenAI-style chat completion from
-agent402.tools (`url` `https://agent402.tools/v1/chat/completions`, `method` `POST`, the request as `body`, paid in
-USDG on Robinhood Chain). With `PRIORS_AUTO_BORROW_USD` set (for example `5`, with `PRIORS_MAX_BORROW_DAY_USD=10` and
-`agent402.tools` in `PRIORS_PAY_HOSTS`), a call that names no `max_borrow_usd` borrows the gap on its own, for 14
-days, only while the agent wallet's Autopay covers the loan, which then repays it in its window. Unset, borrowing stays
-the `max_borrow_usd` the user approves in each call.
+Inference on credit (`@priors/mcp` 0.15.0 or later): `pay_url` can buy one OpenAI-style chat completion from an
+OpenAI-compatible model API you choose that charges over x402 in USDG on Robinhood Chain (`url` its chat completions
+URL, for example `https://models.example/v1/chat/completions`, `method` `POST`, the request as `body`). With
+`PRIORS_AUTO_BORROW_USD` set (for example `5`, with `PRIORS_MAX_BORROW_DAY_USD=10` and that API's host in
+`PRIORS_PAY_HOSTS`), a call that names no `max_borrow_usd` borrows the gap on its own, for 14 days, only while the
+agent wallet's Autopay covers the loan, which then repays it in its window. Auto-borrow has no default host: it pays
+only the hosts you list. Unset, borrowing stays the `max_borrow_usd` the user approves in each call.
 
 `priors-mcp` is a Node.js command, so `node` must be on the PATH Hermes runs with. It signs nothing when
 `PRIORS_STATE_DIR` sits under a directory other users can write to (its record of sent payments and daily totals could
