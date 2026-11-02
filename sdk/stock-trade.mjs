@@ -36,9 +36,23 @@
 // the approval stands (its spender pulls only from its caller, so only this account's own swap can use it).
 // `beforeSend(plan)` is called once a plan has passed every check, before anything is signed (a throw stops the trade
 // with nothing sent); `onSend(hash, what, step)` as each step leaves ("approve" or "swap").
+//
+// Rialto's route (docs/STOCK-ZAP-SPEC.md 18, "Rialto's route"; only with `rialto: { url?, fetch?, timeoutMs? }`, which
+// @priors/mcp passes with PRIORS_RIALTO=on; without it nothing here changes and nothing is asked). Once today's plan has
+// passed every check above, the same trade is quoted by Rialto (docs.rialto.xyz) through Priors' gas gate
+// (priors_stockQuote at STOCK_QUOTE_URL, no key: Rialto's key never leaves the gate), and its answer is checked here
+// again (sdk/rialto.mjs readWire, then checkQuote against the trade asked, with the router that Rialto's Router Registry
+// names on chain at the plan's block, never the one the answer names), its output and its minimum within Chainlink's 5%,
+// its minimum never under the pinned trade's. Rialto's route is taken only when it gives strictly more of the token
+// bought than the pinned pool (chooseRoute): the sold token approved to that router for exactly the amount, then Rialto's
+// transaction unchanged, its gas estimated after the approval (a failing estimate stops the trade, the approval named).
+// After the receipt: what the account received (its balance of the bought token before and after) and the router's
+// allowance (0 after a full fill). Any other answer, an error, no answer within RIALTO_WAIT_MS (8 s) or a check failing:
+// today's pinned trade, the plan saying why (rialtoWhy). Priors takes no fee on either route.
 import { decodeFunctionResult, encodeFunctionData, formatUnits, getAddress, isAddress, parseAbi, parseUnits } from "viem";
 import { ZAP, ERC20_ABI, READS_ABI, V3_QUOTER_ABI, V4_QUOTER_ABI, buildBuy, buildSell, impactBps, minOutOf, pinnedPool } from "./stock-zap.mjs";
 import { rpc, sendCalls } from "./pt-usdg.mjs";
+import { RIALTO_CHAIN_ID, RIALTO_FEATURE, RIALTO_REGISTRY, REGISTRY_ABI, checkQuote, chooseRoute, readWire, rialtoCalls } from "./rialto.mjs";
 import V2 from "../deployments/4663.v2.json" with { type: "json" };
 
 /** The web zap's eligibility tick, word for word (web/account.html's #as-ok, the deposit sheet's and the buy drawer's),
@@ -57,6 +71,10 @@ const POOL = getAddress(V2.pool);
 // twice what a pinned pool's swap used on an anvil fork of chain 4663 (2026-10-29). Ceiling: a pool or chain change
 // that makes a swap cost more. Upgrade trigger: a trade that stops for gas after its approval.
 export const SWAP_GAS = 400_000n;
+/** Where Rialto's quote is asked: Priors' gas gate (gas-worker, priors_stockQuote), which alone holds Rialto's key; and
+ *  how long an answer is waited for before the pinned pool trades instead. */
+export const STOCK_QUOTE_URL = "https://priors.trade/gas";
+export const RIALTO_WAIT_MS = 8_000;
 
 const LOAN_T = "(uint256 agentId, uint256 sponsorId, uint256 principal, uint256 fee, uint256 sponsorCut, uint256 reserveCut, uint256 premium, address owner, uint64 issuedAt, uint64 dueAt, uint64 defaultableAt, uint64 minScoreTerm, uint64 closedAt, uint8 status)";
 const AGENT_T = "(bool enrolled, bool isRoot, bool defaulted, bool frozen, bool importedFromV1, uint64 enrolledAt, uint64 lastBorrowAt, uint64 lastRepayAt, uint256 sponsor, uint256 delegatedIn, uint256 delegatedOut, uint256 principalOut, uint256 activeLoans, uint256 premiumBps, uint256 premiumCap, uint256 loansRepaid, uint256 volumeRepaid, uint256 feesPaid, uint256 recourseHonored, uint256 childrenDefaulted, uint256 qualifiedRepaid, uint256 dollarSecondsRepaid)";
@@ -273,6 +291,161 @@ export async function stockTradePlan(client, o = {}, conf = ZAP) {
   };
 }
 
+// ---- Rialto's route -------------------------------------------------------------------------------------------------
+
+/** The gate's reasons for no quote (priors_stockQuote's `reason`), in words. */
+const NO_RIALTO = {
+  off: "Rialto's route is off on Priors' gas gate",
+  busy: "Priors' gas gate is busy (too many quotes asked just now)",
+  unavailable: "Rialto gave no quote just now",
+  refused: "Rialto refused to quote this trade",
+  balance: "Rialto says this account holds too little of the token sold",
+};
+const noRialtoWhy = (reason) => NO_RIALTO[reason] || (typeof reason === "string" && /^[a-z_]{1,32}$/.test(reason) ? `Priors' gas gate gave no quote (${reason})` : "Priors' gas gate gave no quote");
+/** Text from outside, printable and short. */
+const words = (s) => String(s ?? "").replace(/[^\x20-\x7e]/g, "").trim().slice(0, 120);
+
+/** priors_stockQuote asked of the gate (no Authorization header: the gate holds Rialto's key), waited for at most
+ *  `timeoutMs`: its `result` ({ rialto, reason, expiresAt, now }), or throws an Error whose message says why not. */
+async function askGate({ url = STOCK_QUOTE_URL, fetch: f = globalThis.fetch, timeoutMs = RIALTO_WAIT_MS } = {}, params) {
+  const ctl = typeof AbortController === "function" ? new AbortController() : null;
+  let timer, late = false;
+  const tooLate = new Error(`Priors' gas gate gave no answer within ${timeoutMs / 1000} s`);
+  const deadline = new Promise((_, no) => { timer = setTimeout(() => { late = true; ctl?.abort(); no(tooLate); }, timeoutMs); });
+  try {
+    let res;
+    try {
+      res = await Promise.race([f(url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "priors_stockQuote", params }), ...(ctl ? { signal: ctl.signal } : {}) }), deadline]);
+    } catch (e) { throw late ? tooLate : new Error(`Priors' gas gate could not be reached (${words(e?.message || e)})`); }
+    if (!res || typeof res.status !== "number") throw new Error("Priors' gas gate's answer is not a quote");
+    if (!res.ok) throw new Error(`Priors' gas gate answered HTTP ${res.status}`);
+    let j;
+    try { j = await Promise.race([res.json(), deadline]); } catch (_) { throw late ? tooLate : new Error("Priors' gas gate's answer is not JSON"); }
+    if (j && j.error) throw new Error(`Priors' gas gate refused the quote (${words(j.error.message) || `error ${words(j.error.code)}`})`);
+    const r = j && j.result;
+    if (!r || typeof r !== "object" || !("rialto" in r)) throw new Error("Priors' gas gate's answer is not a quote");
+    return r;
+  } finally { clearTimeout(timer); }
+}
+
+/**
+ * Rialto's route for `p`, a plan stockTradePlan made (every check passed), asked through Priors' gas gate with
+ * `o.rialto` ({ url, fetch, timeoutMs }; the caller's own `minOut` and `maxUsdg` as in the plan). Returns `p` with
+ * { route: "rialto" | "pinned", rialtoWhy (why not Rialto, else null), rialto (Rialto's checked quote: { quoteId, router,
+ * out, minOut, feeBps, legs, gas, expiresAt }, or null when there is none), pinned ({ out, minOut, label }: the pinned
+ * pool's quote) }. Taking Rialto's route, the plan's out, minOut, label, spender, allowance, deviationBps, valueUsdg and
+ * calls are Rialto's: the exact approval of the sold token to the registry's router (left out when its allowance already
+ * is exactly the amount), then Rialto's transaction. Never throws for Rialto: whatever fails keeps the pinned trade.
+ */
+export async function rialtoRoute(client, p, o = {}, conf = ZAP) {
+  const buy = p.side === "buy";
+  const sellToken = buy ? conf.usdg : p.token, buyToken = buy ? p.token : conf.usdg;
+  const [outD, outN] = buy ? [p.decimals, p.symbol] : [6, "USDG"];
+  const pinned = { out: p.out, minOut: p.minOut, label: p.label };
+  const keep = (why, rialto = null) => ({ ...p, route: "pinned", rialtoWhy: why, rialto, pinned });
+  let got, wire, ttl, router, t;
+  try {
+    got = await askGate(o.rialto || {}, [p.account, p.side, p.token, String(p.amountIn), p.slippageBps]);
+  } catch (e) { return keep(words(e?.message || e)); }
+  if (got.rialto == null) return keep(noRialtoWhy(got.reason));
+  try { wire = readWire(got.rialto); } catch (e) { return keep(words(e?.message || e)); }
+  // the wire names its taker (sdk/rialto.mjs wireTerms, readWire): it must be this account
+  if (got.rialto.taker != null && lc(got.rialto.taker) !== lc(p.account)) return keep("Rialto's quote: another taker");
+  // its expiry, on the gate's own clock
+  if (got.expiresAt == null || got.now == null || !Number.isFinite(Number(got.expiresAt)) || !Number.isFinite(Number(got.now))) return keep("Priors' gas gate's answer is not a quote (no expiry)");
+  ttl = Number(got.expiresAt) - Number(got.now);
+  if (ttl <= 0) return keep("Rialto's quote has expired");
+  // the router: Rialto's Router Registry's, read here at the plan's block, never the answer's
+  try { router = getAddress((await view(client, hex(p.block), RIALTO_REGISTRY, REGISTRY_ABI, "ownerOf", [BigInt(RIALTO_FEATURE)]))); } catch (_) {
+    return keep("Rialto's Router Registry names no router for its swaps just now (paused, or unread)");
+  }
+  try {
+    t = checkQuote({
+      quote_id: wire.quoteId, chain_id: RIALTO_CHAIN_ID, settlement: "allowance",
+      tx: { to: wire.router, data: wire.data, value: "0", ...(wire.gas != null ? { estimated_gas: wire.gas } : {}) },
+      issues: { allowance: { spender: wire.spender }, balance: null },
+      sell_token: wire.sellToken, buy_token: wire.buyToken, sell_amount: String(wire.sellAmount), buy_amount: String(wire.buyAmount),
+      min_buy_amount: String(wire.minBuyAmount), taker: got.rialto.taker ?? p.account, platform_fee: { total_bps: wire.feeBps },
+    }, { sellToken, buyToken, sellAmount: p.amountIn, taker: p.account, router, slippageBps: p.slippageBps });
+  } catch (e) { return keep(words(e?.message || e)); }
+  const rialto = { quoteId: t.quoteId, router, out: t.buyAmount, minOut: t.minBuyAmount, feeBps: t.feeBps, legs: wire.legs, gas: t.gas, expiresAt: Math.floor(Date.now() / 1000) + ttl };
+  const q = (x) => `${fmt(x, outD)} ${outN}`;
+  // Chainlink's 5%, either way, for Rialto's output and for its minimum
+  const tk = { decimals: p.decimals, feedDecimals: p.feedDecimals };
+  const usdIn = buy ? p.amountIn : usdOf(p.amountIn, p.price, tk);
+  const off = (x) => { const usdOut = buy ? usdOf(x, p.price, tk) : x; return usdIn > 0n ? Number(((usdIn > usdOut ? usdIn - usdOut : usdOut - usdIn) * 10_000n) / usdIn) : 0; };
+  if (off(t.buyAmount) > MAX_DEVIATION_BPS) return keep(`Rialto's quote, ${q(t.buyAmount)}, is ${(off(t.buyAmount) / 100).toFixed(2)}% from Chainlink's price, over ${MAX_DEVIATION_BPS / 100}%`, rialto);
+  if (off(t.minBuyAmount) > MAX_DEVIATION_BPS) return keep(`Rialto's minimum out, ${q(t.minBuyAmount)}, is ${(off(t.minBuyAmount) / 100).toFixed(2)}% from Chainlink's price, over ${MAX_DEVIATION_BPS / 100}%`, rialto);
+  if (chooseRoute({ pinnedOut: p.out, rialto: t }).route !== "rialto") return keep(`Rialto's quote gives ${q(t.buyAmount)}, not more than the pinned pool's ${q(p.out)}`, rialto);
+  // never a lower floor than the pinned trade's (its slippage, and the caller's minOut), nor past one trade's cap
+  if (t.minBuyAmount < p.minOut) return keep(`Rialto's minimum out, ${q(t.minBuyAmount)}, is under the pinned trade's ${q(p.minOut)}`, rialto);
+  const cap = o.maxUsdg != null && BigInt(o.maxUsdg) < conf.maxUsdgPerOp ? BigInt(o.maxUsdg) : conf.maxUsdgPerOp;
+  if (!buy && t.buyAmount > cap) return keep(`Rialto's quote values the sale at ${usdg(t.buyAmount)}, over one trade's ${usdg(cap)}`, rialto);
+  let allowance;
+  try { allowance = await view(client, hex(p.block), sellToken, ERC20_ABI, "allowance", [p.account, router]); } catch (_) { allowance = 0n; }
+  const inText = buy ? usdg(p.amountIn) : `${fmt(p.amountIn, p.decimals)} ${p.symbol}`;
+  const [approval, swap] = rialtoCalls(t);
+  const calls = [
+    ...(allowance === p.amountIn ? [] : [{ ...approval, step: "approve", what: `the approval of ${inText} to Rialto's router` }]),
+    { ...swap, step: "swap", what: `Rialto's ${buy ? "buy" : "sale"} of ${inText} for at least ${q(t.minBuyAmount)} (quote ${t.quoteId})` },
+  ];
+  return {
+    ...p, route: "rialto", rialtoWhy: null, rialto, pinned, label: "Rialto's router", spender: router, out: t.buyAmount, minOut: t.minBuyAmount,
+    impactBps: null, deviationBps: off(t.buyAmount), valueUsdg: buy ? p.amountIn : t.buyAmount, allowance, calls,
+  };
+}
+
+/** The route in words, for a plan Rialto was asked for (p.route set; else null). */
+export function routeText(p) {
+  if (!p.route) return null;
+  const [outD, outN] = p.side === "buy" ? [p.decimals, p.symbol] : [6, "USDG"];
+  if (p.route !== "rialto") return `Route: the pinned pool (${p.pinned.label}), not Rialto's: ${p.rialtoWhy}.`;
+  const r = p.rialto;
+  return `Route: Rialto, through the router its Router Registry names (${r.router}), quote ${r.quoteId}, Rialto's fee ${r.feeBps ?? "unstated"} bps, no Priors fee: about ${fmt(r.out, outD)} ${outN}, at least ${fmt(r.minOut, outD)}, against the pinned pool's ${fmt(p.pinned.out, outD)} ${outN} (${p.pinned.label}).`;
+}
+
+/** A plan that stopped after its approval to Rialto's router: the error, with what stands. */
+function stoppedAfterRialto(e, p, hashes) {
+  const inText = p.side === "buy" ? usdg(p.amountIn) : `${fmt(p.amountIn, p.decimals)} ${p.symbol}`;
+  const why = e?.message ? String(e.message).replace(/^stock (buy|sale|sell): /, "") : String(e);
+  return new StockTradeError(e?.code || "STOPPED", `stock ${p.side}: the approval was sent (tx ${hashes.join(", ")}), then the trade stopped: ${why}. Nothing more was sent. The approval of exactly ${inText} to Rialto's router ${p.rialto.router} stands: this account's next Rialto trade of that amount sends its swap alone`, { hashes: [...hashes], stoppedAfterApproval: true, cause: e });
+}
+
+/** Rialto's two steps from the account (`send` as stockTrade's): the approval, then, once it is exactly the amount, the
+ *  quote unexpired and the swap's gas estimated, Rialto's transaction; then what the account received of the token
+ *  bought (its balance before and after) and the router's allowance (0 after a full fill). */
+async function rialtoSend(client, p, account, send, conf) {
+  const buy = p.side === "buy";
+  const sellToken = buy ? conf.usdg : p.token, buyToken = buy ? p.token : conf.usdg;
+  const router = p.rialto.router, swap = p.calls[p.calls.length - 1];
+  const hashes = [];
+  const stop = (why) => (hashes.length ? stoppedAfterRialto(new StockTradeError("RIALTO", why), p, hashes) : new StockTradeError("RIALTO", `stock ${p.side}: ${why}`));
+  if (p.calls.length === 2) hashes.push(...(await send(p.calls[0])));
+  let allowance = null;
+  try { allowance = await view(client, "latest", sellToken, ERC20_ABI, "allowance", [account, router]); } catch (_) { allowance = null; }
+  if (allowance === null) throw stop("the allowance to Rialto's router could not be read back");
+  if (allowance !== p.amountIn) throw stop("the approval to Rialto's router is not the amount its swap takes");
+  if (Date.now() / 1000 >= p.rialto.expiresAt) throw stop("Rialto's quote expired before its swap");
+  try { await rpc(client, "eth_estimateGas", [{ from: account, to: swap.to, data: swap.data, value: "0x0" }]); } catch (e) {
+    throw stop(`Rialto's transaction would not go through: its gas estimate failed (${words(e?.shortMessage || e?.message || e)})`);
+  }
+  let before = null;
+  try { before = await view(client, "latest", buyToken, ERC20_ABI, "balanceOf", [account]); } catch (_) { before = null; }
+  try { hashes.push(...(await send(swap))); } catch (e) {
+    if (hashes.length && !e?.unconfirmed) throw stoppedAfterRialto(e, p, hashes);
+    if (hashes.length && e?.unconfirmed) e.hashes = [...hashes, ...(e.hashes || [])];
+    throw e;
+  }
+  const hash = hashes[hashes.length - 1];
+  let tag = "latest";
+  try { const rc = await rpc(client, "eth_getTransactionReceipt", [hash]); if (rc && rc.blockNumber != null) tag = hex(rc.blockNumber); } catch (_) { /* latest */ }
+  let received = null, allowanceAfter = null;
+  try { const after = await view(client, tag, buyToken, ERC20_ABI, "balanceOf", [account]); if (before !== null && after >= before) received = after - before; } catch (_) { /* the logs below */ }
+  if (received === null) received = await receivedIn(client, hash, buyToken, account);
+  try { allowanceAfter = await view(client, tag, sellToken, ERC20_ABI, "allowance", [account, router]); } catch (_) { allowanceAfter = null; }
+  return { ...p, hashes, received, allowanceAfter };
+}
+
 /** A plan in words, one line: "10 USDG -> about 0.0412 NVDA (at least 0.0408), Uniswap v3, 0.05% pool; ...". */
 export function planText(p) {
   const [inD, inN, outD, outN] = p.side === "buy" ? [6, "USDG", p.decimals, p.symbol] : [p.decimals, p.symbol, 6, "USDG"];
@@ -287,15 +460,16 @@ async function accountOf(account, wallet) {
   throw new StockTradeError("ACCOUNT", "stock trade: give the account that signs (account) or a wallet to send with");
 }
 
-/** The account's ETH covers the steps at today's gas price: the first's estimate (+25%), SWAP_GAS for a swap after it. */
-async function gasCheck(client, side, account, calls) {
+/** The account's ETH covers the steps at today's gas price: the first's estimate (+25%), `swapGas` (SWAP_GAS; for
+ *  Rialto's transaction its own estimate +25% when that is more) for a swap after it. */
+async function gasCheck(client, side, account, calls, swapGas = SWAP_GAS) {
   let price, eth, est;
   try {
     price = BigInt(await rpc(client, "eth_gasPrice", []));
     eth = BigInt(await rpc(client, "eth_getBalance", [account, "latest"]));
   } catch (e) { throw new StockTradeError("UNREAD", `stock ${side}: the gas price or the account's ETH could not be read just now`); }
-  try { est = BigInt(await rpc(client, "eth_estimateGas", [{ from: account, to: calls[0].to, data: calls[0].data }])); } catch (_) { est = calls[0].step === "swap" ? SWAP_GAS : 75_000n; }
-  const need = (est + est / 4n + (calls.length > 1 ? SWAP_GAS : 0n)) * price;
+  try { est = BigInt(await rpc(client, "eth_estimateGas", [{ from: account, to: calls[0].to, data: calls[0].data }])); } catch (_) { est = calls[0].step === "swap" ? swapGas : 75_000n; }
+  const need = (est + est / 4n + (calls.length > 1 ? swapGas : 0n)) * price;
   if (eth < need) no(side, "NO_GAS", `${account} has ${formatUnits(eth, 18)} ETH, under the ${formatUnits(need, 18)} ETH its ${calls.length > 1 ? "two transactions" : "transaction"} may cost in gas`);
 }
 
@@ -317,15 +491,19 @@ function stoppedAfter(e, p, hashes) {
 
 /**
  * One trade: the plan, and with `wallet` (an ethers Wallet or Signer, a viem WalletClient) its steps sent. o: as
- * stockTradePlan, plus wallet, waitTimeoutMs, beforeSend(plan), onSend(hash, what, step). Returns the plan, and once sent
- * { ...plan, hashes, received } (received: what the swap's receipt paid the account, or null when unread).
+ * stockTradePlan, plus wallet, waitTimeoutMs, beforeSend(plan), beforeSwap(plan) (the pinned pool's plan read again
+ * after its approval, right before the swap is signed: a caller's limits on a sale's new quote; what it throws stops the
+ * trade with the approval standing), onSend(hash, what, step), and `rialto` (stockQuote). Returns the plan, and once
+ * sent { ...plan, hashes, received } (received: what the swap's receipt paid the account, or null when unread; through
+ * Rialto, the account's balance of the token bought after less before, and allowanceAfter, the router's allowance then).
  */
 export async function stockTrade(client, o = {}, conf = ZAP) {
   stated(o);
   const account = await accountOf(o.account, o.wallet).catch((e) => { throw e instanceof StockTradeError ? e : new StockTradeError("ACCOUNT", String(e?.message || e)); });
-  let p = await stockTradePlan(client, { ...o, account }, conf);
+  let p = await stockQuote(client, { ...o, account }, conf);
   if (!o.wallet) return p;
-  await gasCheck(client, p.side, account, p.calls);
+  const viaRialto = p.route === "rialto";
+  await gasCheck(client, p.side, account, p.calls, viaRialto && p.rialto.gas && BigInt(p.rialto.gas) * 5n / 4n > SWAP_GAS ? BigInt(p.rialto.gas) * 5n / 4n : SWAP_GAS);
   if (o.beforeSend) await o.beforeSend(p);
   const recheck = `this account's USDG and ${p.symbol} (wallet_balance, or the token's balanceOf)`;
   // each step's nonce, read here just before it: a wallet whose provider caches its reads (ethers' default, 250 ms) could
@@ -335,6 +513,9 @@ export async function stockTrade(client, o = {}, conf = ZAP) {
     try { n = { ...c, nonce: Number(BigInt(await rpc(client, "eth_getTransactionCount", [account, "pending"]))) }; } catch (_) { /* the wallet's own */ }
     return sendCalls(client, o.wallet, [n], account, { waitTimeoutMs: o.waitTimeoutMs, recheck, onSend: o.onSend ? (h, what) => o.onSend(h, what, c.step) : undefined });
   };
+  if (viaRialto) return rialtoSend(client, p, account, send, conf);
+  // the route as first planned (Rialto asked and not taken), kept over the plan made again after the approval
+  const route = p.route ? { route: p.route, rialtoWhy: p.rialtoWhy, rialto: p.rialto, pinned: p.pinned } : {};
   const hashes = [];
   if (p.calls.length === 2) {
     hashes.push(...(await send(p.calls[0])));
@@ -342,6 +523,7 @@ export async function stockTrade(client, o = {}, conf = ZAP) {
     let again;
     try { again = await stockTradePlan(client, { ...o, account, amount: p.amountIn, pool: p.pool, minOut: p.minOut, slippageBps: p.slippageBps }, conf); } catch (e) { throw stoppedAfter(e, p, hashes); }
     if (again.calls.length !== 1) throw stoppedAfter(new Error("the approval is not the amount the swap takes"), p, hashes);
+    if (o.beforeSwap) { try { await o.beforeSwap(again); } catch (e) { throw stoppedAfter(e, again, hashes); } }
     p = again;
   }
   try { hashes.push(...(await send(p.calls[p.calls.length - 1]))); } catch (e) {
@@ -350,11 +532,15 @@ export async function stockTrade(client, o = {}, conf = ZAP) {
     throw e;
   }
   const received = await receivedIn(client, hashes[hashes.length - 1], p.side === "buy" ? p.token : conf.usdg, account);
-  return { ...p, hashes, received };
+  return { ...p, ...route, hashes, received };
 }
 
-/** A quote and the calls, sent nothing: stockTradePlan for `side`. */
-export const stockQuote = (client, o = {}, conf = ZAP) => stockTradePlan(client, o, conf);
+/** A quote and the calls, sent nothing: stockTradePlan for `side`, and with `o.rialto` Rialto's route for it
+ *  (rialtoRoute). */
+export const stockQuote = async (client, o = {}, conf = ZAP) => {
+  const p = await stockTradePlan(client, o, conf);
+  return o.rialto ? rialtoRoute(client, p, o, conf) : p;
+};
 /** Buy `amount` USDG of `symbol`: the calls, sent when `wallet` is given. */
 export const stockBuy = (client, o = {}, conf = ZAP) => stockTrade(client, { ...o, side: "buy" }, conf);
 /** Sell `amount` of `symbol` (or "all") for USDG: the calls, sent when `wallet` is given. */

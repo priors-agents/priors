@@ -16,7 +16,7 @@ It bundles two MCP servers and one skill:
 ## Install
 
 ```bash
-npm install -g @priors/mcp@0.15.0        # the priors-mcp command
+npm install -g @priors/mcp@0.16.0        # the priors-mcp command
 hermes plugins install priors            # once listed in Hermes's plugin catalog
 hermes plugins enable priors             # portable packages install disabled
 ```

@@ -472,7 +472,9 @@ export const GO_PATH = "/account";
  * Each verb, what it needs and what it may carry. No amount ever travels in a link (prices are read again in Go mode),
  * and there is no borrow or repay verb. A link Priors builds carries agent, do, req, job, offer, bid and origin only,
  * each at most once.
- *   hire      agent, offer?   the Hire sheet for that agent's offer
+ *   hire      agent?, offer?  the Hire sheet for that agent's offer (no agent: Go mode lists the agents with live hire
+ *                             offers, best record first, the board's For hire order, each opening its Hire sheet; an
+ *                             offer without an agent is left aside)
  *   buy       agent           the Buy sheet (read only, "not open yet", while the market has no address)
  *   sell      agent?, bid?    the Sell checklist for the account's own agent (no agent: Go mode asks which of the
  *                             account's agents to sell, as the For sale empty state's [Sell an agent] opens it, spec 1.7;
@@ -496,7 +498,7 @@ export const GO_PATH = "/account";
  *                             Go mode asks which of the account's agents)
  */
 export const GO_VERBS = Object.freeze({
-  hire: Object.freeze({ need: ["agent"], may: ["offer"] }),
+  hire: Object.freeze({ need: [], may: ["agent", "offer"] }),
   buy: Object.freeze({ need: ["agent"], may: [] }),
   sell: Object.freeze({ need: [], may: ["agent", "bid"] }),
   offer: Object.freeze({ need: [], may: ["agent"] }),

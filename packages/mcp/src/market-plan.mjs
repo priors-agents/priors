@@ -34,6 +34,7 @@ import { ethers } from "ethers";
 import { MARKET_IFACE, LISTING_RULES, feeOf } from "./market-abi.mjs";
 import { BID_RULES, BID_WORDS, spenderOf, idsRootOf, listOf, inRoot, reserveCall, bidCall, bidAnyCall, cancelBidCall, acceptCall } from "./market-bids.mjs";
 import { LEASE_IFACE, LEASE_WORDS, handoverCalls } from "./agent-lease.mjs";
+import { BUILDER_WORDS } from "./market-builders.mjs";
 
 /* ---- small helpers ---- */
 
@@ -81,6 +82,7 @@ export const READS = Object.freeze({
     // the builder share, on a V2 that has it (the P5 spec, 2.2 and 2.3)
     "function MAX_BUILDER_BPS() view returns (uint256)", "function builderOf(uint256 id) view returns (tuple(address to, uint16 bps))",
     "function saleSplit(uint256 id) view returns (uint256 fee, uint256 share, uint256 net)", "function buildersOn() view returns (bool)",
+    "function builderSince(uint256 id) view returns (uint256)",
   ]),
   spender: new ethers.Interface(["function market() view returns (address)"]),
   registry: new ethers.Interface(["function ownerOf(uint256 tokenId) view returns (address)", "function getApproved(uint256 tokenId) view returns (address)", "function tokenURI(uint256 tokenId) view returns (string)"]),
@@ -206,7 +208,7 @@ export function agentReads({ addr, id, shares = false }) {
   add("bondV2", a.inviteBondV2, "bondV2", "bonds", [i]);
   add("bondAmount", a.inviteBondV2, "bondV2", "amount");
   add("soldAt", a.market, "market", "lastSoldAt", [i]);
-  if (shares) { add("builder", a.market, "market", "builderOf", [i]); add("saleSplit", a.market, "market", "saleSplit", [i]); add("buildersOn", a.market, "market", "buildersOn"); }
+  if (shares) { add("builder", a.market, "market", "builderOf", [i]); add("saleSplit", a.market, "market", "saleSplit", [i]); add("buildersOn", a.market, "market", "buildersOn"); add("builderSince", a.market, "market", "builderSince", [i]); }
   add("lease", a.lease, "lease", "leaseOf", [i]);
   return out;
 }
@@ -368,6 +370,17 @@ function builderIn(c, shares) {
   if (big(b.bps) > 500n) return { error: "unread" };
   return { builder: { to: lc(b.to), bps: big(b.bps) } };
 }
+/** Whether an accept of agent `c` read can take bid `bidId` by its builder share (acceptBid's rule: a bid made before
+ *  the share was set, its id under builderSince, is refused, BuilderAfterBid): true, false, or null while unread. A
+ *  market without shares, or with the owner's switch off (no share can be set), never refuses one; nor does a market
+ *  whose builderSince answers no data, or a `c` that never asked it. */
+export function takesBid(c, bidId, shares) {
+  if (!shares || c.buildersOn === false) return true;
+  if (c.builderSince === undefined) return true; // not asked (as for buildersOn): agentReads asks it with the share
+  if (c.builderSince === null) return c.failed && c.failed.builderSince === "empty" ? true : null; // no such view: none; failed: unread
+  return big(bidId) >= big(c.builderSince);
+}
+
 /**
  * The claims on the lease around a change of hands of the agent `c` read (the client rule, docs/AGENT-LEASE.md), where
  * the package records AgentLease (addr.lease): while leaseOf names a renter (a lease that runs, or one that ended and
@@ -646,8 +659,9 @@ export function cancelBidPlan(c, { me, now, bidIds, myBids = [] }) {
  * Accepting bid `bidId` for agent `id` held by `me` (web/board-wallet-bids-core.js walletAcceptPlan): the bid, its
  * target or list (`proof`, checked with inRoot, never trusted), the maker as a buyer, the sale's rules with `me` as the
  * seller, the maker's pins, the net. { error } ("unread", "gone", "notInBid", "taken", "selfAccept", "maker",
- * "unfunded", "paused", saleChecks' kinds, "repaid" (`n`, `m`), "lineBelow" (`line`), "card", "noNet" (`price`, `fee`:
- * the fee takes the whole price, which the contract allows only when the bid is at the minimum fee)), or { steps
+ * "unfunded", "paused", saleChecks' kinds, "repaid" (`n`, `m`), "lineBelow" (`line`), "card", "afterBid" (a bid made
+ * before the agent's builder share was set, which acceptBid refuses), "noNet" (`price`, `fee`: the fee takes the whole
+ * price, which the contract allows only when the bid is at the minimum fee)), or { steps
  * ("cancelOldPrev", "cancelOld", "bondApprove", "bond", "approve", "accept", in acceptCalls' order; "claimBefore" first
  * and "claimAfter" last while a lease is stored, with `leased`, as buyPlan's), price, maker, proof, fee, share, net
  * (minNet: exact at the read block; a fee changes only after the market's 48 h, and a share only lower), bond, pins }.
@@ -673,6 +687,11 @@ export function acceptPlan(c, { addr, me, now, bidId, id, proof = [], shares = f
   if (BigInt(b.uriHash) !== 0n && lc(ethers.keccak256(ethers.toUtf8Bytes(c.uri))) !== lc(b.uriHash)) return { error: "card" };
   const bi = builderIn(c, shares);
   if (bi.error) return bi;
+  // a bid made before the agent's builder share was set: acceptBid refuses it (BuilderAfterBid), so nothing is sent for
+  // it, no cancel, bond or approval first (GHSA-m2h8-m55f-9j66)
+  const takes = takesBid(c, key, shares);
+  if (takes === null) return { error: "unread" };
+  if (!takes) return { error: "afterBid" };
   const { fee, share, net } = netOf(big(b.price), { ...feesOf(c), builder: bi.builder, seller: me });
   if (net < 1n) return { error: "noNet", price: big(b.price), fee };
   const approved = same(c.approved, addr.market), mine = ownListing(c.listing, me, now);
@@ -745,7 +764,7 @@ export const MARKET_ERRORS = Object.freeze({
   // the builder share (the P5 spec, 2.8), once V2 has it: a seller or a buyer never sets one here (BuildersOff: setBuilder
   // before the owner turned shares on)
   "NotBuilder(uint256,address)": "failed", "BuilderTaken(uint256)": "failed", "AlreadySold(uint256)": "failed", "BadShare(uint256)": "failed", "BadBuilder(address)": "failed",
-  "PayOutOfGas()": "failed", "BuildersOff()": "failed",
+  "PayOutOfGas()": "failed", "BuildersOff()": "failed", "BuilderAfterBid(uint256,uint256)": "afterBid",
   // the pause
   "IsPaused(uint64)": "paused", "NotGuardian(address)": "failed", "NotTimelock(address)": "failed", "PauseRefused(uint64)": "failed", "BadPause(uint64)": "failed", "ZeroAddress()": "failed",
   // BidSpender: its pull is the market's alone
@@ -801,6 +820,7 @@ export const PLAN_WORDS = Object.freeze({
   record: "#{id} has {m} repaid loan{s}. This server buys and bids only on agents with {n} or more.",
   // money
   keepBack: "Agent #{self} owes {owed} USDG on its open loans, due {due}. This would leave {left} USDG to repay them. Repay the loans, or add USDG.",
+  keepBackHeld: "Agent #{self} owes {owed} USDG on its open loans, due {due}. This would leave {left} USDG to repay them, after the {held} USDG this wallet's open bids and signed payments still hold. Repay the loans, cancel a bid, or add USDG.",
   short: "This wallet holds {cash} USDG. Add {short} USDG, then try again.",
   shortBond: "#{id}'s line needs a {bond} USDG bond before it can change hands, and this wallet holds {cash} USDG. Add {short} USDG, then try again.",
   noEth: "This wallet holds no ETH on Robinhood Chain for gas. Add a little ETH, then try again.",
@@ -840,6 +860,7 @@ export const PLAN_WORDS = Object.freeze({
   notMaker: "Bid #{bidId} isn't this wallet's. Only its maker can cancel it.",
   bidGone: "Bid #{bidId} isn't open now. It was cancelled, taken or ran out, or there is no such bid.",
   noNet: "This bid is {price} USDG and the market's fee is {fee} USDG, so it would leave this wallet nothing. It can't be accepted.",
+  afterBid: BUILDER_WORDS.errors.afterBid,
   tooMany: "market_cancel_bid cancels at most 10 bids a call. Cancel the rest in another call.",
   count: "A bid on an origin takes 1 to {max} agents here. Pick a count in that range.",
   noBids: "This wallet has no open bid to cancel.",

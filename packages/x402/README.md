@@ -378,7 +378,10 @@ it approves a budget and enrolls once, and Priors' keeper (or anyone) repays eac
 from that wallet, while it holds enough. AutoRepay has no owner and no upgrade; it sends the wallet's USDG only to the
 pool, for the agent's own loans. A plan lasts while the agent keeps the owner and the wallet it was set under: after a
 new key or a sale, `autopayStatus` says `stale` and `autopayOn` is needed again. From 0.5.0 `autopayOn` refuses
-AutoRepay v1 (retired before use) with `AUTOREPAY_V1`.
+AutoRepay v1 (retired before use) with `AUTOREPAY_V1`. The wallet must be a key of the agent's own, declared with the
+registry's `setAgentWallet`, not the owner's address: an agent whose declared wallet is its owner (what `register()`
+leaves) is repaid by AutoRepay under its owner's plan only, so `autopayOn` refuses it with `OWNER_IS_WALLET` and
+`autopayStatus` answers `ownerIsWallet: true` (since the version after 0.8.5).
 
 ```js
 import { autopayContracts, autopayOn, autopayStatus, autopayOff, defaultCap } from "@priors/x402/autopay";

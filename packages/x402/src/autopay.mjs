@@ -91,8 +91,11 @@ export function autopayContracts({ runner, address, registry, usdg, savingsVault
 /**
  * The agent's Autopay as its wallet `wallet` sees it: {
  *   declared: the registry names `wallet` the agent's wallet (only then can it enroll, and a plan only pays then),
- *   plan: { on, cap, owner, useSavings, late, epoch, current (its owner is the agent's owner now, and it was set in
- *     the agent's current epoch), stale (on, but set before the agent's owner or wallet changed: enroll again) },
+ *   ownerIsWallet: that declared wallet is the agent's owner itself (an agent with no key of its own): AutoRepay pays
+ *     that address under the owner plan only, so no wallet plan of it is ever current (GHSA-65qg),
+ *   plan: { on, cap, owner, useSavings, late, epoch, current (its owner is the agent's owner now, it was set in the
+ *     agent's current epoch, and the wallet is not the owner), stale (on, but set before the agent's owner or wallet
+ *     changed: enroll again) },
  *   held, paused: { until } | null,
  *   allowance: { usdg, shares }, budget: what a run can pull now (USDG within its allowance and balance, plus savings
  *     within the share allowance when the plan uses them),
@@ -108,8 +111,12 @@ export async function autopayStatus(c, wallet, agentId, { now = Math.floor(Date.
   ]);
   const p = { on: plan.on ?? plan[2], cap: BigInt(plan.cap ?? plan[0]), owner: plan.owner ?? plan[1], useSavings: plan.useSavings ?? plan[3], late: plan.late ?? plan[4], epoch: Number(plan.epoch ?? plan[5] ?? 0) };
   const epoch = ep ? Number(ep.epoch ?? ep[0]) : null;
+  // AutoRepayV2 pays a wallet plan only from a declared wallet that is not the agent's owner (_walletPart: wallet !=
+  // l.owner): an agent that declared no key of its own (register() declares its caller) is repaid under its owner's
+  // plan only, so this wallet's plan, on or not, pays nothing (GHSA-65qg)
+  const ownerIsWallet = String(declaredAs).toLowerCase() === w.toLowerCase() && String(owner).toLowerCase() === w.toLowerCase();
   p.stale = Boolean(p.on && epoch !== null && p.epoch !== epoch);
-  p.current = p.on && !p.stale && String(p.owner).toLowerCase() === String(owner).toLowerCase();
+  p.current = p.on && !p.stale && !ownerIsWallet && String(p.owner).toLowerCase() === String(owner).toLowerCase();
   let shares = 0n, shareAllow = 0n, savingsValue = 0n;
   if (c.vault) {
     [shares, shareAllow] = await Promise.all([c.vault.balanceOf(w), c.vault.allowance(w, c.address)]);
@@ -136,7 +143,7 @@ export async function autopayStatus(c, wallet, agentId, { now = Math.floor(Date.
     if (need > budget || l.due > p.cap) { short = { loanId: l.loanId, need, have: budget, overCap: l.due > p.cap }; break; }
   }
   return {
-    declared: String(declaredAs).toLowerCase() === w.toLowerCase(), owner, plan: p, held, paused: Number(pausedUntil) > now ? { until: Number(pausedUntil) } : null,
+    declared: String(declaredAs).toLowerCase() === w.toLowerCase(), owner, ownerIsWallet, plan: p, held, paused: Number(pausedUntil) > now ? { until: Number(pausedUntil) } : null,
     allowance: { usdg: allow, shares: shareAllow }, balance: bal, budget, loans, next: loans[0] || null, short,
   };
 }
@@ -161,7 +168,8 @@ export function defaultCap(line, ceiling = AUTOPAY_STAGE_CAP) {
 /**
  * Turn Autopay on from the agent's wallet `signer`: approve AutoRepay for `budget` USDG (default 4 x `cap`; the
  * allowance is only raised, never lowered), and its savings worth the same with `useSavings`, then enroll. Refuses a
- * wallet the registry does not name the agent's, and a cap above `ceiling` (the package's stage cap unless raised).
+ * wallet the registry does not name the agent's, the agent's owner as its own declared wallet (OWNER_IS_WALLET:
+ * AutoRepay never pays such a plan), and a cap above `ceiling` (the package's stage cap unless raised).
  * Needs ETH for gas. @returns {{ hashes: string[], cap: bigint, budget: bigint }}
  */
 export async function autopayOn(c, signer, agentId, { cap, useSavings = false, late = true, budget, ceiling = AUTOPAY_STAGE_CAP } = {}) {
@@ -171,6 +179,11 @@ export async function autopayOn(c, signer, agentId, { cap, useSavings = false, l
   if (cap > BigInt(ceiling)) throw new PayError("CAP", `Autopay: the limit per loan is at most ${ethers.formatUnits(ceiling, 6)} USDG for now`);
   const declared = await c.registry.getAgentWallet(id);
   if (String(declared).toLowerCase() !== me.toLowerCase()) throw new PayError("NOT_AGENT_WALLET", `Autopay: ${me} is not agent #${id}'s declared wallet (the registry names ${declared}), so it can't enroll`);
+  // AutoRepayV2 would take the enrollment and never pay from it (GHSA-65qg): refused before any approval
+  const owner = await c.registry.ownerOf(id);
+  if (String(owner).toLowerCase() === me.toLowerCase()) {
+    throw new PayError("OWNER_IS_WALLET", `Autopay: agent #${id}'s declared wallet is its owner's own address (${me}), and AutoRepay never repays from that address under a wallet plan: an agent with no key of its own is repaid only under its owner's plan, on loans its owner marks as its own (Go mode's Repay on time). Declare a key of the agent's own as its wallet (the registry's setAgentWallet) and turn Autopay on from that key, or repay by hand. Nothing was sent`);
+  }
   await needV2(c);
   budget = budget === undefined ? cap * BUDGET_LOANS : BigInt(budget);
   const hashes = [];

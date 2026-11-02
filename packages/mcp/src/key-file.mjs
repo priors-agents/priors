@@ -8,8 +8,8 @@
 // read one another user owns (a key mounted owner-only into a container), but only when every directory above it, on
 // the path as given and on the path it resolves to, belongs to root or to the file's owner and nobody else can write
 // it: OpenSSH's secure_path rule (in /tmp, or under a directory another user owns, anyone could have put their own key
-// at that path). On Windows, a file whose ACL lets nobody read it but the user, SYSTEM and the Administrators group
-// (the rule OpenSSH for Windows applies), read with PowerShell's Get-Acl by SID so the answer does not depend on the
+// at that path). On Windows, a file whose ACL lets nobody read it, or change it or who may read it, but the user, SYSTEM
+// and the Administrators group (the rule OpenSSH for Windows applies), read with PowerShell's Get-Acl by SID so the answer does not depend on the
 // system's language; PowerShell is run from System32 by its full path, never looked up by name (Windows searches the
 // working directory, which the MCP client chooses, before PATH). Anything else is refused, and the key is not read at
 // all: the server then starts with its read-only tools, and every tool that moves money says what to fix.
@@ -19,7 +19,7 @@
 // The path may start with ~/ (or ~\ on Windows), the user's home directory; otherwise it must be absolute, since an
 // MCP client starts the server in a directory of its own choosing. Setting both PRIORS_KEY and PRIORS_KEY_FILE is
 // refused: the server never guesses which key signs.
-import { closeSync, constants, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir as osHomedir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -33,6 +33,10 @@ const WIN_TRUSTED = new Set(["S-1-5-18", "S-1-5-32-544"]);
 /** FileSystemRights bits that let a holder read the content: ReadData, GENERIC_ALL, GENERIC_READ (FullControl, Modify,
  *  Read and ReadAndExecute all include ReadData). */
 const WIN_READ_BITS = [0x1, 0x10000000, 0x80000000];
+/** And the bits that let a holder change the content or who may read it (GHSA-m2h8-m55f-9j66): WriteData, AppendData,
+ *  WRITE_DAC (a holder grants itself read), WRITE_OWNER (takes the file, then the same) and GENERIC_WRITE. WriteAttributes
+ *  and Delete are not among them: neither reads the key nor puts another key in its place. */
+const WIN_WRITE_BITS = [0x2, 0x4, 0x40000, 0x80000, 0x40000000];
 
 /**
  * The Get-Acl report for `p`, as lines: "ME <sid>", "OWNER <sid>", then "ACE <sid> <Allow|Deny> <rights>" per rule,
@@ -49,7 +53,8 @@ const ACL_SCRIPT = [
 ].join("; ");
 
 /** Who may read a Windows file, from Get-Acl's report (aclReport): null when only the user, SYSTEM and Administrators
- *  can, else a sentence naming the first other SID (and what to run). Pure, for tests. */
+ *  can read it or change it (its content, or who may read it), else a sentence naming the first other SID (and what to
+ *  run). Pure, for tests. */
 export function aclVerdict(report, file) {
   const lines = String(report ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const me = lines.find((l) => l.startsWith("ME "))?.slice(3).trim();
@@ -61,9 +66,10 @@ export function aclVerdict(report, file) {
     const [, who, type, rights] = l.split(/\s+/);
     if (type !== "Allow") continue; // a Deny rule only takes access away
     const mask = Number(rights) >>> 0; // GENERIC_READ comes back negative as a 32-bit enum
-    if (!WIN_READ_BITS.some((b) => (mask & b) !== 0)) continue;
+    const reads = WIN_READ_BITS.some((b) => (mask & b) !== 0), writes = WIN_WRITE_BITS.some((b) => (mask & b) !== 0);
+    if (!reads && !writes) continue;
     if (who === me || WIN_TRUSTED.has(who)) continue;
-    return `${who === "S-1-1-0" ? "Everyone" : who === "S-1-5-32-545" ? "the Users group" : who === "S-1-5-11" ? "Authenticated Users" : `another account (${who})`} can read it. Let only your own user read it: ${fix}`;
+    return `${who === "S-1-1-0" ? "Everyone" : who === "S-1-5-32-545" ? "the Users group" : who === "S-1-5-11" ? "Authenticated Users" : `another account (${who})`} ${reads ? "can read it" : "can change it, or who may read it"}. Let only your own user read it: ${fix}`;
   }
   return null;
 }
@@ -89,20 +95,39 @@ export function windowsAclReport(file, { spawn = spawnSync, env = process.env } 
   return r.stdout;
 }
 
+/** The paths a chain of symlinks passes through on its way from `p` (each link of its last component, read with lstat
+ *  and readlink, up to 40), `p` first: a link in the middle of a chain sits in a directory that is neither on the path
+ *  as given nor on the path it resolves to, and whoever can write that directory can point the chain elsewhere
+ *  (GHSA-m2h8-m55f-9j66). An lstat or readlink that cannot answer ends the walk there (the realpath check still runs). */
+function chainOf(p, fs) {
+  const out = [p];
+  if (typeof fs.lstatSync !== "function" || typeof fs.readlinkSync !== "function") return out;
+  let cur = p;
+  for (let i = 0; i < 40; i++) {
+    let next;
+    try { if (!fs.lstatSync(cur).isSymbolicLink()) break; next = path.posix.resolve(path.posix.dirname(cur), String(fs.readlinkSync(cur))); } catch (_) { break; }
+    if (out.includes(next)) break;
+    out.push(next);
+    cur = next;
+  }
+  return out;
+}
+
 /**
  * For root reading a POSIX file another user owns: null when nobody but root and the file's owner could have put it at
  * `file`, else what is wrong (in words, never the content). OpenSSH's secure_path rule: every directory above the file
  * belongs to root or to the file's owner and has no group or other write bit (a root-owned sticky /tmp fails too). It
- * is checked on the path as given (whoever can write one of its directories could have put a symlink there) and on
- * the path that resolves to (realpath), up to /, and the resolved file must be the one that was opened (`st`, its
- * fstat: same device and inode), so nothing was swapped in between. `fs` needs realpathSync and statSync.
+ * is checked on the path as given (whoever can write one of its directories could have put a symlink there), on each
+ * link a chain of symlinks passes through on the way (chainOf), and on the path that resolves to (realpath), up to /,
+ * and the resolved file must be the one that was opened (`st`, its fstat: same device and inode), so nothing was
+ * swapped in between. `fs` needs realpathSync and statSync (lstatSync and readlinkSync for the chain).
  */
 export function securePathProblem(file, st, fs) {
   let real, rs;
   try { real = fs.realpathSync(file); rs = fs.statSync(real); } catch (e) { return `its path could not be resolved (${e?.code || "error"})`; }
   if (rs.dev !== st.dev || rs.ino !== st.ino) return "it changed while it was being checked";
   const dirs = [];
-  for (const p of [file, real]) {
+  for (const p of [...chainOf(file, fs), real]) {
     for (let d = path.posix.dirname(p); ; d = path.posix.dirname(d)) {
       if (!dirs.includes(d)) dirs.push(d);
       if (d === path.posix.dirname(d)) break;
@@ -132,7 +157,7 @@ export function stateDirProblem(dir, { fs, uid }) {
   if (st.uid !== uid) return `it belongs to another user (uid ${st.uid})`;
   if ((st.mode & 0o022) !== 0) return `other users can write to it (mode ${(st.mode & 0o7777).toString(8).padStart(4, "0")})`;
   const dirs = [];
-  for (const p of [dir, real]) {
+  for (const p of [...chainOf(dir, fs), real]) {
     for (let d = path.posix.dirname(p); ; d = path.posix.dirname(d)) {
       if (!dirs.includes(d)) dirs.push(d);
       if (d === path.posix.dirname(d)) break;
@@ -168,7 +193,7 @@ export function keyFilePath(raw, { platform = process.platform, homedir = osHome
  */
 export function keyFromEnv(env = process.env, deps = {}) {
   const platform = deps.platform ?? process.platform;
-  const fs = deps.fs ?? { openSync, fstatSync, readSync, closeSync, statSync, realpathSync };
+  const fs = deps.fs ?? { openSync, fstatSync, readSync, closeSync, statSync, realpathSync, lstatSync, readlinkSync };
   const inline = typeof env.PRIORS_KEY === "string" ? env.PRIORS_KEY.trim() : "";
   const fileRaw = typeof env.PRIORS_KEY_FILE === "string" ? env.PRIORS_KEY_FILE.trim() : "";
   if (!fileRaw) return { key: inline, source: inline ? "PRIORS_KEY" : null, problem: null };

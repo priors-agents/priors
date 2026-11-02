@@ -1,5 +1,15 @@
 # @priors/x402 changelog
 
+## 0.8.6 (2026-11-02)
+
+- **Autopay refuses a wallet plan AutoRepay would never pay** (GHSA-65qg-4h7m-j2cm): an agent whose declared ERC-8004
+  wallet is its owner's own address (what `register()` leaves, so every agent minted by `join` until it declares a key
+  of its own) is repaid by AutoRepayV2 under its owner's plan only, never under a wallet plan of that address
+  (`_walletPart`: `wallet != l.owner`). `autopayOn` took the enrollment anyway and `autopayStatus` called the plan
+  current. Now `autopayOn` refuses it before any approval (`OWNER_IS_WALLET`, saying to declare a key of the agent's own
+  with `setAgentWallet`, or to repay by hand), and `autopayStatus` answers `ownerIsWallet: true` with `plan.current`
+  false, so nothing counts on it (the reserve and `@priors/mcp`'s auto-borrow among them).
+
 ## 0.8.5 (2026-11-01)
 
 - **A merchant can confirm a USDG settlement by its receipt before the paid response is released**: `confirm: true`

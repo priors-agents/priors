@@ -162,6 +162,8 @@ export function marketInstructions(s, kind) {
 export function registerMarketTools(ctx) {
   const { tool, serial, needWallet, wallet, provider, fetchImpl, credit, locked, stateDir, withinTime, ToolError, callBudgetMs, settings: S, record: REC, addresses } = ctx;
   const pollMs = ctx.pollMs ?? 1000;
+  // the USDG payments signed and not settled yet still need (pay_url's, as stock_buy and save keep it back)
+  const heldForPayments = typeof ctx.heldForPayments === "function" ? ctx.heldForPayments : () => 0n;
   const fail = (t) => new ToolError(t);
   /** A kind's words, with a value the refusal didn't carry: the sentence that names it dropped, or the step's own. */
   const words = (kind, vars, role) => {
@@ -532,8 +534,11 @@ export function registerMarketTools(ctx) {
   // the steps that take USDG from the wallet or raise what its bids may take: keep back is checked again before each
   const TAKES = new Set(["buy", "bid", "bidAny", "approveReserve", "bond"]);
   const ledger = wallet ? dailyLedger({ stateDir: join(stateDir, "market"), owners: ledgerOwners(String(S.agentId), wallet.address), caps: { signed: S.dayCap, borrowed: null } }) : null;
-  /** 6. What the agent's open loans owe stays in the wallet (its savings count): `out` is what this call takes. */
-  async function keepBack(c, out, T) {
+  /** 6. What the agent's open loans owe stays in the wallet (its savings count): `out` is what this call takes. USDG
+   *  this wallet's open bids can still take (what it approved to the bids' spender, c.reserve) and USDG payments signed
+   *  and not settled yet still need are not there to repay them (GHSA-m2h8-m55f-9j66): `bids` false for a bid, whose
+   *  `out` already is the reserve of all its open bids. */
+  async function keepBack(c, out, T, bids = true) {
     const a = c.selfAgent;
     if (a == null) throw refuse("unread");
     if (BigInt(a.activeLoans) === 0n) return;
@@ -544,8 +549,12 @@ export function registerMarketTools(ctx) {
     } catch (_) { throw refuse("unread"); }
     let saved = 0n;
     try { if (typeof credit.savedOf === "function") saved = BigInt(await withinTime(credit.savedOf(wallet.address), Math.min(5000, T.left()))); } catch (_) { saved = 0n; }
-    const left = BigInt(c.cash) + saved - out;
-    if (left < owed) throw refuse("keepBack", { self: S.agentId, owed, due: due ? M.dayText(due) : "soon", left: left > 0n ? left : 0n });
+    let held = 0n;
+    try { held = BigInt(heldForPayments() || 0n); } catch (_) { held = 0n; }
+    if (bids && c.reserve != null) held += BigInt(c.reserve);
+    const left = BigInt(c.cash) + saved - out - held;
+    const vars = { self: S.agentId, owed, due: due ? M.dayText(due) : "soon", left: left > 0n ? left : 0n, held };
+    if (left < owed) throw refuse(held > 0n ? "keepBackHeld" : "keepBack", vars);
   }
   /** 7. The day's count, reserved before anything is sent (the market's own ledger). */
   function reserveDay(want) {
@@ -586,7 +595,7 @@ export function registerMarketTools(ctx) {
     if (plan.error) throw refuse(plan.error, varsOf(plan, o), o.role);
     if (o.check) o.check(plan, s, rec);
     const out = o.keep ? o.keep(plan) : null;
-    if (out != null) await keepBack(s.c, out, T);
+    if (out != null) await keepBack(s.c, out, T, o.role !== "bid");
     const stepsAll = plan.steps;
     const calls = stepsAll.map((st) => ({ step: st, ...M.stepCalls(st, { addr: k.addr, id: o.id, now: s.now, ...plan }), what: stageWords(st, o.id, plan) }));
     if (o.dry) {
@@ -594,7 +603,11 @@ export function registerMarketTools(ctx) {
         structured: { tool: o.name, dryRun: true, agentId: o.id == null ? null : String(o.id), calls: calls.map((c) => ({ step: c.step, to: lc(c.to), data: c.data })) } };
     }
     const day = reserveDay(o.day ? o.day(plan) : 0n);
-    let counted = 0n;
+    // what the steps sent count (o.counted), and the step being sent with the plan it was sent on: a step whose answer
+    // is lost may still land, so it adds what it alone counts (an approval nothing, a buy its price); the steps mined
+    // before it stay counted (GHSA-m2h8-m55f-9j66, GHSA-pg36-8pmq-5p4v: a later plan of the same call, read once the bond
+    // was mined, carries no bond, so its day was no measure of what the call spent)
+    let counted = 0n, inFlight = null;
     try {
       await gasCheck(stepsAll, calls[0], T);
       const opBase = { tool: o.name, key, at: nowS(), plan: stepsAll, id: o.id == null ? null : String(o.id), by: SESSION };
@@ -624,21 +637,24 @@ export function registerMarketTools(ctx) {
         // that left the wallet since the first read (another session's pay_url, an autopay pull) counts
         const out2 = sent.length && o.keep && TAKES.has(step) ? o.keep(plan) : null;
         if (out2 != null) {
-          try { await keepBack(s.c, out2, T); } catch (e) {
+          try { await keepBack(s.c, out2, T, o.role !== "bid"); } catch (e) {
             throw fail(`Sent ${sentWords(sent, o)}, then stopped. ${e instanceof ToolError ? e.message.replace(/ Nothing was signed or sent\.$/, "") : M.planWords("unread")} ${NOTHING_MORE}${standing(sent[sent.length - 1].step)}`);
           }
         }
         const call = M.stepCalls(step, { addr: k.addr, id: o.id, now: s.now, ...plan });
         let r;
+        inFlight = { step, plan };
         try { r = await sendStep({ step, call, o: { id: o.id, vars: { ...o.vars, id: o.id }, ...plan }, rec, opBase, sent, T, role: o.role }); } catch (e) {
           // a claim after that was sent and not seen yet stays in the record as any step does (TX_UNCONFIRMED)
           if (!after || !(e instanceof ToolError) || /^TX_UNCONFIRMED/.test(e.message)) throw e;
+          inFlight = null;
           missed = "failed";
           // the record as the step left it (one mined and reverted is kept so), while its op is still this call's: the
           // answer below is then kept for a retry; another session's op is never written over
           try { const cur = readRec(); if (cur.op && cur.op.by === SESSION && cur.op.key === key && cur.op.at === opBase.at) rec = cur; } catch (_) { /* settled next time */ }
           break;
         }
+        inFlight = null;
         counted += o.counted ? o.counted(step, plan) : 0n;
         rec = r.rec;
         sent.push({ step, hash: r.hash, rc: r.rc, o: plan });
@@ -657,7 +673,7 @@ export function registerMarketTools(ctx) {
     } catch (e) {
       // what a step that was broadcast counts stays counted, its answer lost or not (a sent step may still land)
       const unconfirmed = e instanceof ToolError && /^TX_UNCONFIRMED/.test(e.message);
-      if (unconfirmed && o.counted) counted = o.day ? o.day(plan) : counted;
+      if (unconfirmed && o.counted && inFlight) counted += o.counted(inFlight.step, inFlight.plan);
       // a call that stopped with every step it sent settled leaves nothing in flight: the next call isn't held by it
       if (!unconfirmed && rec && rec.op && rec.op.steps.every((x) => x.state !== "sent")) {
         try { await writeRec({ op: null, done: rec.done, bids: rec.bids }, rec.rev); } catch (_) { /* settled next time */ }
@@ -777,6 +793,8 @@ export function registerMarketTools(ctx) {
       for (const item of hubBids) {
         const b = c.bids.get(String(item.bid));
         if (!b || !isAddr(b.maker) || Number(b.expiry) <= s.now || (item.by && !same(item.by, b.maker))) continue;
+        // a bid made before the agent's builder share was set: no accept can take it (BuilderAfterBid)
+        if (M.takesBid(c, String(item.bid), k.shares) === false) continue;
         const mk = c.makers.get(lc(b.maker)) || {};
         if (mk.cash == null || mk.reserve == null || BigInt(mk.cash) < BigInt(b.price) || BigInt(mk.reserve) < BigInt(b.price)) continue;
         let proof = [];
@@ -989,7 +1007,7 @@ export function registerMarketTools(ctx) {
   /* ---- market_cancel_bid ---- */
   tool("market_cancel_bid", {
     title: "Cancel a bid",
-    description: "Cancel this wallet's bid bid_id on Priors' agent market, or with all: true every open bid of this wallet (the ones this server made and the ones Priors' hub shows, at most 10 a call), then set the bids' approval down to what the bids left still take. Each cancel is its own transaction from this wallet; never paused. dry_run: true lists the transactions without sending. Needs ETH for gas.",
+    description: "Cancel this wallet's bid bid_id on Priors' agent market, or with all: true every open bid of this wallet (the ones this server made and the ones Priors' hub shows, at most 10 a call), then set the bids' approval down to what the bids left still take (left as it is while Priors' hub doesn't answer, since bids made elsewhere can't be counted then; with all: true and no open bid, an approval left standing is set to 0). Each cancel is its own transaction from this wallet; never paused. dry_run: true lists the transactions without sending. Needs ETH for gas.",
     inputSchema: { bid_id: z.number().int().positive().optional().describe("The bid to cancel."), all: z.boolean().optional().describe("true: every open bid of this wallet, at most 10 a call."), dry_run: dryRun },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, serial(async ({ bid_id, all = false, dry_run = false }, deadline) => {
@@ -997,28 +1015,41 @@ export function registerMarketTools(ctx) {
     if ((bid_id == null) === !all) throw fail(`Give bid_id, or all: true. ${NOTHING}`);
     const me = lc(wallet.address);
     let targets = bid_id != null ? [String(bid_id)] : null;
+    // the hub's list of this wallet's bids not read (once in a call, for the whole call): bids made elsewhere (Go mode,
+    // the board, another machine) are then unknown, so the bids' approval is never set down, which would leave them
+    // unfunded (GHSA-m2h8-m55f-9j66)
+    let hubDown = false;
+    const keptWords = (x) => `Priors' hub didn't answer, so bids this wallet made elsewhere can't be counted: the bids' approval was left at ${amt(x)} USDG.`;
     return execute({
       name: "market_cancel_bid", role: "cancelBid", args: { bid_id, all }, id: null, me, dry: dry_run, vars: { bidId: bid_id == null ? null : String(bid_id) }, replay: false,
-      read: async (rec, k, T) => { const b = await myBids(rec, T); return { me, bidIds: [...new Set([...b.ids, ...(targets || [])])] }; },
+      read: async (rec, k, T) => { const b = await myBids(rec, T); hubDown = hubDown || b.hubDown; return { me, bidIds: [...new Set([...b.ids, ...(targets || [])])] }; },
       plan: (s, k, first, T, sent = []) => {
         const done = sent.filter((x) => x.step.startsWith("cancelBid:")).map((x) => x.step.slice(10));
         const mine = [...s.c.bids.keys()];
         if (!targets) {
           targets = mine.filter((b) => { const x = s.c.bids.get(b); return x && same(x.maker, me) && Number(x.expiry) > s.now; }).sort((a, b) => Number(BigInt(a) - BigInt(b))).slice(0, 10);
+          // no open bid, and an approval left standing (bids that ran out or were taken): set down to 0, the hub's list read
+          if (!targets.length && !hubDown && s.c.reserve != null && BigInt(s.c.reserve) > 0n) return { steps: ["approveReserve"], reserve: 0n, reserveAfter: 0n, trimOnly: true, pins: { reserveAfter: "0" } };
           if (!targets.length) return { error: "noBids" };
         }
         const left = targets.filter((b) => !done.includes(b));
         if (!left.length) {
           const reserveAfter = first ? first.reserveAfter : 0n;
-          return { steps: s.c.reserve != null && BigInt(s.c.reserve) > reserveAfter ? ["approveReserve"] : [], reserve: reserveAfter, reserveAfter, pins: first.pins };
+          return { steps: s.c.reserve != null && BigInt(s.c.reserve) > reserveAfter ? ["approveReserve"] : [], reserve: reserveAfter, reserveAfter, kept: first.kept, pins: first.pins };
         }
         const p = M.cancelBidPlan(s.c, { me, now: s.now, bidIds: left, myBids: mine });
-        return p.error ? { ...p, bidId: p.bidId ? BigInt(p.bidId) : null } : { ...p, pins: { reserveAfter: String(p.reserveAfter) } };
+        if (p.error) return { ...p, bidId: p.bidId ? BigInt(p.bidId) : null };
+        if (hubDown && s.c.reserve != null) {
+          const r = BigInt(s.c.reserve);
+          return { ...p, steps: p.steps.filter((x) => x !== "approveReserve"), reserveAfter: r, reserve: r, kept: true, pins: { reserveAfter: String(r) } };
+        }
+        return { ...p, pins: { reserveAfter: String(p.reserveAfter) } };
       },
-      facts: (p) => [`Cancels ${p.steps.filter((x) => x.startsWith("cancelBid:")).map((x) => `bid #${x.slice(10)}`).join(", ")}.${p.steps.includes("approveReserve") ? ` Then sets the bids' approval down to ${amt(p.reserveAfter)} USDG.` : ""}`],
+      facts: (p) => [p.trimOnly ? `No open bid to cancel. Sets the bids' approval down to 0 USDG.` : `Cancels ${p.steps.filter((x) => x.startsWith("cancelBid:")).map((x) => `bid #${x.slice(10)}`).join(", ")}.${p.steps.includes("approveReserve") ? ` Then sets the bids' approval down to ${amt(p.reserveAfter)} USDG.` : ""}${p.kept ? ` ${keptWords(p.reserveAfter)}` : ""}`],
       done: async ({ sent, plan, events, k, T }) => {
         const txs = sent.map((x) => x.hash), cancelled = sent.filter((x) => x.step.startsWith("cancelBid:")).map((x) => x.step.slice(10));
-        return { text: `Cancelled bid${cancelled.length > 1 ? "s" : ""} #${cancelled.join(", #")}. Tx ${txs.join(", ")}. ${reserveLine(plan.reserveAfter).replace(/\.$/, " now.")}`, structured: { tool: "market_cancel_bid", txs, cancelled, reserve: amt(plan.reserveAfter) } };
+        if (plan.trimOnly) return { text: `No open bid to cancel; set the bids' approval down to 0 USDG. Tx ${txs.join(", ")}.`, structured: { tool: "market_cancel_bid", txs, cancelled, reserve: amt(0n) } };
+        return { text: `Cancelled bid${cancelled.length > 1 ? "s" : ""} #${cancelled.join(", #")}. Tx ${txs.join(", ")}. ${plan.kept ? keptWords(plan.reserveAfter) : reserveLine(plan.reserveAfter).replace(/\.$/, " now.")}`, structured: { tool: "market_cancel_bid", txs, cancelled, reserve: amt(plan.reserveAfter), ...(plan.kept ? { hubDown: true } : {}) } };
       },
     }, deadline);
   }));

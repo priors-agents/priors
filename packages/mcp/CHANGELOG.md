@@ -1,5 +1,59 @@
 # @priors/mcp changelog
 
+## 0.16.0 (2026-11-02)
+
+On @priors/x402 0.8.6 (Autopay's `OWNER_IS_WALLET`, below).
+
+- **Rialto's route for `stock_buy` and `stock_sell`** (`PRIORS_RIALTO`, off by default; off, every list, instruction
+  and answer is as before, and nothing is asked of anyone). With it on, a trade that passes every check is also quoted
+  by Rialto through Priors' gas gate (`priors_stockQuote` at `PRIORS_STOCK_QUOTE_URL`, default
+  `https://priors.trade/gas`). Rialto's API key stays on the gate, never in this package. The quote is checked again
+  here: the router Rialto's Router Registry names on chain, the tokens, the amount, this wallet, the slippage, and
+  Chainlink's 5% for its output and its minimum. It is taken only when it gives more of the token bought than the
+  pinned pool: an approval of exactly the amount sold to that router, then Rialto's transaction, its gas estimated
+  first. Otherwise the pinned trade goes ahead as before, and the answer says why. The answer names the route, both
+  quotes, Rialto's fee and quote id, what the wallet received and the router's allowance after (0 after a full fill). No
+  Priors fee. `src/rialto.mjs` (`sdk/rialto.mjs` in the repository) is bundled byte for byte.
+- **AgentLease's record is in this package** (`deployments/4663.agent-lease.json`: AgentLease
+  `0xF2299A992879764ceF0107Aa9Beb07AdfBe0e479` on Robinhood Chain, deployed 2026-11-01, its market this package's
+  AgentMarketV2). So with `PRIORS_MARKET` on, `market_buy` and `market_accept` now claim on a stored lease around a
+  change of hands, as 0.15.0 set out: they read the lease stored on the agent (`leaseOf`) and, while one is stored, send
+  `claim` on the lease before the change of hands and after it (gas only), the client rule of `docs/AGENT-LEASE.md`, so
+  each day's rent goes to whoever held the agent when the day ended. `market_agent` says who runs a rented agent and
+  until when.
+- **The market tools' day count holds what each step commits** (`PRIORS_MARKET`): a step whose answer is lost
+  (`TX_UNCONFIRMED`) adds what it alone commits, an approval nothing and a buy, a bid or a bond its amount, and what the
+  steps mined before it committed stays counted. A bond mined before a later step's answer was lost was released from
+  `PRIORS_MAX_MARKET_DAY_USD` (GHSA-pg36-8pmq-5p4v), and an approval whose answer was lost counted the whole buy, bid or
+  bond, then the retry counted it again (GHSA-m2h8-m55f-9j66).
+- **`market_accept` refuses a bid made before the agent's builder share was set** (its id under the market's
+  `builderSince`, which `acceptBid` refuses with `BuilderAfterBid`) before anything is signed, so no cancel, bond or
+  approval is sent for it; `market_agent` leaves such a bid out, and the market's refusal is said in its words
+  (GHSA-m2h8-m55f-9j66).
+- **Keep back counts what this wallet has committed elsewhere**: before a buy or a bond, what its open bids can still
+  take (its approval to the bids' spender) and what payments signed and not settled yet still need are not counted as
+  there to repay the agent's open loans (GHSA-m2h8-m55f-9j66). `first_line` keeps the latter back too.
+- **`market_cancel_bid` never sets the bids' approval down while Priors' hub doesn't answer** (bids made elsewhere,
+  Go mode's or another machine's, can't be counted then, and would be left unfunded), and with `all` and no open bid it
+  sets an approval left standing to 0 (GHSA-m2h8-m55f-9j66).
+- **Stock tools** (`PRIORS_STOCKS`): a swap mined and reverted moved nothing, so it counts neither in
+  `PRIORS_MAX_STOCK_TOTAL_USD` nor in the day's trades (GHSA-m2h8-m55f-9j66, GHSA-c4xq-qmpq-6xmm); a sale planned again
+  after its approval is held to `PRIORS_MAX_STOCK_TOTAL_USD` at its new quote, before the swap is signed, and counted at
+  it (GHSA-c4xq-qmpq-6xmm).
+- **`first_line`** (`PRIORS_JOIN`): a bond deposit the node refused for its gas, or one mined and reverted, no longer
+  counts against `PRIORS_MAX_SPEND_DAY_USD` (it already gave back its `PRIORS_MAX_BOND_TOTAL_USD` room).
+- **`PRIORS_KEY_FILE`**: on Windows, an access rule that lets another account change the file or who may read it
+  (WriteData, AppendData, WRITE_DAC, WRITE_OWNER, GENERIC_WRITE) refuses the file as read access does; root reading
+  another user's key, and `PRIORS_STATE_DIR`, check the directory of every link a chain of symlinks passes through, not
+  only the path given and the one it resolves to (GHSA-m2h8-m55f-9j66).
+- **Autopay and auto-borrow** (GHSA-65qg-4h7m-j2cm): an agent whose declared wallet is its owner's own address (what
+  `join`'s `register()` leaves) is repaid by AutoRepayV2 under its owner's plan only, never under a wallet plan of that
+  address. `autopay_on` enrolled such a plan and said each loan would be repaid from this wallet, and auto-borrow
+  (`PRIORS_AUTO_BORROW_USD`) borrowed on it. Now `autopay_on` refuses it before anything is sent (with @priors/x402's
+  `OWNER_IS_WALLET`), auto-borrow refuses to borrow on it, and `credit_status` says Autopay is off for this wallet and
+  why: declare a key of the agent's own as its wallet (`setAgentWallet`) and turn Autopay on from that key, or repay by
+  hand.
+
 ## 0.15.0 (2026-11-01)
 
 - **Auto-borrow, for inference on credit** (`PRIORS_AUTO_BORROW_USD`, off by default): with it set, a `pay_url` (or

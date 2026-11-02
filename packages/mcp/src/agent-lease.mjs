@@ -4,7 +4,7 @@
 // the days paid and the refunds, exactly as the contract computes them; the words a lease or an offer shows; and the
 // calls an account sends.
 //
-// A renter runs an agent on Priors for 1 to 30 days: it sells the agent's work and takes paid jobs under its name, paid
+// A renter runs an agent on Priors for 1 to 90 days: it sells the agent's work and takes paid jobs under its name, paid
 // to its own address. It never borrows on the agent's line, never becomes its wallet or its delegate, and never
 // changes its file. The agent stays in its owner's wallet the whole time: the lease never moves it, so its record, its
 // line and its Score v2 stay where they are, and the owner can sell it like any other agent.
@@ -190,9 +190,9 @@ const DAY = 86_400;
 /** The contract's rules, and Go mode's cap on one lease, added days included (goMax, the gas gate's: 600 USDG). */
 export const LEASE_RULES = Object.freeze({
   minRent: 5_000_000n, // 5 USDG in all at the offer's shortest term, as the market's MIN_PRICE
-  maxDays: 30,
+  maxDays: 90, // MAX_DAYS: a lease runs 1 to 90 days, added days included (the owner's answer of 2026-10-31)
   dayS: DAY,
-  maxOfferS: 30 * DAY,
+  maxOfferS: 30 * DAY, // MAX_OFFER: an offer stands 30 days at most
   goMax: 600_000_000n,
 });
 
@@ -250,7 +250,7 @@ function offerShape({ dayPrice, minDays, maxDays, renter }) {
 }
 
 /**
- * Why `offerRent` would refuse these terms, or null: "days" (1 <= minDays <= maxDays <= 30), "free" (a day price of 0
+ * Why `offerRent` would refuse these terms, or null: "days" (1 <= minDays <= maxDays <= 90), "free" (a day price of 0
  * with no named renter), "low" (under 5 USDG in all at minDays), "fee" (a day not above the fee on the longest term at
  * the market's fee now: DayBelowFee). `feeBps` and `minFee` are the market's, read live; they have no default.
  */
@@ -494,7 +494,7 @@ export const LEASE_WORDS = Object.freeze({
     controls: "This address can borrow for this agent. Rent from another address.",
     marked: "This address has a defaulted loan on Priors, so it can't rent here. Use another address.",
     record: "Its record changed since you looked. Read it again, then rent.",
-    price: "The price went up since you looked. Read the offer again, then rent.",
+    price: "The price changed since you looked. Read the offer again, then rent.",
     short: "You have {cash} USDG. Add {short} more, then rent.",
     over: "Go mode rents up to 600 USDG a lease, added days included. Choose fewer days.",
     low: "A paid lease costs 5 USDG or more in all, and a day costs more than the fee. Raise the day price.",
@@ -509,11 +509,10 @@ export const LEASE_WORDS = Object.freeze({
   bell: Object.freeze({
     rented: "#{id} is rented until {date}.",
     extended: "#{id}'s lease now runs until {date}.",
-    ending: "Your lease on #{id} ends tomorrow.",
+    ending: "Your lease on #{id} ends within a day, on {date}.",
     endedEarly: "Your lease on #{id} ended early. {refund} USDG came back to you.",
     collect: "{amount} USDG of rent to collect on #{id}.",
     defaulted: "#{id} defaulted, so you can end its lease. The current day and every day after it come back to you.",
-    bidRented: "#{id}, which you bid on, is rented until {date}.",
   }),
 });
 

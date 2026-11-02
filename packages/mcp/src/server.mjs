@@ -114,9 +114,14 @@
 //                          no stock tool is offered; any other value stops the start
 //   PRIORS_MAX_STOCK_USD   most one stock_buy may spend or one stock_sell may bring in (default 50; 1 to 1,000)
 //   PRIORS_MAX_STOCK_TOTAL_USD  most both may trade in total while the server runs (default 200)
+//   PRIORS_RIALTO          on: each trade also asks the gas gate for Rialto's quote and takes it when it gives more of
+//                          the token (./stock-trade.mjs rialtoRoute; default off, any value other than on or off stops
+//                          the start)
+//   PRIORS_STOCK_QUOTE_URL read only with PRIORS_RIALTO on: the gas gate asked (default https://priors.trade/gas); https,
+//                          or http for localhost only, no credentials, query or fragment
 //   With both on, PRIORS_AGENT_ID and PRIORS_STATE_DIR are required: a buy leaves what that agent's open loans owe, and
 //   the zap's 5 buys and 5 sales a UTC day are counted there for the agent and the wallet.
-import { readFileSync, writeFileSync, mkdirSync, renameSync, openSync, closeSync, statSync, rmSync, existsSync, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync, openSync, closeSync, statSync, rmSync, existsSync, realpathSync, lstatSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -587,7 +592,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   let stateProblem = null;
   if (wallet && stateDir && process.platform !== "win32" && typeof process.getuid === "function") {
     try { mkdirSync(stateDir, { recursive: true, mode: 0o700 }); } catch (_) { /* checked below if it exists */ }
-    if (existsSync(stateDir)) stateProblem = stateDirProblem(stateDir, { fs: { realpathSync, statSync }, uid: process.getuid() });
+    if (existsSync(stateDir)) stateProblem = stateDirProblem(stateDir, { fs: { realpathSync, statSync, lstatSync, readlinkSync }, uid: process.getuid() });
   }
   // The daily ledger lives there too: without a state directory a daily limit could not outlive the process, and a
   // limit that quietly resets on a restart is the very thing it replaces, so the start stops instead.
@@ -1101,6 +1106,11 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     let st;
     try { st = await withinTime(autopay.status(wallet.address, id), 10_000); } catch (e) { throw no(`this wallet's Autopay plan could not be read (${explain(e)})`); }
     if (!st.declared) throw no(`this wallet is not agent #${id}'s declared wallet, so Autopay can't repay from it`);
+    // AutoRepayV2 pays a wallet plan only from a declared wallet that is not the agent's owner (GHSA-65qg): read here
+    // too from the owner, whatever the status's own flag says
+    if (st.ownerIsWallet || (st.owner && String(st.owner).toLowerCase() === wallet.address.toLowerCase())) {
+      throw no(`agent #${id}'s declared wallet is its owner's own address (this wallet), and AutoRepay never repays from that address under a wallet plan, so no plan covers the loan. Declare a key of the agent's own as its wallet (the registry's setAgentWallet) and turn Autopay on from that key`);
+    }
     if (!st.plan.on) throw no("Autopay is off for this wallet");
     if (!st.plan.current) throw no("this wallet's Autopay plan was set under an earlier owner or key of the agent, so it pays nothing now");
     if (st.held) throw no("Autopay is on hold for this wallet");
@@ -1116,6 +1126,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     let st;
     try { st = await withinTime(autopay.status(wallet.address, id), 10_000); } catch (e) { return [`Autopay: couldn't read it (${explain(e)}).`]; }
     if (!st.declared) return ["Autopay: off. This wallet is not the agent's declared wallet, so it can't repay the agent's loans through AutoRepay."];
+    if (st.ownerIsWallet) return [`Autopay: off. The agent's declared wallet is its owner's own address (this wallet), and AutoRepay never repays from that address under a wallet plan${st.plan.on ? ", so the plan this wallet set pays nothing" : ""}. Declare a key of the agent's own as its wallet (setAgentWallet) and turn Autopay on from that key, or repay by hand before the due date.`];
     if (!st.plan.on) return ["Autopay: off. autopay_on turns it on: this wallet then repays each loan a few hours before it is due, if it holds enough."];
     if (!st.plan.current) return [st.plan.stale ? "Autopay: the plan was set before the agent's key or owner changed, so it pays nothing now. Call autopay_on again." : "Autopay: the plan was set under an earlier owner of the agent, so it pays nothing now. Call autopay_on again."];
     const out = [`Autopay: on, from this wallet${st.plan.useSavings ? " (then its savings)" : ""}; limit ${usd(st.plan.cap)} per loan, budget left ${usd(st.budget)}${st.plan.late ? "; also in the grace period" : ""}.${st.held ? " On hold: it pays nothing until resumed." : ""}${st.paused ? ` Paused by the Safe until ${when(st.paused.until)}: repay by hand before the due date.` : ""}`];
@@ -2670,7 +2681,9 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       const nothing = () => (bondDone || rec?.done?.approve ? "Nothing more was signed or sent" : "Nothing was signed or sent");
       const ctx = { id, block, end, left, waitEnd, stepMs, after };
 
-      let day = null, bondSent = false, bondHeld = false;
+      // bondHash: this call's deposit, once broadcast; it counts in the day while bondTxs keeps it (unbond takes it out
+      // when the chain shows it moved nothing: refused for its gas with no trace of it, or mined and reverted)
+      let day = null, bondSent = false, bondHeld = false, bondHash = null;
       try {
         let code = null;
         if (rec?.code && FLX.readInvite(rec.code, id, nowS() + 120).ok) code = rec.code; // the invite an earlier call got
@@ -2693,6 +2706,10 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
         if (!code) {
           if (!bonded) {
             if (s.usdg < amount) throw new ToolError(`This wallet (${me}) holds ${usd(s.usdg)} on Robinhood Chain, and the treasury's invite asks a ${usd(amount)} bond first (InviteBond), posted from this wallet. Nothing was signed or sent: add USDG to this wallet, then call first_line again.`);
+            // and the USDG payments signed and not settled yet still need stays for them, as save and stock_buy keep it
+            let held = 0n;
+            try { held = BigInt(heldForPayments() || 0n); } catch (_) { held = 0n; }
+            if (held > 0n && s.usdg - held < amount) throw new ToolError(`This wallet (${me}) holds ${usd(s.usdg)} on Robinhood Chain, ${usd(held)} of it held for payments signed and not settled yet (their merchants may still collect it), and the treasury's invite asks a ${usd(amount)} bond first (InviteBond), posted from this wallet. Nothing was signed or sent: add USDG to this wallet, or wait until those payments settle, then call first_line again.`);
             // the bond counts against this process's bonds (PRIORS_MAX_BOND_TOTAL_USD), held from here
             if (bondTotal + amount > bondTotalCap) throw new ToolError(`the ${usd(amount)} bond would bring what first_line bonded in this session to ${usd(bondTotal + amount)}, above ${usd(bondTotalCap)} (PRIORS_MAX_BOND_TOTAL_USD). ${usd(bondTotal)} was bonded so far; the user can raise the limit and restart the server. Nothing was signed or sent.`);
             bondTotal += amount;
@@ -2733,7 +2750,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
           if (!bonded) {
             if (s.allowance < amount) rec = (await flSend(rec, "approve", AT.usdg, FL.encodeFunctionData("approve", [AT.bond, amount]), ctx)).rec;
             // counted from its broadcast on: the deposit may land whatever its answer; refused or unread before it, nothing
-            const d = await flSend(rec, "deposit", AT.bond, FL.encodeFunctionData("deposit", [id]), { ...ctx, sending: (h) => { bondSent = true; bondTxs.set(h, amount); } });
+            const d = await flSend(rec, "deposit", AT.bond, FL.encodeFunctionData("deposit", [id]), { ...ctx, sending: (h) => { bondSent = true; bondHash = h; bondTxs.set(h, amount); } });
             rec = d.rec;
             bondDone = true;
             // the bot reads the bond from its own node: a block more on this one before it is asked (at most 2 s)
@@ -2781,7 +2798,9 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
         try { await writeFl(null, l.rec.rev); } catch (_) { /* left: the next call finds the record and answers it */ }
         return flDone(id, s, l.hash, { ...(l.rec?.done || {}) }, false, l.rc, left);
       } finally {
-        if (day) ledger.settle(day, bondSent ? amount : 0n, 0n);
+        // the day counts a deposit from its broadcast, unless the chain showed in this call that it moved nothing
+        // (GHSA-m2h8-m55f-9j66: refused for its gas, or mined and reverted, it was still counted)
+        if (day) ledger.settle(day, bondSent && bondTxs.has(bondHash) ? amount : 0n, 0n);
         if (bondHeld && !bondSent) bondTotal -= amount; // refused or unread before its broadcast: nothing posted
       }
     }
@@ -2875,13 +2894,15 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     }, serial(async ({ agent_id }, deadline) => firstLineOf(agent_id === undefined ? undefined : BigInt(agent_id), deadline)));
   }
 
+  // What a buy (stock_buy, market_buy) or a bond (first_line, a market sale's) keeps back beside the open loans: the
+  // USDG that payments signed here and not settled yet still need (only Robinhood Chain's: a payment signed on Base is
+  // paid from the Base float), as save keeps it.
+  const heldForPayments = () => { refresh(); const nowS = Math.floor(Date.now() / 1000); return [...outstanding.values()].filter((v) => live(v, nowS) && onRobinhood(v)).reduce((a, v) => a + v.price, 0n); };
+
   // ---- the market tools (PRIORS_MARKET=on; ./market-tools.mjs) --------------------------------------------------
-  if (MKT) MKT.registerMarketTools({ tool, serial, needWallet, wallet, provider, fetchImpl, credit, locked, stateDir, withinTime, ToolError, callBudgetMs, settings: market, record: marketRec, addresses, pollMs: deps.marketPollMs });
+  if (MKT) MKT.registerMarketTools({ tool, serial, needWallet, wallet, provider, fetchImpl, credit, locked, stateDir, withinTime, ToolError, callBudgetMs, settings: market, record: marketRec, addresses, pollMs: deps.marketPollMs, heldForPayments });
 
   // ---- the stock tools (PRIORS_STOCKS=on and PRIORS_STOCKS_ELIGIBLE=yes; ./stock-tools.mjs) -------------------------
-  // What a buy keeps back beside the open loans: the USDG that payments signed here and not settled yet still need (only
-  // Robinhood Chain's: a payment signed on Base is paid from the Base float), as save keeps it.
-  const heldForPayments = () => { refresh(); const nowS = Math.floor(Date.now() / 1000); return [...outstanding.values()].filter((v) => live(v, nowS) && onRobinhood(v)).reduce((a, v) => a + v.price, 0n); };
   if (stocksOn) STK.registerStockTools({ tool, serial, needWallet, wallet, provider, credit, session, heldForPayments, withinTime, ToolError, dollars, stateDir, settings: stocks });
 
   return server;
