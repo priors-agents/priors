@@ -23,7 +23,7 @@ const { POOL_ABI } = require("../dist/constants.js");
 
 const ME = "0x1234567890123456789012345678901234543210";
 const PAY_TO = "0x86727111a44084cc7a7c1c5d8ac4b0eca4d7db66";
-const URL_ = "https://check.blockpin.dev/check";
+const URL_ = "https://seller.example/check";
 
 function wallet(reads) {
   const sent = [];

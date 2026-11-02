@@ -233,8 +233,7 @@ bundled deployments file. `@priors/mcp` 0.10.0 bundles AutoRepay v2's address, s
 ### Or add it to your agent runtime
 
 Three packages put the same tools in an agent framework, each run end to end on mainnet on 2026-10-30 (an agent short
-on an x402 payment borrowed the gap, paid, repaid, and read the seller's record first; demos in
-[`docs/demos`](docs/demos)):
+on an x402 payment borrowed the gap, paid, repaid, and read the seller's record first):
 
 - **Hermes Agent**: [`integrations/hermes`](integrations/hermes), a Portable Agent Plugins package with the
   hosted server, the local `priors-mcp` server and the skill (Hermes asks before each payment).
@@ -558,7 +557,6 @@ packages/mcp/                @priors/mcp: local MCP server with the agent's wall
 integrations/hermes/         the Hermes Agent plugin (Portable Agent Plugins v1): both MCP servers and the skill
 integrations/elizaos/        @priors/plugin-elizaos: the elizaOS plugin, over @priors/mcp and the hosted server
 integrations/agentkit/       @priors/agentkit: the Coinbase AgentKit action provider
-docs/demos/                  the three runtime demos, cut from their mainnet runs
 bin/priors-v2.mjs            the v2 CLI (`npx priors-v2`)
 bin/priors.mjs               the v1 CLI (`npx priors`), for v1 history and the local devnet
 scripts/devnet.mjs           local v1 chain, deployed and bootstrapped so firstLine() actually works

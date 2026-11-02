@@ -66,8 +66,8 @@ export const payX402Action = {
     return answer(callback, "PRIORS_PAY_X402", r.ok, r.text, { url, maxPrice, maxBorrow: borrow ?? 0, ...(b ? { method: "POST" } : {}) });
   },
   examples: [[
-    { name: "{{user1}}", content: { text: "Pay https://check.blockpin.dev/check at most 0.10, borrow up to 5 if the wallet is short." } },
-    { name: "{{agentName}}", content: { text: "Paid 0.10 USDG; the wallet was short, so it borrowed 5 USDG, the pool's minimum loan, from the Priors line (loan #50900, due 6 November).", actions: ["PRIORS_PAY_X402"] } },
+    { name: "{{user1}}", content: { text: "Pay https://api.priors.trade/v1/report/1234 at most 0.05, borrow up to 5 if the wallet is short." } },
+    { name: "{{agentName}}", content: { text: "Paid 0.03 USDG; the wallet was short, so it borrowed 5 USDG, the pool's minimum loan, from the Priors line (loan #50900, due 6 November).", actions: ["PRIORS_PAY_X402"] } },
   ], [
     { name: "{{user1}}", content: { text: "Buy one chat completion from https://agent402.tools/v1/chat/completions at most 0.02: {\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"Summarise x402 in one line.\"}]}" } },
     { name: "{{agentName}}", content: { text: "Paid 0.02 USDG to agent402.tools with POST; the model answered: \"x402 lets an API charge per call over HTTP 402.\"", actions: ["PRIORS_PAY_X402"] } },

@@ -26,7 +26,7 @@ Then, in the Hermes profile's `.env`:
 ```bash
 PRIORS_KEY_FILE=/path/to/agent-wallet.key   # chmod 600; a dedicated wallet, never a main one
 PRIORS_AGENT_ID=1234                        # the agent's ERC-8004 id
-PRIORS_PAY_HOSTS=check.blockpin.dev         # the only hosts pay_url may pay
+PRIORS_PAY_HOSTS=api.priors.trade           # the only hosts pay_url may pay
 PRIORS_STATE_DIR=~/.priors/state           # where the daily caps and sent payments are kept
 PRIORS_MAX_SPEND_DAY_USD=5                  # optional daily caps
 PRIORS_MAX_BORROW_DAY_USD=5
@@ -82,10 +82,7 @@ Without a key only the read-only `priors` server is useful: records, sellers, po
 
 ## Demo
 
-![Hermes Agent paying an x402 API on credit with this plugin](../../docs/demos/hermes.gif)
-
-A production run in Hermes Agent 0.22.5 on 2026-10-30 (agent #437, Robinhood Chain mainnet), cut to 58 seconds at 1.6x
-speed. The agent reads the seller's record (Blockpin, agent #9233), then pays its x402 check (0.10 USDG) from an empty
+A production run in Hermes Agent 0.22.5 on 2026-10-30 (agent #437, Robinhood Chain mainnet). The agent reads the seller's record, then pays its x402 check (0.10 USDG) from an empty
 wallet: `pay_url` borrows 5 USDG, the pool's minimum loan (loan #50891), after Hermes asks and the user allows it once.
 The agent's income then arrives from another wallet, and `repay` closes the loan for 5.011666 USDG.
 Transactions: [borrow](https://robinhoodchain.blockscout.com/tx/0x542517bb4f7e7742fd749b7b8cab732e0a9d21af70bc433b079a72f655a9ea70),

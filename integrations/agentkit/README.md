@@ -79,11 +79,8 @@ process.on("unhandledRejection", (e) => {
 
 ## Demo
 
-![An AgentKit agent paying an x402 API on credit with this provider](../../docs/demos/agentkit.gif)
-
 A production run on 2026-10-30 (agent #437, Robinhood Chain mainnet; the model calling these actions through
-`@coinbase/agentkit-vercel-ai-sdk`), its own output lines with waits over 6 seconds shortened. The agent reads the
-seller's record (Blockpin, agent #9233), pays its x402 check (0.10 USDG) from an empty wallet by borrowing 5 USDG (loan
+`@coinbase/agentkit-vercel-ai-sdk`). The agent reads the seller's record, pays its x402 check (0.10 USDG) from an empty wallet by borrowing 5 USDG (loan
 #50884), and repays 5.011666 USDG after its income arrives.
 Transactions: [borrow](https://robinhoodchain.blockscout.com/tx/0x297608c51007480ec8c5aa510d78926d6f14bf58ed467cb797aedc5922884a9e),
 [payment](https://robinhoodchain.blockscout.com/tx/0xbb7fd5dcc13ac547873516713e4940cecadcda76873d980d3ad402de48288c19),

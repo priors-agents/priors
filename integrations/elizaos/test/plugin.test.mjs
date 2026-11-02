@@ -39,18 +39,18 @@ test("the plugin: elizaOS's Plugin shape (name, description, the four actions), 
 });
 
 test("parse: the URL, the agent and loan ids, the most to pay and the most to borrow come from the message's own words", () => {
-  const t = "Check agent #9233 then pay https://check.blockpin.dev/check?token=0xabc, at most 0.10, borrow up to 1.";
-  assert.equal(urlOf(t), "https://check.blockpin.dev/check?token=0xabc");
-  assert.equal(agentIdOf(t), 9233);
+  const t = "Check agent #1234 then pay https://seller.example/check?token=0xabc, at most 0.10, borrow up to 1.";
+  assert.equal(urlOf(t), "https://seller.example/check?token=0xabc");
+  assert.equal(agentIdOf(t), 1234);
   assert.equal(maxPriceOf(t), 0.1);
   assert.equal(maxBorrowOf(t), 1);
   assert.equal(maxBorrowOf("pay https://x.dev at most 0.10"), 0, "no borrow named: never borrow");
   assert.equal(maxPriceOf("pay https://x.dev, borrow up to 2"), null, "the borrow amount is never taken for the price");
   assert.equal(loanIdOf("repay loan #50900"), 50900);
   // a loan number in the same message is never taken for the agent, in either order
-  assert.equal(agentIdOf("Loan #50900 is for agent #9233, check its record."), 9233);
-  assert.equal(agentIdOf("Check agent #9233; it took loan #50900."), 9233);
-  assert.equal(agentIdOf("Check #9233 before loan #50900 is due."), 9233);
+  assert.equal(agentIdOf("Loan #50900 is for agent #1234, check its record."), 1234);
+  assert.equal(agentIdOf("Check agent #1234; it took loan #50900."), 1234);
+  assert.equal(agentIdOf("Check #1234 before loan #50900 is due."), 1234);
   assert.equal(agentIdOf("repay loan #50900"), null);
   // the borrow phrase may come before the price: each amount still comes from its own words
   const late = "Pay https://x.dev, borrow up to 5 if the wallet is short, at most 0.10 for it.";
@@ -60,11 +60,11 @@ test("parse: the URL, the agent and loan ids, the most to pay and the most to bo
 });
 
 test("PRIORS_AGENT_RECORD reads the record on the hosted read-only server, for the agent the message names", async () => {
-  const { runtime, calls } = fakeRuntime({}, { agent_record: "Agent #9233: 2 loans repaid, no default." });
-  assert.equal(await agentRecordAction.validate(runtime, msg("check agent #9233's record")), true);
+  const { runtime, calls } = fakeRuntime({}, { agent_record: "Agent #1234: 2 loans repaid, no default." });
+  assert.equal(await agentRecordAction.validate(runtime, msg("check agent #1234's record")), true);
   assert.equal(await agentRecordAction.validate(runtime, msg("check the record")), false, "no agent id");
-  const { out, said } = await run(agentRecordAction, runtime, "check agent #9233's record");
-  assert.deepEqual(calls.map(({ kind, name, args }) => ({ kind, name, args })), [{ kind: "read", name: "agent_record", args: { agent_id: 9233 } }]);
+  const { out, said } = await run(agentRecordAction, runtime, "check agent #1234's record");
+  assert.deepEqual(calls.map(({ kind, name, args }) => ({ kind, name, args })), [{ kind: "read", name: "agent_record", args: { agent_id: 1234 } }]);
   assert.equal(out.success, true);
   assert.match(said[0].text, /2 loans repaid/);
 });
@@ -78,16 +78,16 @@ test("PRIORS_CREDIT_STATUS reads the agent's own line on @priors/mcp, with the a
 
 test("PRIORS_PAY_X402 pays the URL at most the price named, and borrows only up to the amount the message names; with no price named it pays nothing", async () => {
   const { runtime, calls } = fakeRuntime({}, { pay_url: "Paid 0.10 USDG; borrowed 0.10 (loan #50900)." });
-  assert.equal(await payX402Action.validate(runtime, msg("pay https://check.blockpin.dev/check at most 0.10")), true);
-  assert.equal(await payX402Action.validate(runtime, msg("what is https://check.blockpin.dev")), false);
-  await run(payX402Action, runtime, "Pay https://check.blockpin.dev/check at most 0.10, borrow up to 1 if the wallet is short.");
-  await run(payX402Action, runtime, "Pay https://check.blockpin.dev/check at most 0.10.");
+  assert.equal(await payX402Action.validate(runtime, msg("pay https://seller.example/check at most 0.10")), true);
+  assert.equal(await payX402Action.validate(runtime, msg("what is https://seller.example")), false);
+  await run(payX402Action, runtime, "Pay https://seller.example/check at most 0.10, borrow up to 1 if the wallet is short.");
+  await run(payX402Action, runtime, "Pay https://seller.example/check at most 0.10.");
   assert.deepEqual(calls.map((c) => c.args), [
-    { url: "https://check.blockpin.dev/check", max_price_usd: 0.1, max_borrow_usd: 1 },
-    { url: "https://check.blockpin.dev/check", max_price_usd: 0.1 },
+    { url: "https://seller.example/check", max_price_usd: 0.1, max_borrow_usd: 1 },
+    { url: "https://seller.example/check", max_price_usd: 0.1 },
   ]);
   const before = calls.length;
-  const { out, said } = await run(payX402Action, runtime, "Pay https://check.blockpin.dev/check, borrow up to 1.");
+  const { out, said } = await run(payX402Action, runtime, "Pay https://seller.example/check, borrow up to 1.");
   assert.equal(calls.length, before, "no price named: no call");
   assert.equal(out.success, false);
   assert.match(said[0].text, /Nothing was paid/);
@@ -98,11 +98,11 @@ test("PRIORS_PAY_X402 with a JSON body: POST with the body as given, the URL and
   const body = { model: "m", messages: [{ role: "user", content: "list up to 3 points, max 2 lines" }] };
   await run(payX402Action, runtime, `Buy a chat completion from https://agent402.tools/v1/chat/completions at most 0.02: ${JSON.stringify(body)}`);
   await run(payX402Action, runtime, `Pay https://agent402.tools/v1/chat/completions at most 0.02, don't borrow:\n\`\`\`json\n${JSON.stringify(body, null, 2)}\n\`\`\``);
-  await run(payX402Action, runtime, "Pay https://check.blockpin.dev/check at most 0.10, borrow up to 0.");
+  await run(payX402Action, runtime, "Pay https://seller.example/check at most 0.10, borrow up to 0.");
   assert.deepEqual(calls.map((c) => c.args), [
     { url: "https://agent402.tools/v1/chat/completions", max_price_usd: 0.02, method: "POST", body: JSON.stringify(body) },
     { url: "https://agent402.tools/v1/chat/completions", max_price_usd: 0.02, max_borrow_usd: 0, method: "POST", body: JSON.stringify(body) },
-    { url: "https://check.blockpin.dev/check", max_price_usd: 0.1, max_borrow_usd: 0 },
+    { url: "https://seller.example/check", max_price_usd: 0.1, max_borrow_usd: 0 },
   ]);
   // a message whose only URL is inside the body names no URL to pay
   const before = calls.length;

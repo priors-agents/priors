@@ -392,8 +392,8 @@ export function hireItemOf(entry, source = "signed") {
  * Where each of one agent's offers is, in words (`offers`: its hire items, or anything with `host` and a `path` or a
  * `url`), in their order: its host alone, unless another of them has the same host. Then the host and as much of its
  * path as tells it from those others: its segments up to the first one no other offer on that host has there, and "/…"
- * when segments follow it ("?…" when only a query does): t0ll.xyz/api/x402/check/… and t0ll.xyz/api/x402/dev/…;
- * check.blockpin.dev/check and check.blockpin.dev/launch. A path every segment of which another one shares is written
+ * when segments follow it ("?…" when only a query does): checks.example/api/check/… and checks.example/api/dev/…;
+ * checks.example/check and checks.example/launch. A path every segment of which another one shares is written
  * whole, with its query when another has that same path. An offer with neither a path nor a url (from a data Worker of
  * before) is its host alone, and is compared with none.
  */

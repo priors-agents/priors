@@ -44,7 +44,7 @@ Do not use it for speculative browsing of paid APIs, or to pay anything the user
    - `PRIORS_KEY_FILE`: the path of a file holding the agent wallet's private key, readable by this user only
      (`chmod 600`). Use a dedicated wallet, never a main one. (`PRIORS_KEY` works too, but a file is safer.)
    - `PRIORS_AGENT_ID`: the agent's id.
-   - `PRIORS_PAY_HOSTS`: the only hosts `pay_url` may pay, comma-separated (for example `check.blockpin.dev`).
+   - `PRIORS_PAY_HOSTS`: the only hosts `pay_url` may pay, comma-separated (for example `api.priors.trade`).
    - Optional daily caps: `PRIORS_MAX_SPEND_DAY_USD`, `PRIORS_MAX_BORROW_DAY_USD` (with `PRIORS_STATE_DIR`), and the
      per-call ceiling `PRIORS_MAX_PRICE_USD` (default 1.00).
    - Optional, off by default: `PRIORS_AUTO_BORROW_USD` (auto-borrow, @priors/mcp 0.15.0 or later). With it, a
@@ -56,8 +56,8 @@ Do not use it for speculative browsing of paid APIs, or to pay anything the user
 
 ## How to Run
 
-Ask in plain words, for example: "Pay https://check.blockpin.dev/check for this token, at most 0.10, borrow if the
-wallet is short", or "Check agent #9233's record before we pay it".
+Ask in plain words, for example: "Pay https://api.priors.trade/v1/report/1234 for that agent's report, at most 0.05, borrow if
+the wallet is short", or "Check agent #1234's record before we pay it".
 
 ## Quick Reference
 

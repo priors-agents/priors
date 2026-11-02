@@ -21,7 +21,7 @@ Add it to the character's plugins (elizaOS 1.7 or later):
     "secrets": {
       "PRIORS_KEY_FILE": "/path/to/agent-wallet.key",
       "PRIORS_AGENT_ID": "1234",
-      "PRIORS_PAY_HOSTS": "check.blockpin.dev"
+      "PRIORS_PAY_HOSTS": "api.priors.trade"
     }
   }
 }
@@ -50,8 +50,8 @@ Without a key, only `PRIORS_AGENT_RECORD` works.
 
 Example messages:
 
-- "Before we pay it, check agent #9233's record on Priors."
-- "Pay https://check.blockpin.dev/check at most 0.10, borrow up to 5 if the wallet is short."
+- "Before we pay it, check agent #1234's record on Priors."
+- "Pay https://api.priors.trade/v1/report/1234 at most 0.05, borrow up to 5 if the wallet is short."
 - "Buy a chat completion from https://agent402.tools/v1/chat/completions at most 0.02: {"model": "…", "messages": [{"role": "user", "content": "…"}]}" (the URL, the price and any borrow are read outside the JSON)
 - "Repay loan 50900 now."
 
@@ -72,10 +72,7 @@ URLs are read from the user's message, never chosen by the model.
 
 ## Demo
 
-![An elizaOS agent paying an x402 API on credit with this plugin](../../docs/demos/elizaos.gif)
-
-A production run in elizaOS 1.7.2 on 2026-10-30 (agent #437, Robinhood Chain mainnet), its own output lines with waits
-over 6 seconds shortened. The agent reads the seller's record (Blockpin, agent #9233), then pays its x402 check (0.10
+A production run in elizaOS 1.7.2 on 2026-10-30 (agent #437, Robinhood Chain mainnet). The agent reads the seller's record, then pays its x402 check (0.10
 USDG) from an empty wallet: PRIORS_PAY_X402 borrows 5 USDG, the pool's minimum loan (loan #50896). The agent's income
 then arrives from another wallet, and PRIORS_REPAY closes the loan for 5.011666 USDG.
 Transactions: [borrow](https://robinhoodchain.blockscout.com/tx/0x1a17ff6a4f4329d4a16fee0c7654f43104b037a0d9109f9c7ee4c503cbdd2d81),
