@@ -3,7 +3,8 @@
 *2026-09-26, audited the same day (findings F1-F21 fixed below). Live since 2026-09-27: see "Where to read it".
 In this repo: the scoring engine (`sdk/score-v2.mjs`), its inputs (`sdk/score-v2-inputs.mjs`), the weights
 (`sdk/score-weights.v2.json`; 2.0.1 in `sdk/score-weights.v2.0.1.json`, 2.0.2 in `sdk/score-weights.v2.0.2.json`,
-2.0.3 in `sdk/score-weights.v2.0.3.json`, 2.0.4 in `sdk/score-weights.v2.0.4.json`), x402 income read from the chain
+2.0.3 in `sdk/score-weights.v2.0.3.json`, 2.0.4 in `sdk/score-weights.v2.0.4.json`, 2.0.5 in
+`sdk/score-weights.v2.0.5.json`), x402 income read from the chain
 (`sdk/x402-income.mjs`) and the tests
 (`scripts/test-score-v2.mjs`, `scripts/test-x402-income.mjs`, `scripts/test-stocks.mjs`,
 `scripts/test-score-v2-priors-stake.mjs`, `scripts/test-score-v2-late-window.mjs`). Priors' clusters list is not
@@ -29,7 +30,7 @@ for real time. An audit (2026-09-26) found what it can't see:
 v2 moves fast and in the open; v1 stays the hard floor the contracts rely on. When a v2 component has proven itself
 on data, it moves into the next on-chain version.
 
-## The score (v2.0.0 to 2.0.4, the same numbers; max 1000)
+## The score (v2.0.0 to 2.0.5, the same numbers; max 1000)
 
 | component | max | counts |
 |---|---|---|
@@ -47,9 +48,9 @@ on data, it moves into the next on-chain version.
 id (registry transfers). The protocol's treasury (and treasury v5, once the snapshot names its root) and seat vaults
 (V3 and the growth seat vault V4, public ids in the snapshot) count from day one, and from 2.0.3 so does the Ethos
 lane's root (#8823, the snapshot's `meta.ethosRootAgentId`; a snapshot that does not name it leaves it an ordinary
-backer). A backer the record doesn't know counts as the agent's own, and so, under 2.0.1 to 2.0.4, does the stock
-vault's root: the agent's own tokens stand behind that loan. Under 2.0.2 to 2.0.4, so do SeatVaultV5's roots (#8762,
-and the retired #8641; the snapshot's `meta.seatVaultV5AgentId`, without which 2.0.2 to 2.0.4 build no inputs, and
+backer). A backer the record doesn't know counts as the agent's own, and so, under 2.0.1 to 2.0.5, does the stock
+vault's root: the agent's own tokens stand behind that loan. Under 2.0.2 to 2.0.5, so do SeatVaultV5's roots (#8762,
+and the retired #8641; the snapshot's `meta.seatVaultV5AgentId`, without which 2.0.2 to 2.0.5 build no inputs, and
 `meta.seatVaultV5RetiredAgentId`): V5 sizes the
 line by the owner's own $PRIORS behind the agent and burns 75% of it on a default, so a stake never changes a score.
 v1 loans take their backer from the repayment's `FeeSplit` event, not from today's sponsor. The same rule applies to
@@ -191,6 +192,56 @@ buyer's own from then).
   is not 0, a sale may count there as a plain transfer, and the attester posts nothing for a change of owner until it
   sees them all at 0 (a note on chain is permanent).
 
+## Renting (2.0.5)
+
+*Built 2026-10-31: weights `2.0.5` (`sdk/score-weights.v2.0.5.json`, `leases`), the rule (`sdk/score-v2-inputs.mjs`,
+"Renting", which takes the leases as `leases`) and tests (`scripts/test-score-v2.mjs`). Published on the dev log on
+2026-11-02 (priors.trade/updates); the default from 2026-11-10 00:00 UTC, set once 2.0.4 is in force (2026-11-05).
+AgentLease (`docs/AGENT-LEASE.md`) is deployed since 2026-11-01 (`deployments/4663.agent-lease.json`), with renting
+shown on the test hosts only; 2.0.5 is to be in force before any lease shows in production.*
+
+An agent's owner can rent it out by the day (AgentLease): the renter runs the agent, sells its work on Priors and is
+paid at its own address, and the agent never moves, so its record stays its owner's. Under 2.0.0 to 2.0.4 nothing stops
+a lease from feeding a record: the renter's address, once some agent declares it as its payment wallet, would bring the
+lease's work in as that agent's income, and the two sides could pay each other, or back each other's loans, to build
+one of them a record. Under 2.0.5 a lease adds to no record:
+
+- **The window.** Each lease that started has one, from its start to 30 days after its date (`leases.afterDays`): its
+  date after any days added, also when the lease ended early (the lease index keeps the date, never when or by whom it
+  ended). The 30 days cover work taken during the lease and paid after it.
+- **Pay to the renter's address never counts** when made in the window, for any agent, judged by the payment's own time
+  and for good, whatever that address is declared as then or later: the renter's own agent declaring it, or the leased
+  agent's owner making it the agent's payment wallet, brings none of it in. A renter paid at the same address for its
+  own agents' work loses that income for the window, so it rents with an address of its own.
+- **Rent never counts.** It moves into the lease by `transferFrom` and out of it by plain transfers, which the income
+  index never reads; under 2.0.5, whatever the lease's own address (AgentLease's, `deployments/4663.agent-lease.json`)
+  pays out or takes in is left out all the same, at any time.
+- **Nothing between the two sides counts in the window**: the owner that rented the agent out, and the renter, each with
+  its cluster as Score v2 builds clusters today. A payment from one side to the other (rent sent straight to the owner,
+  the owner paying the renter's agent), by the payment's time; a loan to an agent of one side backed by a root of the
+  other, by its issue time, is not backed by someone else; and a line one side's root holds behind the other's agent
+  is no backing while now is in the window. Before the start and after the window, all of it counts as today.
+- **No cluster is joined.** A union has no dates: joined, the two sides would be one over all history, and once lifted
+  the lease's era would count again. So defaults stay per wallet: the renter's default never zeroes the owner's agents,
+  nor the owner's the renter's.
+- **Shown nowhere.** A payment the rule leaves out is no receipt either and funds no loan's income bonus; what the paid
+  side sent its payer back is netted out of that payer's other payments alone. No output names a lease, a renter or a
+  window: each score is computed as before from fewer events, and a line whose verdict (`line`) the leases would change
+  gets none, as the verdict would be "from" the window's end and the pages would give a backer's age as the reason
+  (Priors computes the verdicts with the leases and with none, and keeps only those both give; the pages keep their
+  words). With no lease, 2.0.5 scores every agent as 2.0.4 does, but the version, and every earlier version ignores the
+  leases, so a past score recomputes as published (`scripts/test-score-v2.mjs`, also on 200 random histories, where a
+  lease only ever takes away).
+- **What is read.** Nothing while 2.0.5 is neither in force nor scheduled. Then each full refresh brings the lease
+  index up to the snapshot's block first, before the scores, which read what the index left of Priors' lease alone (the
+  one `deployments/4663.agent-lease.json` names): its leases (every lease that closed, kept for good, and the leases
+  still stored on chain, each with its date after extensions; never an amount, a day price or who ended a lease) and the
+  blocks its logs cover. In force, the scores are held until every lease up to the scores' block is known: while the
+  index is not built, was read from after the lease's deploy block or is short of the scores' block (a lease rented
+  since would count), or its closed leases can't be read (every closed lease would count). Ahead of the instant, the
+  scores are those of the version in force and only the line verdicts read the leases; with the leases not all read,
+  they are left out. So what a lease brought counts in no published score, from the first one in force.
+
 ## How x402 income is read
 
 An x402 `exact` payment in USDG is an EIP-3009 `transferWithAuthorization`: the payer signs, a facilitator submits,
@@ -263,6 +314,9 @@ once, without holding scores back; the published `index.permit2Backfill` is `nul
 | sell a zeroed agent to a fresh wallet to escape a default (2.0.4) | the market refuses a seller the pool marked; a sale whose seller, or whose payment wallet at the sale, was in default when it sold (a loan past its defaultable time, marked or not, or the declared wallet of such a loan's agent) carries nothing: the agent restarts as at a plain transfer |
 | wash-sell to yourself (2.0.4) | adds nothing: a sale keeps the record as it was, and the seller's side is judged as it was the second before the sale (the payment wallet the agent declared at it stays in the seller's cluster, and a listed agent's listing is counted in), so the seller's loans are judged as before (a sale whose wallet is not read yet keeps nothing), and the income it was paid goes on counting as it did: its payers judged against that side (the seller and the list's wallets paying it are still paying themselves), netted against what that side sends back, a payment the new owner's wallet also gets counted once, the second wallet paying it after the sale counting nothing (it owns the agent then) and weighing before the sale what it weighed then (a payer's weight leaves out the agent it pays). The fee in force is spent; the score counts on no fee, which the market's timelock can lower |
 | sell to yourself to count two wallets' income (2.0.4) | for the 30 days after a sale, payments to the wallet at the sale and to the one the new owner declares both count, where re-declaring alone would switch from one to the other. No new kind of payer on the wallet at the sale: its payers are judged against the seller's side as it was (the list's wallets included), and the new owner paying it counts nothing; each payer is capped at 20 USDG across both wallets and weighted, and income stays at 150 points at most; each sale pays the fee and starts its 14-day hold |
+| rent an agent and bring its work in as your own agent's income (2.0.5) | pay to the renter's address made from the lease's start to 30 days after its date never counts, for any agent, whatever that address is declared as then or later: each payment is judged by its own time, never by today's declarations (`scripts/test-score-v2.mjs`) |
+| rent your agent to a second wallet and pay yourself through the rent, or have the renter pay you (2.0.5) | rent moves through the lease contract by transfers the income index never reads, and what the lease's address pays out or takes in never counts; any payment between the owner's side and the renter's side in the window never counts either, in either direction. What the two sides pay each other before the lease and after its window counts as between any two parties |
+| back the agent you rented out from the renter's root, or the renter's agent from yours (2.0.5) | a loan to an agent of one side backed by a root of the other, issued in the window, never counts as backed by someone else, nor does such a line held now; the two clusters are never joined, so neither side's default reaches the other |
 | gift your root to a borrower's owner | makes them one party, so the borrower's backed record stops counting; it costs the gifted stake and is undone by moving the root away |
 | repay late but eventually | late loans earn nothing and cost 10 points |
 | keep the money a day past the due time (2.0.3's window) | the window adds nothing: held time stops at the due time, as the pool's does, so a loan repaid inside it earns what one repaid at the due second earns, and one more than 24 hours past it is late. The pool charges no more for that day, as it charges nothing in its grace (`scripts/test-score-v2-late-window.mjs`) |
@@ -296,9 +350,17 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
   the changelog below, and an announcement on the dev log (priors.trade/updates) at least **7 days before** it becomes
   the default. Old versions stay in the repo, so any past score can be recomputed.
 - **Pinned outputs.** Every published score names its version; apps can pin a version. The engine computes with
-  the version it is given (`weightsFor` in `sdk/score-v2.mjs`: 2.0.0, 2.0.1, 2.0.2, 2.0.3 or 2.0.4; 2.0.0 when none
-  is given). Priors' published scores use 2.0.1, 2.0.3 from 2026-11-02 00:00 UTC (in place of 2.0.2 from
-  2026-11-01), and 2.0.4 from 2026-11-05 00:00 UTC: a score's version follows from its own timestamp.
+  the version it is given (`weightsFor` in `sdk/score-v2.mjs`: 2.0.0, 2.0.1, 2.0.2, 2.0.3, 2.0.4 or 2.0.5; 2.0.0 when
+  none is given). Priors' published scores use 2.0.1, 2.0.3 from 2026-11-02 00:00 UTC (in place of 2.0.2 from
+  2026-11-01), 2.0.4 from 2026-11-05 00:00 UTC, and 2.0.5 from 2026-11-10 00:00 UTC: a score's version follows from its
+  own timestamp.
+- **Dated by its notice (2.0.5).** Weights that never count what a lease brings are refused, named directly or as the
+  version scheduled next, while their `published` is null (no dev log notice yet), and for a snapshot timed less than 8
+  days after the first second of that date (7 full days after a notice posted at its last second); a schedule set
+  earlier than that is refused at once. 2.0.5 carries 2.0.4's rule, held to 2.0.4's own instant (2026-11-05 00:00 UTC)
+  and notice. The notice was posted at the owner's go on 2026-11-02, before any lease shows in production: `published`
+  in `sdk/score-weights.v2.0.5.json` is "2026-11-02", so Priors' scores use 2.0.5 from 2026-11-10 00:00 UTC, 8 days
+  after that date.
 - **No per-agent levers.** No per-agent overrides. Protecting the pool from a bad actor uses the existing on-chain tools
   (freeze, pause), which are public events.
 - **The clusters list changes only by commit** (in Priors' own repository; it is not published, so a score it touches
@@ -314,10 +376,24 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
 | 4 | income from any facilitator (USDG `AuthorizationUsed` events), declared payment wallets, netting, loans repaid from income | **built** (with phase 2) |
 | 4a | x402 settled through Permit2 (the x402 proxies' `Settled()`) | **built** 2026-10-02 |
 | 4b | v2.1: funding-source clusters (gas and first USDG), payer graph weights | after launch |
+| 4c | 2.0.5: renting's rule (what a lease brings never counts: pay to the renter's address, the rent, payments and backing between the two sides, from the start to 30 days after the date) | **built** 2026-10-31; the default from 2026-11-10 00:00 UTC, 7 full days after its dev log notice (2026-11-02), before any lease shows in production |
 | 5 | on chain: attest v2 scores to the ERC-8004 reputation registry with version and input hash; treasury rules read the rung from a signed attestation; stable components move into the next `ScoreLib` | after a month of data |
 
 ## Changelog
 
+- **2.0.5** (built 2026-10-31; published on the dev log, priors.trade/updates, on 2026-11-02; the default from
+  2026-11-10 00:00 UTC): 2.0.4 plus renting's rule (`sdk/score-weights.v2.0.5.json`,
+  `leases`; rules in "Renting (2.0.5)"). An agent rented out by the day on AgentLease keeps its owner's record, and the
+  lease adds to no record: from each lease's start to 30 days after its date (after any days added), pay to the
+  renter's address counts for no agent, whatever that address is declared as then or later; what the lease's own
+  address pays out or takes in (the rent) never counts; and no payment between the owner's side and the renter's side
+  counts, nor a loan to an agent of one side backed by a root of the other, nor such a line held now. Each payment and
+  each loan is judged by its own time, for good, and no cluster is joined, so a default stays with its own wallet. No
+  weight, rung or penalty number changes; with no lease every agent scores as under 2.0.4, and every earlier version
+  ignores the leases, so past scores recompute as published (`scripts/test-score-v2.mjs`). Priors' publisher reads the
+  lease index's windows, of Priors' lease alone and up to the scores' block, only while 2.0.5 is in force or scheduled,
+  holds the scores in force until every lease is read, publishes no line verdict a lease changes, and refuses 2.0.5
+  until 7 full days after its dev log notice ("Changing it").
 - **2.0.4** (built 2026-10-27; published on the dev log, priors.trade/updates, on 2026-10-28; Priors' scores use it
   from 2026-11-05 00:00 UTC): 2.0.3 plus the record kept across a sale on Priors' agent market
   (`sdk/score-weights.v2.0.4.json`, `changeOfHands.keepAtMarketSale`; rules in "A sale on Priors' market (2.0.4)"), by

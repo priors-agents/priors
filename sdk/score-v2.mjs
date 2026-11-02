@@ -10,6 +10,8 @@
 //     when it changed hands by a sale on Priors' agent market: the record goes on, sdk/score-v2-inputs.mjs);
 //   - a default by any agent of the same owner zeroes the owner's other agents too;
 //   - x402 income from distinct payers outside the cluster, each payer capped and weighted by its own record;
+//   - from 2.0.5, renting an agent adds to no record: what a lease brings (pay to its renter, the rent, payments and
+//     backing between its two sides, during it and 30 days after) never counts (sdk/score-v2-inputs.mjs);
 //   - a rung on the trust ladder (docs/TRUST.md) and a full breakdown, so every number explains itself.
 //
 // Inputs (all amounts in USDG base units, 6 decimals; all times unix seconds):
@@ -19,7 +21,8 @@
 //     backingByOthers, loans: [{ principal, issuedAt, dueAt, closedAt, status, backedByOthers }],
 //     income: [{ payer, amount, at, payerScore? }] }   // income already filtered to payers outside the cluster (2.0.4:
 //                                                      // and, across a sale on Priors' market, to what each owner in
-//                                                      // turn was paid: sdk/score-v2-inputs.mjs)
+//                                                      // turn was paid; 2.0.5: and without what a lease brings:
+//                                                      // sdk/score-v2-inputs.mjs)
 import WEIGHTS from "./score-weights.v2.json" with { type: "json" };
 import WEIGHTS_2_0_1 from "./score-weights.v2.0.1.json" with { type: "json" };
 // 2.0.2: 2.0.1 plus SeatVaultV5's roots as the owner's own collateral (a line sized by the owner's own $PRIORS). Its
@@ -31,6 +34,9 @@ import WEIGHTS_2_0_3 from "./score-weights.v2.0.3.json" with { type: "json" };
 // 2.0.4: 2.0.3 plus the record kept across a sale on Priors' agent market (changeOfHands.keepAtMarketSale). Its inputs
 // read the market's sales (sdk/score-v2-inputs.mjs `sales`); without them every change of hands restarts, as in 2.0.3.
 import WEIGHTS_2_0_4 from "./score-weights.v2.0.4.json" with { type: "json" };
+// 2.0.5: 2.0.4 plus renting's rule (leases): what a lease brings never counts. Its inputs need `leases` (the leases that
+// started on Priors' lease): sdk/score-v2-inputs.mjs refuses to build them without it.
+import WEIGHTS_2_0_5 from "./score-weights.v2.0.5.json" with { type: "json" };
 
 const DAY = 86400;
 const USDG = 1e6;
@@ -40,7 +46,7 @@ const round1 = (x) => Math.round(x * 10) / 10;
 /** The default weights (2.0.0). A newer version becomes the default only once announced (docs/SCORE-v2.md). */
 export const DEFAULT_WEIGHTS = WEIGHTS;
 /** Every published weights version, so a past score can be recomputed and a new one run before it is the default. */
-export const WEIGHTS_BY_VERSION = Object.freeze({ [WEIGHTS.version]: WEIGHTS, [WEIGHTS_2_0_1.version]: WEIGHTS_2_0_1, [WEIGHTS_2_0_2.version]: WEIGHTS_2_0_2, [WEIGHTS_2_0_3.version]: WEIGHTS_2_0_3, [WEIGHTS_2_0_4.version]: WEIGHTS_2_0_4 });
+export const WEIGHTS_BY_VERSION = Object.freeze({ [WEIGHTS.version]: WEIGHTS, [WEIGHTS_2_0_1.version]: WEIGHTS_2_0_1, [WEIGHTS_2_0_2.version]: WEIGHTS_2_0_2, [WEIGHTS_2_0_3.version]: WEIGHTS_2_0_3, [WEIGHTS_2_0_4.version]: WEIGHTS_2_0_4, [WEIGHTS_2_0_5.version]: WEIGHTS_2_0_5 });
 /** The weights of `version` (the default when empty); an unknown version throws. */
 export function weightsFor(version) {
   if (version == null || String(version).trim() === "") return DEFAULT_WEIGHTS;
@@ -58,6 +64,16 @@ export const repaidLate = (closedAt, dueAt, W = WEIGHTS) => Number(closedAt) > N
 /** Whether weights `W` keep the record across a sale on Priors' agent market (2.0.4, `changeOfHands.keepAtMarketSale`):
  *  false before. Every other change of hands restarts it under every version. */
 export const keepsAtMarketSale = (W = WEIGHTS) => !!(W && W.changeOfHands && W.changeOfHands.keepAtMarketSale === true);
+
+/** Renting's rule under weights `W` (2.0.5, `leases`): { afterS }, how long after a lease's date its exclusions run, in
+ *  seconds; null before, and those weights ignore the `leases` input (sdk/score-v2-inputs.mjs). */
+export function leaseRule(W = WEIGHTS) {
+  const L = W && W.leases;
+  if (!L || L.on !== true) return null;
+  const days = Number(L.afterDays);
+  if (!Number.isFinite(days) || days < 0) throw new TypeError(`score-v2: weights ${W.version}: leases.afterDays must be a finite, non-negative number`);
+  return { afterS: days * DAY };
+}
 
 /** How much a payer's USDG counts (0..1): unknown wallets at `unknownPayerWeight`, scored ones by their own score. */
 export function payerWeight(score, W = WEIGHTS) {

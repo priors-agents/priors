@@ -66,7 +66,22 @@
 // meta.seatVaultV5AgentId, and meta.seatVaultV5RetiredAgentId when named): V5 sizes a line by the owner's own $PRIORS
 // behind the agent and burns 75% of it on a default, so a bigger stake is no more risk someone else took. Fails closed:
 // with "seatVaultV5" and no meta.seatVaultV5AgentId, no inputs are built.
-import { scoreV2, payerWeight, repaidLate, keepsAtMarketSale, DEFAULT_WEIGHTS } from "./score-v2.mjs";
+//
+// Renting (weights 2.0.5, `leases`): an agent someone else runs under a lease (AgentLease, docs/AGENT-LEASE.md) keeps
+// its owner's record, and the lease adds to no record. Each lease that started (`leases`: the owner that rented it out,
+// its renter, its start and its date after any days added, also when it ended early) has a window, from its start to
+// `leases.afterDays` after that date. In it, each event judged by its own time, for good:
+//   - no payment to the renter's address counts, for any agent, whatever that address is declared as then or later (the
+//     lease's work pays it);
+//   - no payment from one side to the other counts (the owner's cluster and the renter's, as the clusters are built
+//     today), and no loan to an agent of one side backed by a root of the other counts as backed by someone else, nor
+//     does such backing held now.
+// And what the lease's own address pays out or takes in (`leaseAddress`: the rent, its fee, a refund) never counts. Those
+// payments show nowhere, receipts included, and fund no loan's income bonus. No cluster is joined: a union has no dates,
+// so joined it would reach back over all history, and lifted it would let the lease's era count again; and a default
+// stays with its own wallet. Without leases the scores are 2.0.4's; every earlier version ignores the input. Fails closed:
+// with the rule and no `leases`, or a lease it can't read, no inputs are built.
+import { scoreV2, payerWeight, repaidLate, keepsAtMarketSale, leaseRule, DEFAULT_WEIGHTS } from "./score-v2.mjs";
 
 const lc = (a) => String(a || "").toLowerCase();
 /** Whether a loan was repaid by the agent's own wallets: `r` is the one address that repaid, or the addresses that paid
@@ -299,6 +314,20 @@ function defaultTimes(snapshot, agentWallets, now) {
   return at;
 }
 
+/** Weights 2.0.5: the windows of the `leases` input, [{ owner, renter, from, to }] (lower case; `from` the lease's start,
+ *  `to` `afterS` after its date, both included). Throws when the input is missing or a lease can't be read: without its
+ *  window, what that lease brought would count. */
+function leaseWindows(leases, afterS) {
+  if (!Array.isArray(leases)) throw new TypeError("score-v2 inputs: these weights never count what a lease brings: pass `leases` (every lease that started, [] for none)");
+  return leases.map((l, i) => {
+    const start = Number(l && l.start), until = Number(l && l.until);
+    if (!l || !isAddr(l.owner) || !isAddr(l.renter) || l.start == null || l.until == null || !Number.isFinite(start) || start < 0 || !Number.isFinite(until)) {
+      throw new TypeError(`score-v2 inputs: lease ${i} (agent ${l && l.agentId}) has no readable owner, renter, start and until`);
+    }
+    return { owner: lc(l.owner), renter: lc(l.renter), from: start, to: Math.max(start, until) + afterS };
+  });
+}
+
 /**
  * Inputs for every agent in the snapshot.
  *   income        [{ payer, payTo, amount, at }]  signed USDG payments (amount: atomic USDG, number or string): every
@@ -338,8 +367,16 @@ function defaultTimes(snapshot, agentWallets, now) {
  *   plainTransferAt { [agentId]: seconds }         2.0.4, sold agents: the last registry transfer since pool v2's
  *                                                  launch that was no sale on the market (0: none). Absent for an
  *                                                  agent: its last transfer (`ownerSince`), as before
+ *   leases        [{ agentId, owner, renter, start, until }] 2.0.5: every lease that started on Priors' lease (the data
+ *                                                  Worker's lease index: running, run out or ended; `owner` the one that
+ *                                                  rented it out, `until` its date after any days added, also when it
+ *                                                  ended early; never an amount): required by weights with `leases`
+ *                                                  (throws without it; [] for none), unused before
+ *   leaseAddress  address                          2.0.5: the lease's own address (deployments/4663.agent-lease.json):
+ *                                                  what it pays out or takes in never counts. Absent: no such payment is
+ *                                                  known
  */
-export function buildInputs(snapshot, { links, income = [], agentWallets = {}, transfers = [], repayers = {}, payerScores = {}, payerAgents = null, pending = {}, backerOwnerSince = {}, ownerSince = {}, sales, plainTransferAt = {}, now, weights = DEFAULT_WEIGHTS } = {}) {
+export function buildInputs(snapshot, { links, income = [], agentWallets = {}, transfers = [], repayers = {}, payerScores = {}, payerAgents = null, pending = {}, backerOwnerSince = {}, ownerSince = {}, sales, plainTransferAt = {}, leases, leaseAddress, now, weights = DEFAULT_WEIGHTS } = {}) {
   const t = Number(now ?? snapshot.meta?.timestamp);
   if (!Number.isFinite(t) || t <= 0) throw new TypeError("score-v2 inputs: pass `now` (or a snapshot with meta.timestamp)");
   // 2.0.4: a change of hands by a sale on Priors' market keeps the record (keptOwnership), unless the sale isn't read yet
@@ -352,6 +389,32 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
   const saleLinks = keeps ? [...soldBy.values()].flat().filter((s) => isAddr(s.wallet)).map((s) => ({ wallets: [s.seller, s.wallet] })) : [];
   const linksIn = saleLinks.length ? { ...links, clusters: [...((links && links.clusters) || []), ...saleLinks] } : links;
   const K = makeClusters(snapshot, linksIn, agentWallets);
+  // 2.0.5: renting's windows (leaseWindows), each renter's, the lease's own address, and for each clusters the sides
+  // each lease sets against each other in its window: what a lease brings never counts (the header's "Renting")
+  const rule = leaseRule(weights);
+  const wins = rule ? leaseWindows(leases, rule.afterS) : [];
+  const leaseOwn = new Set(rule ? [].concat(leaseAddress ?? []).filter(isAddr).map(lc) : []);
+  const renterWins = new Map();
+  for (const w of wins) { if (!renterWins.has(w.renter)) renterWins.set(w.renter, []); renterWins.get(w.renter).push(w); }
+  const sidesBy = new Map(); // clusters -> Map(cluster -> [{ other, from, to }]), built once per clusters
+  const sidesOf = (C) => {
+    if (!sidesBy.has(C)) {
+      const m = new Map(), add = (a, b, w) => { if (!m.has(a)) m.set(a, []); m.get(a).push({ other: b, from: w.from, to: w.to }); };
+      for (const w of wins) {
+        const o = C.clusterOfWallet(w.owner), r = C.clusterOfWallet(w.renter);
+        if (o !== r) { add(o, r, w); add(r, o, w); } // one cluster on both sides is already the agent's own
+      }
+      sidesBy.set(C, m);
+    }
+    return sidesBy.get(C);
+  };
+  /** Whether clusters `a` and `b` of `C` are a lease's two sides and time `t` is in its window */
+  const across = (C, a, b, t) => wins.length > 0 && (sidesOf(C).get(a) || []).some((s) => s.other === b && t >= s.from && t <= s.to);
+  /** Whether a lease brought payment `p` (lower case, `at` its time): paid to a renter in its window, paid by the lease or
+   *  to it, or paid from one side of a lease to the other in its window */
+  const leaseBrought = (p) => rule != null && (leaseOwn.has(p.payer) || leaseOwn.has(p.payTo)
+    || (renterWins.get(p.payTo) || []).some((w) => p.at >= w.from && p.at <= w.to)
+    || across(K, K.clusterOfWallet(p.payer), K.clusterOfWallet(p.payTo), p.at));
   const minBackerAge = weights.backers.minAgeDays * DAY;
   // the pool's treasury (and treasury v5, once the snapshot names it: a line moved there is the treasury's as before)
   // and seat vaults (V3, and the growth vault V4) count as backers from day one (public ids in the snapshot's meta)
@@ -381,6 +444,7 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
     if (!b || !(Number(backerId) > 0)) return false;               // unknown backer: fail closed
     if (ownRoots.has(Number(backerId))) return false;              // the borrower's own collateral
     if (C.clusterOfAgent(backerId) === borrowerCluster) return false;
+    if (across(C, C.clusterOfAgent(backerId), borrowerCluster, Number(issuedAt))) return false; // 2.0.5: across a lease, in its window
     if (protocolBackers.has(Number(backerId))) return true;
     // its age counts from when its current owner took the id, if later than its enrolment: a bought aged id is a new
     // backer (private report GHSA-6f8j). `backerOwnerSince`: id -> the last registry transfer of that id, in seconds.
@@ -452,10 +516,12 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
   const paidBy = new Map();
   for (const p of income) { const a = Number(p.amount); if (Number.isFinite(a) && a > 0) paidBy.set(lc(p.payer), (paidBy.get(lc(p.payer)) || 0) + a); }
   const netted = (w) => (paidBy.get(lc(w)) || 0) >= weights.components.income.minPayerUsdg * USDG;
+  // 2.0.5: a payment a lease brought shows nowhere, receipts included; what the paid side sent its payer back is netted
+  // out of that payer's other payments alone
   const pay = income
     .map((p) => ({ payer: lc(p.payer), payTo: lc(p.payTo), amount: Number(p.amount), at: Number(p.at) }))
     .filter((p) => (K.declaredBy.has(p.payTo) || carried.has(p.payTo)) && Number.isFinite(p.amount) && p.amount > 0 && Number.isFinite(p.at)
-      && !waitPayers.has(p.payer) && !(waitClusters.has(K.clusterOfWallet(p.payTo)) && netted(p.payer)));
+      && !waitPayers.has(p.payer) && !(waitClusters.has(K.clusterOfWallet(p.payTo)) && netted(p.payer)) && !leaseBrought(p));
   const pairKey = (c, payer) => c + "|" + payer;
   // the share of a payer's payments into a cluster of `C` that the cluster did not send back to it (per clusters, once)
   const netters = new Map();
