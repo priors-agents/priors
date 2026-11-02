@@ -465,6 +465,10 @@ them. A lender's existing score entries (for example a `priors-score` entry) are
 `test/CreditProfileVectors.t.sol` (generated from the same vectors) recomputes the leaf hashes in Solidity and
 verifies every proof with OpenZeppelin `MerkleProof`. A forged leaf fails.
 
+The late leaf (loan `2`) closes 50,000 seconds, under 14 hours, after its `dueAt`. Its outcome is `2` and its hash
+commits to `2`, though a score that counts repayments up to 24 hours after `dueAt` as on time would treat it as on time
+(see Late versus on time, in Security Considerations).
+
 ## Reference implementation
 
 In this repository (github.com/priors-agents/priors):
@@ -533,7 +537,17 @@ The fork test uses the real registry and three real agents.
 - **Reorgs.** A statement over unfinalised blocks can name logs that later disappear. Windows SHOULD end at final
   blocks.
 - **Late versus on time** follows block timestamps, so a loan repaid within a few seconds of `dueAt` can fall either
-  side. Lenders SHOULD keep their own lateness rule consistent with `closedAt <= dueAt`.
+  side. Lenders SHOULD keep their own lateness rule consistent with `closedAt <= dueAt`. That rule is the
+  classification of a repayment by the loan's own timestamps, which each leaf's outcome records and which does not
+  change once the close log is final. Two other allowances are separate from it, and neither changes `dueAt`,
+  `closedAt` or an outcome: the grace a source gives after `dueAt` before a loan can be marked defaulted, which decides
+  when a default is possible, and a tolerance that a score or other rating derived from statements gives to repayments
+  soon after `dueAt`, which is that score's own rule, versioned with it. For example, where a source lets a loan be
+  marked defaulted 72 hours after `dueAt` and a score counts a repayment up to 24 hours after `dueAt` as on time, a loan
+  repaid 20 minutes after `dueAt` is outcome `2` in its leaf and counts in its statement's `closed.late`. The score
+  treats it as on time, and a later version of the score can change that without touching the statement. The open
+  event's parameter that `fields.dueAt` names is the due time, not the end of a grace: naming the end of the grace would
+  make outcome `1` take in the whole grace, whatever tolerance a score applies.
 - **Privacy.** Every amount and address in a statement is already public in the source's logs. Files MUST NOT carry
   personal or off-chain identity data. Credit scoring of people is regulated in many places (for example as high-risk
   under the EU AI Act). This profile records machine-to-contract loans only.
