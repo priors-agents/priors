@@ -104,6 +104,16 @@ check its address). To find a payment for an invoice, filter `Paid` on topic 1 (
 (the payee) and topic 3 (the reference), then check the receipt's transfer and the amount. Nothing in the key can be
 reversed after the transaction: the USDG is the payee's, the loan is the agent's.
 
+For invoice reconciliation, use a nonzero `ref`. Verify chain 4663 and a successful receipt for the direct `spend`,
+then match all three logs against the invoice's agent, payee, reference and raw integer amount. Match
+`Paid.loanId` to the pool's `Borrowed.loanId`, check each log's emitting contract, and require distinct log indices.
+Keep the chain ID, transaction hash and log index
+when deduplicating; a matching receipt still needs your application's confirmation and reorg policy.
+
+A [read-only Node.js example](https://docs.blockvectra.com/en/guides/verify-agent-payments/) hosted by BlockVectra
+implements these checks for direct LineKey spends, including strict ABI encoding checks. It reads the chain ID and
+one receipt using a BlockVectra RPC key; it needs no wallet key, sends no transaction and makes no automatic retries.
+
 ## Bounds and what it does not do
 
 - A stolen operator key pays only listed payees, within `perPayment` and `perPeriod` per trailing period, until
