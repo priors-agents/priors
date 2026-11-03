@@ -1,0 +1,16 @@
+{
+  "chainId": 4663,
+  "lineKey": "0x1090Df1B8A4B3F1e7D9aeDaA06fd29f56B9214fB",
+  "lineKeyBlock": 105368973,
+  "pool": "0x281210097f0de7A8FB6F87310AF0f089c9C8DE21",
+  "tx": "0x4f6fce5934489120110ee60271966cfe2e3235adc6ac0a58b947d7ef49216f52",
+  "deployer": "0xe6f8EB742460390861654653B3702215CC5Fb01F",
+  "gasUsed": "2390312",
+  "salt": "0xe428bc098f9f03a815b90f739eb63335e430131b5d79d01848697d77bcf5f8d5",
+  "source": "src/LineKey.sol:LineKey",
+  "sourceSha256": "0cc249e4aa950e423eac394897810039c0b25579fc68d8108e198874bcf136a3",
+  "initcodeHash": "0x1615059af108fe6bd421e1d9ad50cd0f3474f6dc3eb65f79a6bbdee63d560731",
+  "runtimeCodeHash": "0x65c91640d6a78bd48ecd539b78badd13e0371d2301fed73bbc4f6a56cf527997",
+  "deployedAt": "2026-11-03T21:16:45.000Z",
+  "blockscout": "https://robinhoodchain.blockscout.com/address/0x1090Df1B8A4B3F1e7D9aeDaA06fd29f56B9214fB"
+}

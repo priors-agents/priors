@@ -431,6 +431,7 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | AutoRepay v2 (Autopay: repays an agent's loan from its wallet in the loan's window, live since 2026-10-20) | `0x72B510AF4e66e5960aB9b975e0BdCf80239e83A0` |
 | IncomeRouter (Repay from income: each agent's own income box, whose money repays the agent's open loans in their window before the rest goes on; no owner, no upgrade; deployed 2026-11-01, not switched on yet) | `0x496744225Ed59a5215DD4D1A551A6b6350f58aCe` |
 | AgentLease (renting an agent out by the day, 1 to 90 days: the renter runs it and is paid at its own address, the agent stays in its owner's wallet, each day paid out as it ends; reads the agent market's fee; no admin, no upgrade; deployed 2026-11-01, `docs/AGENT-LEASE.md`) | `0xF2299A992879764ceF0107Aa9Beb07AdfBe0e479` |
+| LineKey (a spending key for an agent's line on pool v2: the owner names it the line's delegate, and the agent's own key pays listed payees straight from the line within the owner's caps, until revoked or the agent changes hands; holds nothing, no admin, no upgrade; deployed 2026-11-03, `docs/LINE-KEY.md`) | `0x1090Df1B8A4B3F1e7D9aeDaA06fd29f56B9214fB` |
 | BuyAndBack (engine 1) | `0xEe40675aBEC90E52211526845433C10c80fD569E` |
 | PriorsLiquidity (engine 2) | `0xbEC159832D05749557F3f972c4823979C8dC8451` |
 | SwapLimiter (the engines' depth guard) | `0x4535b1d92ebBe8176463dE4b58Ca9B66A231eb0E` |
@@ -529,6 +530,7 @@ src/AutoRepayV2.sol          Autopay: an agent's loan repaid from its wallet in 
 src/IncomeRouter.sol         Repay from income: one income box per agent; its money repays the agent's open loans first
                              (test/income: run with bash test/income/forge.sh test)
 src/AgentLease.sol           renting an agent out by the day: the term held whole, each day paid out as it ends (docs/AGENT-LEASE.md)
+src/LineKey.sol              a spending key for an agent's line: listed payees paid from the line within the owner's caps (docs/LINE-KEY.md)
 src/BuyAndBack.sol           engine 1: buys $PRIORS on its Pons pool
 src/PriorsLiquidity.sol      engine 2: $PRIORS liquidity
 src/SwapLimiter.sol          the engines' depth guard (src/libraries/PoolDepth.sol, EngineMath.sol)
