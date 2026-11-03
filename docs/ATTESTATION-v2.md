@@ -145,8 +145,8 @@ Added with v2:
 - **Line.** A note re-posts when the line (limit) opened, closed, or moved by a quarter and at least 1 USDG. The note
   says what the pool will lend; a note claiming 5 USDG for a 50 USDG line would undersell the agent, and the opposite
   would oversell it. `available` and `drawn` move with every loan and never trigger a note.
-- **Schema.** An entry posted before the current file schema (`priors.v`) is re-posted once, last in line, at most 30 a
-  pass. A defaulted agent's 0 is never re-posted.
+- **Schema.** An entry posted before the current file schema (`priors.v`) is re-posted once, last in line, in the
+  passes below. A defaulted agent's 0 is never re-posted.
 - **Owner** (2026-10-19). A note re-posts at once, right after a default, when the owner the
   evidence index names differs from the one recorded with the live note: the new note carries the score as it is
   then, `owner`, and `ownerChanged` with the owner before. A note posted before owners were recorded gets its owner
@@ -159,6 +159,15 @@ Added with v2:
   `/api/score-v2`), a change of owner posts nothing until it is read.
 
 A pass posts nothing when its evidence is not at the scores' block.
+
+**When the passes run** (since 2026-11-03). The attester runs an hourly pass at :19 UTC, up to 30 agents, and, every 5
+minutes, a catch-up pass of up to 100 agents while one is due: once a new weights version announced in
+`/api/score-v2` (`upcoming`) takes effect, or while more agents are due than a pass reached. A new weights version
+re-posts every scored agent: for 2.0.3 (2026-11-02, 433 agents) the hourly passes alone ran from 00:19 to 14:20 UTC.
+With the catch-up passes every agent carries the new version within the hour it takes effect (600 agents in 46
+minutes, with the version's first scores published 10 minutes late). Catch-up stops short of the attester key's gas
+floor, and the hourly pass goes on. [CHECK-API.md](CHECK-API.md) serves the entry the attester last posted for an agent
+as `attestedScore`.
 
 ## What a note proves, and how to check it
 

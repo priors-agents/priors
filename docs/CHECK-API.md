@@ -44,10 +44,11 @@ No key, no account, CORS open, cached for 30 seconds. Send exactly one of `agent
         "score": 0, "rung": 0, "rungName": "unproven", "version": "2.0.1", "updatedAt": 1790930430,
         "lateRepayments": 0, "repaidByOthers": 0, "distinctPayers": 0
       },
+      "attestedScore": null,
       "links": { "badge": "https://priors.trade/api/badge/437.svg", "page": "https://priors.trade/agent?id=437" }
     }
   ],
-  "attestations": { "chain": "eip155:4663", "registry": "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63", "attester": "0x613854463bb854225306b9b18bdb451a78430a73", "creditWriter": "0x03af41aeb1eea4da0572bbb6ab1b4c5331f17ac7" }
+  "attestations": { "chain": "eip155:4663", "registry": "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63", "attester": "0x613854463bb854225306b9b18bdb451a78430a73", "attestedAsOf": 1790930640, "creditWriter": "0x03af41aeb1eea4da0572bbb6ab1b4c5331f17ac7" }
 }
 ```
 
@@ -58,6 +59,14 @@ No key, no account, CORS open, cached for 30 seconds. Send exactly one of `agent
   more than an hour old, never a stale number. `record` is always there.
 - `record.onchainScore` is the score the pool computes on chain. Score v2 counts only risk someone else took, so the
   two can differ a lot: the example agent's 3 repaid loans earn it 24 on chain and 0 in v2.
+- `attestedScore` is the entry the attester last posted for the agent on the ERC-8004 reputation registry: the score
+  that score-gated pools and gates read there (`getSummary`, [below](#read-it-on-chain-instead)), next to `scoreV2`.
+  For example `{ "score": 29, "rung": 1, "version": "2.0.3", "tag2": "rung-1/v2.0.3", "defaulted": false,
+  "feedbackIndex": 3, "postedAt": 1793611199, "block": 104320111, "tx": "0x…" }`: `postedAt` is the attester's pass,
+  `block` and `tx` the post (`null` for an entry posted before 2026-11-03). It is `null` when the attester has no entry
+  for the agent, which a gate reads as no Priors score. It follows `scoreV2` on the attester's rules (below), so the two
+  can differ for a while. `attestations.attestedAsOf` is when the attester last wrote its entries; both fields are
+  absent until it first has.
 - `record.ownerSince` is when the agent's current owner took it (its last ERC-8004 `Transfer`, the registration
   included), and `record.loansRepaidByOwner` the loans repaid since then. `loansRepaid` stays the agent's whole record,
   under every owner. Both are `null` while the owner history has not reached the current owner yet.
@@ -103,12 +112,19 @@ URI holding the note's own file (the agent's line at a block, its on-time repaym
 pool's payment to it as `proofOfPayment`) and `feedbackHash` is keccak256 of the file's bytes: see
 [ATTESTATION-v2.md](ATTESTATION-v2.md), and check a note from the chain alone with
 `node scripts/verify-attestation.mjs <agentId>`. An older entry (a defaulted agent's 0 among them) points at this API's
-record of the agent, with `feedbackHash` 0. The attester checks once an hour and posts when an agent first has a score
-above 0, when it defaults (value 0), when its rung or the weights version changes, when the score moves by 25 points
-or more, when its line opens, closes or moves by a quarter and at least 1 USDG, or when an entry is 30 days old and
-the score differs. It revokes
-its previous entry first, so there is one live entry per agent and the summary is that score. No entry means no Priors
-score yet. The entry can lag the API by up to an hour, and by under 25 points.
+record of the agent, with `feedbackHash` 0. The attester posts when an agent first has a score above 0, when it
+defaults (value 0), when its rung or the weights version changes, when the score moves by 25 points or more, when its
+line opens, closes or moves by a quarter and at least 1 USDG, or when an entry is 30 days old and the score differs.
+It revokes its previous entry first, so there is one live entry per agent and the summary is that score. No entry
+means no Priors score yet.
+
+How far an entry can trail the API: it runs an hourly pass (at :19 UTC, up to 30 agents) and, every 5 minutes, a
+catch-up pass of up to 100 agents while one is due: once a new weights version takes effect (it re-posts every scored
+agent), or while more agents are due than a pass reached. So an entry can lag the API by up to an hour, and by under
+25 points; after a new weights version, every agent's entry carries it within the hour the version takes effect (from
+2.0.4, 2026-11-05 00:00 UTC; for 2.0.3, the hourly passes alone took until 14:20 UTC). If the attester's key runs low
+on gas, catch-up waits for a top-up and the hourly pass goes on. `attestedScore` above shows the entry next to the
+API's score.
 
 ### Its loans, as credit statements
 
