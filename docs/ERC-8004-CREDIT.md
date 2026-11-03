@@ -560,16 +560,26 @@ The fork test uses the real registry and three real agents.
 
 ## Open questions (for discussion)
 
-1. **Recovered amounts.** After a default, value seized or repaid later. Outcome 4 is reserved: a v1 file carries no
-   recovered leaf and a zero `recovered` total. A source would declare a `recovered` event, and a leaf would cite it.
-2. **Partial repayments** and loans that roll over.
-3. **Sources on several chains** in one statement. The reference reader reports a source on another chain as not
+1. **Sources on several chains** in one statement. The reference reader reports a source on another chain as not
    rebuilt.
-4. **How readers weight lenders.** On-chain manifests answer which contracts a writer speaks for; whether to trust
+2. **How readers weight lenders.** On-chain manifests answer which contracts a writer speaks for; whether to trust
    the lender behind them is left open.
-5. **An on-chain view** that checks a Merkle proof against a statement's root. The root is in the file, not in
+3. **An on-chain view** that checks a Merkle proof against a statement's root. The root is in the file, not in
    registry storage, so a contract needs the file's bytes plus the `feedbackHash` from the `NewFeedback` event.
-6. **Tag names**, and whether a lender's summary score should also have a standard tag (`credit.score`).
+4. **A sum view.** The reader rule is normative already: readers MUST compute totals by adding up the statements'
+   `closed` figures, and MUST NOT average credit entries with `getSummary`, which averages values and does not add
+   them (see Readers). Only whether to ask registries for a sum view stays open. This profile asks for none unless
+   someone needs one.
+
+Settled in the discussion:
+
+- **No score tag.** The profile standardizes observable loan outcomes, their counts and amounts, and leaves any score
+  to readers. It names only two tags, `credit.statement` and `credit.defaulted`, and no `credit.score`.
+- **Recovered amounts, partial repayments and rollovers go to a v2 of the leaf**, not to separate entries. A recovered
+  amount is value seized or repaid after a default. In v2 the default stays recorded as it was (outcome 3), and a
+  recovery is its own leaf that cites the loan and the source's `recovered` event, so the default stays visible and
+  the amount adds to `closed.recovered`. Partial repayments and rollovers take the same route, in v2. v1 keeps
+  outcome 4 reserved: a v1 file carries no recovered leaf and a zero `recovered` total, so no v1 file changes.
 
 ## Copyright
 
