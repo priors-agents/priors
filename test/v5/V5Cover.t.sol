@@ -484,8 +484,11 @@ contract V5CoverPathsTest is V5Base {
     // the fee split, burns, refresh
     // ------------------------------------------------------------------
 
-    /// @dev Fees that arrive after a settle (a second loan repaid) go to the buffer; a $PRIORS whose burn fails sends
-    ///      the burn to the dead address.
+    /// @dev A fee that arrives after a hook's settle and before the generation's next first steps (a second loan
+    ///      repaid) is split with the fees owed before the default, as the spec's 2.6 says, so the positions' fees never
+    ///      depend on which call marked the default: the buffer takes its share (test/v5/V5DeferredSplit.t.sol pins the
+    ///      amounts, and that later fees go all to the buffer; GHSA-xcqr-5gw3-vfv4). A $PRIORS whose burn fails sends the
+    ///      burn to the dead address.
     function test_feesAfterSettle_toTheBuffer_andBurnFallback() public {
         _open(id, 150_001 * T);
         uint256 a = _borrow(id, 20 * U, 8 days);
@@ -499,7 +502,7 @@ contract V5CoverPathsTest is V5Base {
         _repay(b);
         v5.pokeFees(id);
         (, uint256 buf1,,,,,) = lens.totals();
-        assertGt(buf1, buf0, "the fee of a settled generation is all buffer");
+        assertGt(buf1, buf0, "the buffer took its share of the fee");
     }
 
     /// @dev `refresh` of a book V5 no longer sponsors does nothing; within a thin fee headroom a raise is cut to it.

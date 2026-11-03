@@ -45,6 +45,7 @@ export const POOL_ABI = parseAbi([
   "function borrow(uint256 agentId, uint256 amount, uint64 term, address to, uint256 maxFee) returns (uint256)",
   "function repay(uint256 loanId, uint256 expectedAgentId, uint256 maxDue)",
   "function loansOf(uint256 agentId) view returns (uint256[])",
+  "function isController(uint256 agentId, address who) view returns (bool)",
   "function getLoan(uint256 loanId) view returns ((uint256 agentId, uint256 sponsorId, uint256 principal, uint256 fee, uint256 sponsorCut, uint256 reserveCut, uint256 premium, address owner, uint64 issuedAt, uint64 dueAt, uint64 defaultableAt, uint64 minScoreTerm, uint64 closedAt, uint8 status))",
   "event Borrowed(uint256 indexed loanId, uint256 indexed agentId, uint256 indexed sponsorId, uint256 principal, uint256 fee, uint64 dueAt, address to)",
 ]);

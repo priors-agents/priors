@@ -32,7 +32,8 @@ afterwards. These amounts apply from 2026-10-18; a report received before then k
 Severity is our judgement, argued in writing with you, not a number we pick in private. If you disagree with
 where we land, say so — the reasoning is the part we will publish.
 
-**The client packages (`@priors/x402`, `@priors/mcp`, `sdk/float.mjs`): what counts as a loss.** The client loses a
+**The client packages (`@priors/x402`, `@priors/mcp`, `sdk/float.mjs`, and since 2026-11-03 the runtime integrations
+`@priors/agentkit` and `@priors/plugin-elizaos`): what counts as a loss.** The client loses a
 user money when it pays what the user did not authorise: a second signature for one purchase, a payment signed above
 the per-call cap (`max_price_usd`) or past the session cap (`PRIORS_MAX_SPEND_USD`) in force when it was signed, a
 payment to another address or on another chain than the one quoted, or a borrow the borrow caps do not count. That is
@@ -42,7 +43,10 @@ signed for or for a retry or another request that reused it, even when a later q
 merchant charging a price it quoted under the caller's caps; a merchant not delivering what it was paid for (a merchant
 can do that with any client). Caps bound what a merchant can take, they do not make a merchant honest. A ratio ("10x
 overpaid") does not move a finding up a tier: what counts is whether money moved that the user had not signed for
-within their caps.
+within their caps. For the runtime integrations the per-call cap is AgentKit's `maxPrice` and the price the elizaOS
+message names (passed to `@priors/mcp` as `max_price_usd`); the session caps are `@priors/mcp`'s for elizaOS, and for
+AgentKit's auto-borrow its `perCall` and `perDay` limits. A repayment or a borrow for an agent the wallet does not act
+for is a payment the user did not authorise.
 
 **A request the caller re-spells is a new purchase.** The client keys a purchase by the request as a merchant reads
 it; P-24's row in [docs/SECURITY-v2.md](docs/SECURITY-v2.md) lists which spellings it merges. A caller that sends a
@@ -90,7 +94,9 @@ both wait for the timelock batch that names V5 in BuyAndBack and the SwapLimiter
 
 Also in scope: the SDK (`sdk/`), the npm packages
 [`@priors/x402`](https://www.npmjs.com/package/@priors/x402) and [`@priors/mcp`](https://www.npmjs.com/package/@priors/mcp)
-(`packages/`), the CLIs, the site's wallet path and the x402
+(`packages/`), the runtime integrations [`@priors/agentkit`](https://www.npmjs.com/package/@priors/agentkit) and
+[`@priors/plugin-elizaos`](https://www.npmjs.com/package/@priors/plugin-elizaos) (`integrations/agentkit`,
+`integrations/elizaos`; since 2026-11-03), the CLIs, the site's wallet path and the x402
 facilitator at `facilitator.priors.trade`, where a bug can cost a *user* money even though the contracts are
 sound — a mis-encoded call, a wrong address, a consent or an invite that redeems against the wrong agent, a
 payment settled twice. The hosted MCP server at `mcp.priors.trade` and the paid API at `api.priors.trade` are in

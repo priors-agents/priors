@@ -3,6 +3,11 @@
 
 const num = (s) => { const n = Number(String(s).replace(",", ".")); return Number.isFinite(n) && n >= 0 ? n : null; };
 
+const URL_RE = /https?:\/\/[^\s<>"'`)\]]+/gi;
+/** The message's own words: every URL taken out, so nothing in a seller's path or query (/pay1/borrow5.json, #123) is
+ * ever read as an amount or an id (GHSA-rf6g, GHSA-62m7). */
+export const proseOf = (text) => String(text || "").replace(URL_RE, " ");
+
 /** The first https URL in the text, or null. */
 export function urlOf(text) {
   const m = String(text || "").match(/https:\/\/[^\s<>"'`)\]]+/i);
@@ -12,7 +17,7 @@ export function urlOf(text) {
 
 /** An agent id: "agent 9233" or "agent #9233" first, else a bare "#9233" that is not a loan's; null when none. */
 export function agentIdOf(text) {
-  const t = String(text || "");
+  const t = proseOf(text);
   const named = t.match(/agent\s*#?\s*(\d{1,12})\b/i);
   if (named) return Number(named[1]);
   for (const m of t.matchAll(/#(\d{1,12})\b/g)) if (!/loan\s*$/i.test(t.slice(0, m.index))) return Number(m[1]);
@@ -21,18 +26,26 @@ export function agentIdOf(text) {
 
 /** A loan id: "loan 50327" or "loan #50327"; null when none. */
 export function loanIdOf(text) {
-  const m = String(text || "").match(/loan\s*#?\s*(\d{1,12})\b/i);
+  const m = proseOf(text).match(/\bloan\s*#?\s*(\d{1,12})\b/i);
   return m ? Number(m[1]) : null;
 }
 
-// The borrow phrase with its amount: "borrow up to 1", "borrow at most $0.50", "borrow 1".
-const BORROW = /borrow(?:ing)?\s*(?:up to|at most|no more than|max(?:imum)?)?\s*\$?\s*(\d+(?:[.,]\d+)?)/i;
+// The borrow phrase with its amount: "borrow up to 1", "borrow at most $0.50", "borrow 1" (whole words only), and an
+// aside right after it ("borrow 0.50 (up to 5)"), which is the borrow's too.
+const BORROW = /\bborrow(?:ing)?\s*(?:up to|at most|no more than|max(?:imum)?)?\s*\$?\s*(\d+(?:[.,]\d+)?)\b(?:\s*\([^)]*\))?/i;
+const AMOUNT = "\\$?\\s*(\\d+(?:[.,]\\d+)?)";
+// a cap phrase: "at most 0.10", "max $0.10", "up to 0.10", "no more than 0.10"
+const CAP = new RegExp(`\\b(?:at most|max(?:imum)?|up to|no more than)\\s*${AMOUNT}(?!\\d|[.,]\\d)`, "i");
+// a bare "pay 0.10": an amount (USDG, USD, dollars, or nothing more) before the end, punctuation or a preposition, not a
+// count ("pay 5 items")
+const PAY = new RegExp(`\\bpay\\s+${AMOUNT}(?:\\s*(?:usdg|usd|dollars?))?(?=\\s*(?:$|[.,;:!?)]|(?:for|to|at|per|each|on)\\b))`, "i");
 
-/** The most to pay: "at most 0.10", "max 0.10", "up to $0.10 for it", "pay 0.10"; null when none. The borrow phrase,
- * wherever it stands, is taken out first, so its amount is never read as the price. */
+/** The most to pay, from the message's own words (never its URL): a cap phrase ("at most 0.10", "max 0.10", "up to
+ * $0.10 for it"), else a bare "pay 0.10"; null when none. The borrow phrase, wherever it stands, is taken out first, so
+ * its amount is never read as the price. */
 export function maxPriceOf(text) {
-  const t = String(text || "").replace(new RegExp(BORROW.source, "gi"), " ");
-  const m = t.match(/(?:at most|max(?:imum)?|up to|no more than|pay)\s*\$?\s*(\d+(?:[.,]\d+)?)/i);
+  const t = proseOf(text).replace(new RegExp(BORROW.source, "gi"), " ");
+  const m = t.match(CAP) || t.match(PAY);
   return m ? num(m[1]) : null;
 }
 
@@ -44,7 +57,7 @@ export function maxBorrowOf(text) {
 /** The borrow the message names: its amount, 0 for "don't borrow", "no borrowing", "without borrowing" or "never
  * borrow", null when it names none (then @priors/mcp's own setting decides: never, or its auto-borrow). */
 export function borrowOf(text) {
-  const t = String(text || "");
+  const t = proseOf(text);
   if (/\b(?:do not|don't|dont|never|no|without)\s+borrow/i.test(t)) return 0;
   const m = t.match(BORROW);
   return m ? num(m[1]) ?? 0 : null;

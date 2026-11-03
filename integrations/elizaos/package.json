@@ -1,6 +1,6 @@
 {
   "name": "@priors/plugin-elizaos",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Priors credit for elizaOS agents: pay x402 APIs and borrow the gap in USDG from the agent's Priors line on Robinhood Chain, repay it, and read another agent's repayment record before paying it.",
   "type": "module",
   "main": "./src/index.js",
@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",
-    "@priors/mcp": "0.15.0"
+    "@priors/mcp": "0.16.0"
   },
   "peerDependencies": {
     "@elizaos/core": "^1.7.0"
@@ -31,6 +31,7 @@
       "PRIORS_KEY_FILE": { "type": "string", "description": "Path of a file holding the agent wallet's private key, readable by this user only (chmod 600). A dedicated wallet." },
       "PRIORS_KEY": { "type": "string", "description": "The agent wallet's private key, if no key file is used." },
       "PRIORS_AGENT_ID": { "type": "string", "description": "The agent's ERC-8004 id on Robinhood Chain." },
+      "PRIORS_OWNER_ENTITY_IDS": { "type": "string", "description": "The elizaOS entity ids whose messages may make the agent pay or repay, comma-separated (* for anyone in its rooms). Unset: no one." },
       "PRIORS_PAY_HOSTS": { "type": "string", "description": "The only hosts a payment may go to, comma-separated." },
       "PRIORS_MAX_PRICE_USD": { "type": "string", "description": "Most one x402 call may cost (default 1.00)." },
       "PRIORS_MAX_SPEND_DAY_USD": { "type": "string", "description": "Most the agent may pay per UTC day (optional)." },

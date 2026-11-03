@@ -27,6 +27,9 @@ export const BorrowSchema = z
 export const RepaySchema = z
   .object({
     loanId: z.number().int().positive().describe("The Priors loan id to repay, e.g. 50900"),
+    agentId: agentId
+      .optional()
+      .describe("The agent whose loan it is (optional): a loan of another agent is refused"),
   })
   .describe("Repay a Priors loan in full (principal and fee) from this wallet");
 

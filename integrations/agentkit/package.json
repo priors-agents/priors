@@ -1,6 +1,6 @@
 {
   "name": "@priors/agentkit",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Priors action provider for Coinbase AgentKit: pay x402 APIs in USDG on Robinhood Chain and borrow the gap from an ERC-8004 agent's Priors credit line, repay, and read another agent's repayment record before paying it.",
   "license": "MIT",
   "author": "Priors <contact@priors.trade>",

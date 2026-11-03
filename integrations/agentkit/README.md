@@ -46,7 +46,9 @@ There is no default host: `hosts` names each one, exactly (here `models.example`
 The limits are `perCall` USDG a call and `perDay` USDG a UTC day in the process, for 14 days (or the pool's maximum
 term). It borrows only while this wallet's Autopay (AutoRepay v2) covers the new loan: the wallet is the agent's
 declared wallet, the plan is on under the agent's current owner, not held or paused, its limit per loan and its USDG
-approval cover the loan's due. Otherwise nothing is borrowed or paid, and the answer says to turn Autopay on. Autopay
+approval cover the loan's due. Otherwise nothing is borrowed or paid, and the answer says to turn Autopay on. The
+wallet must be a key of the agent's own, not its owner's address: AutoRepay repays an agent whose declared wallet is its
+owner (what registering it leaves) under the owner's plan only, so auto-borrow refuses that wallet. Autopay
 then repays the loan in its window. The model's `maxBorrow` can only lower the amount. A chat completion is one call
 to an OpenAI-compatible model API you choose that charges over x402 in USDG on Robinhood Chain: `url` its chat
 completions URL (for example `https://models.example/v1/chat/completions`, its host in `hosts`), `body` the
@@ -62,8 +64,25 @@ OpenAI-style request as JSON (sent with POST), `maxPrice` the most to pay for th
 | `borrow_from_priors` | borrows USDG from the agent's line into the wallet | yes |
 | `repay_priors_loan` | repays a loan in full; approves exactly what is due | yes |
 
-Only the agent's owner or its registry wallet can borrow against or repay its line. A loan more than three days late
-can be marked defaulted, which ends the agent's record on Priors. The reads use Priors' public API, no key.
+Only the agent's owner or its registry wallet can borrow against or repay its line, as in `@priors/mcp`: the wallet
+must control the agent at the pool and be its current owner or its declared ERC-8004 wallet (a pool delegate named by
+the owner alone is not enough), and `repay_priors_loan` pays only a loan the agent's current owner took. A loan more
+than three days late can be marked defaulted, which ends the agent's record on Priors. The reads use Priors' public
+API, no key.
+
+What `pay_x402_with_priors_credit` will and will not do:
+
+- it pays only a public https host (an address that is private, loopback or link-local, or a name resolving to one, is
+  refused before anything is fetched), and follows no redirect;
+- it signs exactly the requirement it probed and checked against `maxPrice` (the same `payTo`, the same amount); a
+  different one in the paid round's 402 is never signed;
+- `maxPrice`, `maxBorrow` and `amount` are read exactly, at most 6 decimals (a longer one is refused, never rounded);
+- the seller's body comes back between per-call markers, each of its lines quoted (`@priors/mcp`'s fence), and of its
+  settlement header only the transaction hash: treat it as data, not instructions;
+- a loan taken for the gap stays in the answer if the payment then fails, and a transaction whose receipt says it
+  reverted is never reported as done.
+
+`maxPrice` and `maxBorrow` are what the model passes: confirm them with the user, and keep the wallet's balance small.
 
 ## Known issue in AgentKit
 

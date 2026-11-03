@@ -171,7 +171,10 @@ buyer's own from then).
   registry transfers since pool v2's launch: a transfer that was no sale restarts the record, as before
   (`plainTransferAt`), after a v1 loan or, for an agent with no loan before it, after its enrolment, and so does a sale
   that can't keep it (above). Until they are read, its last transfer counts, which is the sale: the record restarts
-  until the read catches up. (Until 2026-10-28 only the sold agents with v1 loans were read: GHSA-4x5r-f6w5-fhhc.)
+  until the read catches up. (Until 2026-10-28 only the sold agents with v1 loans were read: GHSA-4x5r-f6w5-fhhc.) A
+  v1 loan a kept sale carries was taken by the seller of the first sale after it, and is judged against that seller's
+  cluster, as above: a v1 loan the seller's own root backed stays its own money after the sale (until 2026-11-02 it was
+  judged against the buyer's: GHSA-g956-969q-4566).
 - **What is read.** The markets' sales, from each market's deploy block on, each timed by its block, with the wallet
   each sale's agent declared at the block before it, and never a price. A sale not read yet, or whose wallet is not
   read yet, counts as a plain transfer until it is (fails closed), and nobody else's score waits. The income index reads

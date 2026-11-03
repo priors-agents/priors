@@ -601,7 +601,11 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
     const loans = raw.map((l) => {
       const backer = l.era === "v1" ? v1Backer.get(Number(l.id)) : l.sponsorId;
       const J = asAtSale ? judgeOf(id, routeOf(l)) : null;
-      const borrowerCluster = J ? J.self : K.clusterOfAgent(id, l.owner);
+      // a v1 loan records no owner: one a kept sale carries was taken by the seller of the first sale after it (its
+      // route's), so it is judged against that seller's cluster, as a v2 loan is against its owner's, never the buyer's
+      // (GHSA-g956-969q-4566)
+      const takenBy = l.owner || (routeOf(l) < hops.length ? hops[routeOf(l)].seller : undefined);
+      const borrowerCluster = J ? J.self : K.clusterOfAgent(id, takenBy);
       return { principal: l.principal, issuedAt: l.issuedAt, dueAt: l.dueAt, closedAt: l.closedAt, status: l.status,
         backedByOthers: backer != null && backerCounts(backer, l.issuedAt, borrowerCluster, J ? J.C : K), incomeShare: 0 };
     });

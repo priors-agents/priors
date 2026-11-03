@@ -21,6 +21,7 @@ Add it to the character's plugins (elizaOS 1.7 or later):
     "secrets": {
       "PRIORS_KEY_FILE": "/path/to/agent-wallet.key",
       "PRIORS_AGENT_ID": "1234",
+      "PRIORS_OWNER_ENTITY_IDS": "<your elizaOS entity id>",
       "PRIORS_PAY_HOSTS": "api.priors.trade"
     }
   }
@@ -31,11 +32,12 @@ Add it to the character's plugins (elizaOS 1.7 or later):
 |---|---|
 | `PRIORS_KEY_FILE` | a file holding the agent wallet's private key, readable by this user only (`chmod 600`); a dedicated wallet, never a main one (`PRIORS_KEY` works too) |
 | `PRIORS_AGENT_ID` | the agent's ERC-8004 id on Robinhood Chain |
+| `PRIORS_OWNER_ENTITY_IDS` | the elizaOS entity ids whose messages may make the agent pay or repay, comma-separated. In a room (Discord, Telegram, X replies) a message is from whoever spoke, so unset, `PRIORS_PAY_X402` and `PRIORS_REPAY` answer no one; `*` lets anyone in the agent's rooms make it pay, within the caps below. The reads answer everyone. New in 0.3.0: an agent upgraded without it pays and repays for no one, so set it when upgrading |
 | `PRIORS_PAY_HOSTS` | the only hosts a payment may go to, comma-separated |
 | `PRIORS_MAX_PRICE_USD` | most one x402 call may cost (default 1.00) |
 | `PRIORS_STATE_DIR` | where the daily caps and sent payments are kept: a directory only this user can write to, with no group- or world-writable parent (otherwise nothing is signed) |
 | `PRIORS_MAX_SPEND_DAY_USD`, `PRIORS_MAX_BORROW_DAY_USD` | optional daily caps |
-| `PRIORS_AUTO_BORROW_USD` | optional, off by default (`@priors/mcp` 0.15.0): auto-borrow. A payment whose message names no borrow then borrows the gap on its own, up to this amount, for 14 days, only while the agent wallet's Autopay covers the loan. Needs `PRIORS_MAX_BORROW_DAY_USD` above 0, `PRIORS_PAY_HOSTS`, `PRIORS_AGENT_ID` and `PRIORS_STATE_DIR` |
+| `PRIORS_AUTO_BORROW_USD` | optional, off by default (`@priors/mcp` 0.15.0): auto-borrow. A payment whose message names no borrow then borrows the gap on its own, up to this amount, for 14 days, only while the agent wallet's Autopay covers the loan (from 0.3.0, on `@priors/mcp` 0.16.0, never while the agent wallet is its owner's own address, which Autopay does not repay under a wallet plan). Needs `PRIORS_MAX_BORROW_DAY_USD` above 0, `PRIORS_PAY_HOSTS`, `PRIORS_AGENT_ID` and `PRIORS_STATE_DIR` |
 
 Without a key, only `PRIORS_AGENT_RECORD` works.
 
@@ -62,7 +64,10 @@ and reads records from the hosted read-only server at `https://mcp.priors.trade/
 allowlist and the signing are `@priors/mcp`'s own: a payment above `max_price_usd` or to a host outside
 `PRIORS_PAY_HOSTS` is refused before anything is signed, and the server's totals (`PRIORS_MAX_SPEND_USD` 5 and
 `PRIORS_MAX_BORROW_TOTAL_USD` 25 by default while it runs) bound what one process can spend or borrow. Amounts and
-URLs are read from the user's message, never chosen by the model.
+URLs are read from the message of a sender listed in `PRIORS_OWNER_ENTITY_IDS`, never chosen by the model: the URL is
+taken out before the amounts are read, so nothing in a seller's path or query (`/pay1/borrow5.json`, `#123`) is ever
+read as a price, a borrow or an id, and a bare "pay 5" is a price only when no cap phrase ("at most", "max", "up to",
+"no more than") is named and it is an amount, not a count ("pay 5 items").
 
 ## Disclosure
 

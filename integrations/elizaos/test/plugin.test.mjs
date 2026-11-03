@@ -8,9 +8,9 @@ import { priorsOf, priorsFor, envOf, SETTINGS } from "../src/priors.js";
 import { urlOf, agentIdOf, loanIdOf, maxPriceOf, maxBorrowOf, borrowOf, bodyOf } from "../src/parse.js";
 
 /** A runtime whose Priors calls are recorded and answered with `answers[tool]` (default: "ok"). */
-function fakeRuntime(settings = {}, answers = {}) {
+function fakeRuntime(settings = { PRIORS_OWNER_ENTITY_IDS: OWNER }, answers = {}) {
   const calls = [];
-  const runtime = { getSetting: (k) => settings[k] };
+  const runtime = { agentId: "agent-self", getSetting: (k) => settings[k] };
   const connect = async ({ kind, env }) => ({
     callTool: async ({ name, arguments: args }) => {
       calls.push({ kind, name, args, env: { key: env.PRIORS_KEY_FILE, agent: env.PRIORS_AGENT_ID, hosts: env.PRIORS_PAY_HOSTS } });
@@ -22,10 +22,11 @@ function fakeRuntime(settings = {}, answers = {}) {
   priorsOf(runtime, { connect, base: {} }); // the plugin's own lookup now finds this one
   return { runtime, calls };
 }
-const msg = (text) => ({ content: { text } });
-const run = async (action, runtime, text) => {
+const OWNER = "11111111-1111-4111-8111-111111111111"; // the elizaOS entity the agent's operator speaks as
+const msg = (text, entityId = OWNER) => ({ entityId, content: { text } });
+const run = async (action, runtime, text, entityId) => {
   const said = [];
-  const out = await action.handler(runtime, msg(text), {}, {}, async (c) => { said.push(c); return []; });
+  const out = await action.handler(runtime, msg(text, entityId), {}, {}, async (c) => { said.push(c); return []; });
   return { out, said };
 };
 
@@ -60,7 +61,7 @@ test("parse: the URL, the agent and loan ids, the most to pay and the most to bo
 });
 
 test("PRIORS_AGENT_RECORD reads the record on the hosted read-only server, for the agent the message names", async () => {
-  const { runtime, calls } = fakeRuntime({}, { agent_record: "Agent #1234: 2 loans repaid, no default." });
+  const { runtime, calls } = fakeRuntime(undefined, { agent_record: "Agent #1234: 2 loans repaid, no default." });
   assert.equal(await agentRecordAction.validate(runtime, msg("check agent #1234's record")), true);
   assert.equal(await agentRecordAction.validate(runtime, msg("check the record")), false, "no agent id");
   const { out, said } = await run(agentRecordAction, runtime, "check agent #1234's record");
@@ -70,14 +71,14 @@ test("PRIORS_AGENT_RECORD reads the record on the hosted read-only server, for t
 });
 
 test("PRIORS_CREDIT_STATUS reads the agent's own line on @priors/mcp, with the agent's settings", async () => {
-  const { runtime, calls } = fakeRuntime({ PRIORS_KEY_FILE: "/k", PRIORS_AGENT_ID: "437" });
+  const { runtime, calls } = fakeRuntime({ PRIORS_KEY_FILE: "/k", PRIORS_AGENT_ID: "437", PRIORS_OWNER_ENTITY_IDS: OWNER });
   assert.equal(await creditStatusAction.validate(runtime, msg("what is left on my credit line?")), true);
   await run(creditStatusAction, runtime, "what is left on my credit line?");
   assert.deepEqual(calls.map(({ kind, name, args, env }) => ({ kind, name, args, env })), [{ kind: "wallet", name: "credit_status", args: {}, env: { key: "/k", agent: "437", hosts: undefined } }]);
 });
 
 test("PRIORS_PAY_X402 pays the URL at most the price named, and borrows only up to the amount the message names; with no price named it pays nothing", async () => {
-  const { runtime, calls } = fakeRuntime({}, { pay_url: "Paid 0.10 USDG; borrowed 0.10 (loan #50900)." });
+  const { runtime, calls } = fakeRuntime(undefined, { pay_url: "Paid 0.10 USDG; borrowed 0.10 (loan #50900)." });
   assert.equal(await payX402Action.validate(runtime, msg("pay https://seller.example/check at most 0.10")), true);
   assert.equal(await payX402Action.validate(runtime, msg("what is https://seller.example")), false);
   await run(payX402Action, runtime, "Pay https://seller.example/check at most 0.10, borrow up to 1 if the wallet is short.");
@@ -143,4 +144,52 @@ test("envOf: the agent's settings replace the process env for the Priors setting
   assert.deepEqual([env.PRIORS_AGENT_ID, env.PATH, "OPENROUTER_API_KEY" in env], ["437", "/bin", false]);
   assert.ok(SETTINGS.includes("PRIORS_PAY_HOSTS") && SETTINGS.includes("PRIORS_KEY_FILE") && SETTINGS.includes("PRIORS_AUTO_BORROW_USD"));
   assert.equal(envOf({ getSetting: (k) => ({ PRIORS_AUTO_BORROW_USD: "5" })[k] }, {}).PRIORS_AUTO_BORROW_USD, "5", "the agent's auto-borrow setting reaches @priors/mcp");
+});
+
+// ---- the private reports of 2026-10-31 (GHSA-62m7, GHSA-rf6g, GHSA-p29w) -----------------------------------------------
+test("parse: words inside the URL are never an amount or an id (a seller's path such as /pay1/borrow5.json)", () => {
+  const t = "Pay https://merchant.example/pay1/borrow5.json at most 0.10";
+  assert.equal(urlOf(t), "https://merchant.example/pay1/borrow5.json");
+  assert.equal(maxPriceOf(t), 0.1);
+  assert.equal(borrowOf(t), null, "the message names no borrow");
+  assert.equal(maxPriceOf("Pay https://x.dev/max9?up%20to=7 at most 0.05"), 0.05);
+  assert.equal(agentIdOf("check the record at https://example.com/api#123"), null);
+  assert.equal(loanIdOf("repay https://example.com/loan/77"), null);
+  // a bare "pay N" is the price only when no cap phrase is named, and only when N is an amount, not a count
+  assert.equal(maxPriceOf("Pay 5 items at https://x.dev/a at most 0.10"), 0.1);
+  assert.equal(maxPriceOf("Pay 5 items from https://x.dev/a"), null);
+  assert.equal(maxPriceOf("pay 0.10 for https://x.dev/a"), 0.1);
+  // the borrow phrase with its own aside is taken out whole: its numbers are never the price
+  assert.equal(maxPriceOf("Call https://x.dev/check and borrow 0.50 (up to 5) if short."), null);
+});
+
+test("PRIORS_PAY_X402 passes the caps the message's own words name, never a number from its URL", async () => {
+  const { runtime, calls } = fakeRuntime();
+  await run(payX402Action, runtime, "Pay https://merchant.example/pay1/borrow5.json at most 0.10");
+  assert.deepEqual(calls.map((c) => c.args), [{ url: "https://merchant.example/pay1/borrow5.json", max_price_usd: 0.1 }]);
+});
+
+test("the money actions answer only the operator's entities (PRIORS_OWNER_ENTITY_IDS): any other room member, or no setting, moves nothing", async () => {
+  const stranger = "22222222-2222-4222-8222-222222222222";
+  const text = "Pay https://example.test/x at most 1, borrow up to 25";
+  const { runtime, calls } = fakeRuntime();
+  assert.equal(await payX402Action.validate(runtime, msg(text, stranger)), false);
+  assert.equal(await repayAction.validate(runtime, msg("repay loan 50900", stranger)), false);
+  const a = await run(payX402Action, runtime, text, stranger);
+  const b = await run(repayAction, runtime, "repay loan 50900", stranger);
+  assert.deepEqual([a.out.success, b.out.success, calls.length], [false, false, 0]);
+  assert.match(a.said[0].text, /only for its operator/);
+  // no setting: refused for everyone, and the answer says what to set
+  const none = fakeRuntime({});
+  assert.equal(await payX402Action.validate(none.runtime, msg(text)), false);
+  const c = await run(payX402Action, none.runtime, text);
+  assert.deepEqual([c.out.success, none.calls.length], [false, 0]);
+  assert.match(c.said[0].text, /PRIORS_OWNER_ENTITY_IDS/);
+  // the operator, or anyone when the operator says "*"
+  assert.equal(await payX402Action.validate(runtime, msg(text)), true);
+  const any = fakeRuntime({ PRIORS_OWNER_ENTITY_IDS: "*" });
+  await run(payX402Action, any.runtime, text, stranger);
+  assert.equal(any.calls.length, 1);
+  // the reads stay open to every member: they move no money
+  assert.equal(await agentRecordAction.validate(none.runtime, msg("check agent #1234's record", stranger)), true);
 });

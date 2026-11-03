@@ -11,12 +11,14 @@
     "declaration": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
+    "allowJs": true,
     "lib": [
       "es2022",
       "dom"
     ]
   },
   "include": [
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "src/fence.js"
   ]
 }

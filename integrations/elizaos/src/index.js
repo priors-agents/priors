@@ -3,11 +3,35 @@
 // wallet is short, and repay a loan. Every amount and URL comes from the user's own message (parse.js); a payment
 // borrows only when the message names the most to borrow, or, with the agent's PRIORS_AUTO_BORROW_USD set, on its own
 // within that setting (a message saying not to borrow never does). A JSON body in the message is sent with POST (a
-// chat completion bought over x402). The caps, the host allowlist and the signing are @priors/mcp's own.
+// chat completion bought over x402). The caps, the host allowlist and the signing are @priors/mcp's own. The two money
+// actions answer only the operator's elizaOS entities (PRIORS_OWNER_ENTITY_IDS): in a room, a message is from whoever
+// spoke in it, not from the agent's operator (GHSA-p29w).
 import { priorsOf } from "./priors.js";
 import { urlOf, agentIdOf, loanIdOf, maxPriceOf, borrowOf, bodyOf } from "./parse.js";
 
 const textOf = (message) => String((message && message.content && message.content.text) || "");
+
+/** The entities whose messages may move the agent's money: PRIORS_OWNER_ENTITY_IDS (the agent's settings, else the
+ * process env), comma-separated elizaOS entity ids, or "*" for anyone (the operator's own choice); none when unset. */
+function operatorsOf(runtime) {
+  const v = runtime && typeof runtime.getSetting === "function" ? runtime.getSetting("PRIORS_OWNER_ENTITY_IDS") : undefined;
+  const raw = String(v ?? process.env.PRIORS_OWNER_ENTITY_IDS ?? "").trim();
+  return raw === "*" ? "*" : new Set(raw.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean));
+}
+/** Whether this message's sender may move the agent's money. */
+function fromOperator(runtime, message) {
+  const ops = operatorsOf(runtime);
+  if (ops === "*") return true;
+  const who = message && message.entityId ? String(message.entityId).toLowerCase() : "";
+  return !!who && ops.has(who);
+}
+/** The refusal a money action gives any other sender (nothing is sent). */
+function notOperator(runtime) {
+  const set = operatorsOf(runtime) !== "*" && operatorsOf(runtime).size > 0;
+  return set
+    ? "Nothing was paid or repaid: this agent moves money only for its operator (PRIORS_OWNER_ENTITY_IDS)."
+    : "Nothing was paid or repaid: this agent moves money only for its operator, and none is set. Set PRIORS_OWNER_ENTITY_IDS to the operator's elizaOS entity ids (comma-separated), or to * to let anyone in its rooms make it pay.";
+}
 
 /** Answer through the callback and as the action's result. */
 async function answer(callback, action, ok, text, data = {}) {
@@ -49,9 +73,10 @@ export const creditStatusAction = {
 export const payX402Action = {
   name: "PRIORS_PAY_X402",
   similes: ["PAY_X402", "PAY_HTTP_402", "BUY_API_CALL"],
-  description: "Pay an HTTP 402 (x402) URL in USDG from this agent's wallet, with GET, or with POST when the message gives a JSON body (a chat completion, for one). If the wallet is short, it borrows the gap from the agent's Priors line, when the message names the most to borrow, or, with the agent's PRIORS_AUTO_BORROW_USD set, on its own within that setting while Autopay covers the loan. The message must name the URL and the most to pay. Real money.",
-  validate: async (_runtime, message) => !!urlOf(textOf(message)) && /\bpay|buy|call|fetch/i.test(textOf(message)),
+  description: "Pay an HTTP 402 (x402) URL in USDG from this agent's wallet, with GET, or with POST when the message gives a JSON body (a chat completion, for one). If the wallet is short, it borrows the gap from the agent's Priors line, when the message names the most to borrow, or, with the agent's PRIORS_AUTO_BORROW_USD set, on its own within that setting while Autopay covers the loan. The message must name the URL and the most to pay, and come from the agent's operator (PRIORS_OWNER_ENTITY_IDS). Real money.",
+  validate: async (runtime, message) => fromOperator(runtime, message) && !!urlOf(textOf(message)) && /\bpay|buy|call|fetch/i.test(textOf(message)),
   handler: async (runtime, message, _state, _options, callback) => {
+    if (!fromOperator(runtime, message)) return answer(callback, "PRIORS_PAY_X402", false, notOperator(runtime), {});
     const text = textOf(message);
     const b = bodyOf(text);
     const rest = b ? text.replace(b.raw, " ") : text;
@@ -77,9 +102,10 @@ export const payX402Action = {
 export const repayAction = {
   name: "PRIORS_REPAY",
   similes: ["REPAY_LOAN", "PAY_BACK_LOAN"],
-  description: "Repay one of this agent's Priors loans in full (principal and fee) from its wallet. Needs the loan id in the message, as loan 50900. Real money.",
-  validate: async (_runtime, message) => loanIdOf(textOf(message)) !== null && /repay|pay (it )?back/i.test(textOf(message)),
+  description: "Repay one of this agent's Priors loans in full (principal and fee) from its wallet. Needs the loan id in the message, as loan 50900, from the agent's operator (PRIORS_OWNER_ENTITY_IDS). Real money.",
+  validate: async (runtime, message) => fromOperator(runtime, message) && loanIdOf(textOf(message)) !== null && /repay|pay (it )?back/i.test(textOf(message)),
   handler: async (runtime, message, _state, _options, callback) => {
+    if (!fromOperator(runtime, message)) return answer(callback, "PRIORS_REPAY", false, notOperator(runtime), {});
     const loan = loanIdOf(textOf(message));
     const r = await priorsOf(runtime).wallet("repay", { loan_id: loan });
     return answer(callback, "PRIORS_REPAY", r.ok, r.text, { loanId: loan });

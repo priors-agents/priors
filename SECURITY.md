@@ -58,6 +58,7 @@ the affected function and your own severity assessment. We cannot evaluate, prio
 | `src/SeatVaultV5.sol`, `src/v5/` | SeatVaultV5 (live since 2026-10-09, owner-only backing) and its nine linked libraries: books opened with the agent owner's own $PRIORS, the burn on default, the backing layers, fees, the exit queue, the breaker and the guardian pause |
 | `sdk/`, `bin/` | the SDK, the x402 float client and the CLIs, including anything that could sign or broadcast wrongly |
 | `packages/x402`, `packages/mcp` | the npm payer (`@priors/x402`) and the local MCP server (`@priors/mcp`), including anything that could pay, borrow or repay wrongly |
+| `integrations/agentkit`, `integrations/elizaos` | the runtime integrations on npm, the Coinbase AgentKit action provider (`@priors/agentkit`) and the elizaOS plugin (`@priors/plugin-elizaos`), on the client packages' terms (since 2026-11-03), including anything that could pay, borrow or repay wrongly |
 | The live v2 deployment | addresses are in `deployments/4663.v2.json` and the README's *Robinhood Chain* table |
 | `priors.trade` and `facilitator.priors.trade` | the site and the x402 facilitator (including its merchant sign-up at `x402.priors.trade/merchants`) are in scope even though their source is not in this repo |
 | `mcp.priors.trade` | the hosted MCP server: read-only and holds no key, so a way to make it sign, send, or leak a secret is a finding |
