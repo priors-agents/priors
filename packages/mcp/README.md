@@ -53,6 +53,8 @@ repaying.
 | `pay_gateway(service_id, input?, seller_url?, max_price_usd?, max_borrow_usd?, use_savings?)` | (since 0.10.0) only with `PRIORS_GATEWAY=on` (below): buy one call from a seller in Vantis' Keyring catalog with one USDG payment on Robinhood Chain through Keyring's gateway, which pays the seller and relays its answer; `pay_url`'s limits and its one payment per purchase apply | yes |
 | `join()` | (since 0.11.0) only with `PRIORS_JOIN=on`: register an ERC-8004 identity on Robinhood Chain for the wallet when it owns none (one transaction, its gas in the wallet's ETH; too little is refused before anything is signed) and answer its id and its routes to a first line; a wallet that owns one gets its id and nothing is sent; a registration whose answer is lost is never sent twice | yes |
 | `first_line(agent_id?)` | (since 0.12.0) only with `PRIORS_JOIN=on`: take the treasury's first line by invite for the identity the wallet owns, when it has no Priors record (after `join`), with no clone or Telegram: post the invite's 5 USDG bond from the wallet (USDG's approve, then InviteBond's deposit; it comes back by InviteBond's release, and a default forfeits it), get the invite from Priors' invite bot with one signature that proves ownership (only the bot's own start-page text, rebuilt here byte for byte, is signed), then sign the pool consent and redeem it (treasury v4's `firstLine`). Refused before anything is signed when the wallet does not own the identity, the identity already has a record (its state is the answer), the wallet lacks the ETH or the USDG, the bond would pass `PRIORS_MAX_BOND_TOTAL_USD` or `PRIORS_MAX_SPEND_DAY_USD`, or the bot says no invite is open now (its reason, with `line_options`' routes). A transaction whose answer is lost answers `TX_UNCONFIRMED`, and a second call never posts a second bond; needs ETH for gas | yes |
+| `line_key_status(agent_id?)` | only with `PRIORS_LINE_KEY=on` (below): the agent's spending key on LineKey: whether one is set and live (or stale: the agent changed hands; expired; not the line's delegate: each pays nothing), its operator and whether that is this wallet, its caps per payment and per trailing period, its expiry, each payment's loan term and most fee, the payees with their own caps and what each can be paid now, what was paid in the period and when room frees up, and the pool's smallest loan (5 USDG) | no (with `agent_id`) |
+| `line_key_spend(payee, amount_usdg, ref?, agent_id?, dry_run?)` | only with `PRIORS_LINE_KEY=on`: pay a payee the agent's owner listed on the key, from the agent's line, as a loan of the agent: the pool pays the payee directly, never through this wallet, which must be the key's operator. A `ref` (a job or an invoice: up to 31 bytes of text, or 32 in hex) is paid once per payee. Refused before anything is signed when the key's `check` refuses (each reason in words), the amount is under the pool's smallest loan or over its largest, the line refuses it in a simulation (no room, its backer's rule, a fee above the key's most), the wallet lacks the ETH for the gas, or a borrowing limit would pass. One transaction to LineKey, gas limit 900,000; the answer names the loan (from LineKey's `Paid` log), its fee and due date, to repay with `repay`; `dry_run` lists the call; needs ETH for gas | yes |
 
 Tools that move money state the amounts in their answer, are marked destructive for MCP clients, and their
 descriptions tell the assistant to confirm with you first. They run one at a time and each answers within 45 s, under an
@@ -105,6 +107,18 @@ The Priors stock vault lists PT-USDG: an agent's owner can post it behind a line
 (https://go.priors.trade/account#ac-pt) while the vault takes new PT-USDG lines, and `pt_position` says whether it does
 right now (it reads the vault's hold live). With `PRIORS_PT_ONESTEP=on`, `pt_buy_and_deposit` buys PT-USDG and deposits it
 behind the agent's line in one call. `PRIORS_PT=off` removes the PT-USDG tools.
+
+## Spending key (off by default)
+
+LineKey (`0x1090Df1B8A4B3F1e7D9aeDaA06fd29f56B9214fB` on Robinhood Chain; `docs/LINE-KEY.md` in the repository) is a
+spending key for an agent's Priors line. The agent's owner names it the line's delegate on the pool and sets its terms:
+an operator (a hot key, such as this server's wallet), caps per payment and per trailing period, the payees it may pay
+(each with an optional cap of its own), an expiry, the loan term and the most fee. The owner sets it up in Go mode's
+agent panel, Spending key (on the test site for now). With `PRIORS_LINE_KEY=on`, `line_key_status` reads the key, and
+`line_key_spend` pays a listed payee from this wallet when it is the key's operator: the pool lends the amount and pays
+it straight to the payee, so every payment is an ordinary loan of the agent, repaid like any other before its due date.
+The operator holds nothing for it and pays only its own gas, in ETH. The key's caps bound what a stolen operator key
+could pay, and only to the listed payees; this server's borrowing limits count each payment too.
 
 ## Trading agents (off by default)
 
@@ -323,11 +337,11 @@ may spend. Rows marked (0.8.0) take effect from that version; 0.7.x ignores them
 | `PRIORS_RPC` | `https://rpc.mainnet.chain.robinhood.com` | JSON-RPC endpoint (a private URL is redacted from every answer); (0.12.0) a signed transaction is sent to it once: never again after an HTTP 429, which then counts as a lost answer (reads are retried) |
 | `PRIORS_FACILITATOR` | `https://facilitator.priors.trade` | where `find_services` lists merchants |
 | `PRIORS_MAX_PRICE_USD` | `1.00` | ceiling on what `pay_url` (and `pay_gateway`) may be told to pay per call |
-| `PRIORS_MAX_BORROW_USD` | `25` | ceiling on `borrow` and on `pay_url`'s (and `pay_gateway`'s) `max_borrow_usd` |
+| `PRIORS_MAX_BORROW_USD` | `25` | ceiling on `borrow`, on `pay_url`'s (and `pay_gateway`'s) `max_borrow_usd`, and on one `line_key_spend` payment |
 | `PRIORS_MAX_SPEND_USD` | `5` | most `pay_url` (with `pay_gateway`) may sign in total while the server runs (counted when signed) |
-| `PRIORS_MAX_BORROW_TOTAL_USD` | `25` | most `borrow` and `pay_url` (and `pay_gateway`) may borrow in total while the server runs (a borrow sent whose answer was lost counts: it may have opened a loan) |
-| `PRIORS_MAX_SPEND_DAY_USD` | none | (0.8.0) most `pay_url` (with `pay_gateway`) may sign per UTC day for the agent and for its wallet, across restarts and every process sharing `PRIORS_STATE_DIR`; needs `PRIORS_AGENT_ID` and a state directory, or the server does not start; (0.12.0) `first_line`'s bond counts against it too |
-| `PRIORS_MAX_BORROW_DAY_USD` | none | (0.8.0) most `borrow`, `pay_url`, `pay_gateway` and `fund_base` may borrow per UTC day for the agent and for its wallet, the same way; `0` turns borrowing off |
+| `PRIORS_MAX_BORROW_TOTAL_USD` | `25` | most `borrow`, `pay_url` (and `pay_gateway`) and `line_key_spend` may borrow in total while the server runs (a borrow sent whose answer was lost counts: it may have opened a loan) |
+| `PRIORS_MAX_SPEND_DAY_USD` | none | (0.8.0) most `pay_url` (with `pay_gateway`) may sign per UTC day for the agent and for its wallet, across restarts and every process sharing `PRIORS_STATE_DIR`; needs `PRIORS_AGENT_ID` and a state directory, or the server does not start; (0.12.0) `first_line`'s bond counts against it too, and so does a `line_key_spend` payment |
+| `PRIORS_MAX_BORROW_DAY_USD` | none | (0.8.0) most `borrow`, `pay_url`, `pay_gateway`, `fund_base` and `line_key_spend` may borrow per UTC day for the agent and for its wallet, the same way; `0` turns borrowing off |
 | `PRIORS_PAY_HOSTS` | any public https host | (0.8.0) the only hosts `pay_url` (and `pay_gateway`, at `keyring.vantis.sh`) pays, comma-separated, matched exactly (no wildcard; a port only when named) |
 | `PRIORS_AUTO_BORROW_USD` | off | (0.15.0) auto-borrow: `pay_url` (and `pay_gateway`) borrow the gap on their own, up to this amount a call, when the call names no `max_borrow_usd` and the wallet and savings are short; only while this wallet's Autopay covers the new loan, for 14 days. Needs `PRIORS_MAX_BORROW_DAY_USD` above 0 and `PRIORS_PAY_HOSTS`, and at most `PRIORS_MAX_BORROW_USD` and `PRIORS_MAX_BORROW_TOTAL_USD`, or the server does not start. See "Inference on credit" below |
 | `PRIORS_ALLOW_LOCAL` | off | `1` lets `pay_url` reach `http://localhost` and private addresses (local testing only) |
@@ -344,6 +358,7 @@ may spend. Rows marked (0.8.0) take effect from that version; 0.7.x ignores them
 | `PRIORS_MAX_PT_USD` | `50` | most USDG one `pt_buy` may spend (sales and redemptions only turn the wallet's PT back into USDG) |
 | `PRIORS_MAX_PT_TOTAL_USD` | `200` | most USDG `pt_buy` and `pt_buy_and_deposit` may spend in total while the server runs, counted from the call's check (a buy whose swap was sent counts, even if its answer is lost; one whose swap did nothing counts nothing) |
 | `PRIORS_PT_ONESTEP` | off | `on`: `pt_buy_and_deposit` (PT-USDG bought and deposited behind the agent's line in one call), with the PT-USDG tools on |
+| `PRIORS_LINE_KEY` | off | `on`: `line_key_status` and `line_key_spend` (the agent's spending key, above); any value other than on or off stops the start |
 | `PRIORS_PAY_NETWORKS` | `eip155:4663` | networks `pay_url` pays on, comma-separated; add `eip155:8453` for USDC on Base (also needs `PRIORS_BRIDGE`). Robinhood Chain is always on |
 | `PRIORS_BRIDGE` | `off` | `across`: `fund_base` moves money out through Across (`relay`, the Relay route out, is not built yet); `return_to_robinhood` goes through Relay either way |
 | `PRIORS_BASE_RPC` | `https://mainnet.base.org` | Base JSON-RPC endpoint, read only (a private URL is redacted from every answer) |
@@ -373,7 +388,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.17.1"],
+      "args": ["-y", "@priors/mcp@0.18.0"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -395,7 +410,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.17.1"],
+      "args": ["-y", "@priors/mcp@0.18.0"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -408,7 +423,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 or, for your user only, from a macOS or Linux terminal:
 
 ```sh
- (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.17.1' priors-mcp ~/.config/priors/agent.key
+ (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.18.0' priors-mcp ~/.config/priors/agent.key
 ```
 
 It waits for the key without showing it (paste it, then Enter), saves it in a file only you can read, and gives Claude
@@ -489,7 +504,7 @@ to approve a borrow; this package, with the key, pays for APIs. With borrowing o
 approves each loan in Priors' Go mode. ElizaOS (`@elizaos/plugin-mcp`):
 
 ```ts
-"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.17.1"],
+"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.18.0"],
   env: { PRIORS_KEY_FILE: "/home/agent/.config/priors/agent-7311.key", PRIORS_AGENT_ID: "7311",
     PRIORS_MAX_BORROW_USD: "0", PRIORS_MAX_BORROW_DAY_USD: "0", PRIORS_MAX_SPEND_DAY_USD: "1", PRIORS_MAX_PRICE_USD: "0.10",
     PRIORS_PAY_HOSTS: "api.example.com" } }
@@ -501,7 +516,7 @@ OpenClaw (`mcp.servers`, JSON5) takes the same `command`, `args` and `env`; Herm
 mcp_servers:
   priors-wallet:
     command: npx
-    args: ["-y", "@priors/mcp@0.17.1"]
+    args: ["-y", "@priors/mcp@0.18.0"]
     env:
       PRIORS_KEY_FILE: /home/agent/.config/priors/agent-7311.key
       PRIORS_AGENT_ID: "7311"
@@ -528,7 +543,7 @@ key proves it is there: it signs the ERC-8004 identity registry's `AgentWalletSe
 agent's).
 
 ```sh
-PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.17.1 link-wallet --agent 7311
+PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.18.0 link-wallet --agent 7311
 ```
 
 It reads the registry's EIP-712 domain and refuses to sign for any other, takes the owner from the chain (`--owner`

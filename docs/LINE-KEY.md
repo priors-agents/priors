@@ -118,6 +118,29 @@ reversed after the transaction: the USDG is the payee's, the loan is the agent's
 - It had two independent reviews before the deploy, both by AI agents, the second adversarial, and its tests and fork
   rehearsals; there is no outside audit yet, so keep caps small.
 
+## Using it from the MCP
+
+`@priors/mcp` (npm, from 0.18.0) has two tools for a key, listed only with `PRIORS_LINE_KEY=on` (off by default):
+
+- `line_key_status(agent_id?)` reads an agent's key, no wallet needed: whether one is set and live, or why it pays
+  nothing (an earlier owner's, expired, the line naming another delegate); its operator, caps, period, expiry, loan term
+  and most fee; each payee with its own cap and what it can be paid now; what was paid in the trailing period, how many
+  payments, and when room frees up; and the pool's smallest and largest loan, since the line refuses a payment under its
+  5 USDG even where the key allows it.
+- `line_key_spend(payee, amount_usdg, ref?, agent_id?, dry_run?)` pays a listed payee from the server's wallet, which
+  must be the key's operator. Before anything is signed it asks the key's `check`, simulates the payment and words any
+  refusal, the pool's own included; `dry_run` lists the one call. It then sends one transaction to the key with a
+  900,000 gas limit, paid in ETH by the operator, and answers the loan from the key's own `Paid` log. A payment counts as
+  a borrow and as a day's spending under the server's limits (`PRIORS_MAX_BORROW_USD`, its session and day totals, and
+  `PRIORS_MAX_SPEND_DAY_USD`). The loan is the agent's, repaid as any other (`repay`).
+
+Their calls, rules and refusal codes are `packages/mcp/src/line-key-core.cjs`. Setting a key up stays the owner's: the
+two transactions above, from the wallet that owns the agent. A screen in Priors' Go mode that sets one up from a Priors
+account runs on Priors' test site only for now; nothing of it is public yet.
+
+Priors' work board takes a job paid through a key: a receipt holding the key's `Paid` to the worker's registry wallet,
+for at least the budget, with the pool's transfer of that amount beside it, from an agent the award's payer owns.
+
 ## The deployment
 
 LineKey was deployed through the CREATE2 factory (`0x4e59b44847b379578588920cA78FbF26c0B4956C`) with the salt

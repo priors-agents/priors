@@ -1,5 +1,22 @@
 # @priors/mcp changelog
 
+## 0.18.0 (2026-11-04)
+
+- `line_key_status` and `line_key_spend` (only with `PRIORS_LINE_KEY=on`, off by default; docs/LINE-KEY.md in the
+  repository): the agent's spending key on LineKey (`0x1090Df1B8A4B3F1e7D9aeDaA06fd29f56B9214fB`), which the agent's owner
+  names the delegate of its line, with an operator, caps per payment and per trailing period, payees with caps of their
+  own, an expiry, a loan term and a most fee. `line_key_status` reads it, no wallet needed: its state (live; stale when
+  the agent changed hands; expired; not the line's delegate), its terms, the payees with what each can be paid now, what
+  was paid in the period and when room frees up. `line_key_spend` pays a listed payee from this wallet when it is the
+  key's operator: one transaction to LineKey (gas limit 900,000, from the operator's own ETH), the pool lending the amount
+  as a loan of the agent, paid straight to the payee. Its address, call, state and refusal codes are Go mode's own
+  (`src/line-key-core.cjs`, the site's `web/line-key-core.js` byte for byte). Refused before anything is signed when the
+  key's `check` refuses (each reason in words), the amount is under the pool's smallest loan or over its largest, the line
+  refuses it in a simulation (the pool's own error read from `LineRefused`), the wallet lacks the gas, or a limit would
+  pass: a payment counts as a loan against `PRIORS_MAX_BORROW_USD`, `PRIORS_MAX_BORROW_TOTAL_USD` and
+  `PRIORS_MAX_BORROW_DAY_USD`, and as money out against `PRIORS_MAX_SPEND_DAY_USD`. The answer names the loan from
+  LineKey's own `Paid` log, with its fee and due date. Off, the server is as before, word for word.
+
 ## 0.17.1 (2026-11-04)
 
 On @priors/x402 0.8.7 (Autopay's savings approval and current plan, below).
