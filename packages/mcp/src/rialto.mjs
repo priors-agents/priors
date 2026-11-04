@@ -14,12 +14,19 @@
 //
 // The router is never taken from the quote alone: Rialto's Router Registry names the active one (feature 2, the
 // taker-submitted swap; `ownerOf(2)` reverts while the feature is paused), and checkQuote takes only a quote whose
-// transaction goes to it.
+// transaction goes to it. Nor is the transaction's data: the router's swap carries its own tokens, amount, minimum,
+// recipient and deadline, so checkQuote decodes it (checkSwap) and takes it only when it is the trade it checked, paid
+// to the taker, with at least the quote's minimum (GHSA-cqcw-9qjc-5qc7, reported by @hey-research-lab: @priors/mcp
+// 0.16.0 checked the JSON alone and sent the data as it came, so an answer could pay another address or drop the
+// minimum).
 //
 //   RIALTO_REGISTRY, RIALTO_FEATURE, REGISTRY_ABI   the registry that names Rialto's router (Rialto's API address is the
 //                       gate's alone, gas-worker/rialto.mjs: this file ships in @priors/mcp, which never calls Rialto)
 //   quoteQuery(o)       the /quote query for a trade (URLSearchParams string), in allowance settlement, with no fee
 //   checkQuote(body, o) a quote checked against the trade asked for -> frozen terms, or throws RialtoError with the reason
+//   decodeSwap(data)    the router's swap call read: { sellToken, buyToken, sellAmount, minBuyAmount, recipient, deadline,
+//                       feeRecipient, srcBps, dstBps }, or throws RialtoError
+//   checkSwap(data, o)  that call taken only as the trade checked (checkQuote's last check), or throws RialtoError
 //   chooseRoute(o)      "rialto" when its quote gives more of the bought token than the pinned pool's, else "pinned"
 //   rialtoCalls(terms)  the two calls: the exact approval of the sold token to the router, then Rialto's transaction
 //   wireTerms / readWire  terms to JSON (amounts as digits) and back, checked again
@@ -36,6 +43,23 @@ const APPROVE_ABI = parseAbi(["function approve(address spender, uint256 amount)
  *  transaction for the account it quoted (Rialto: quotes "can go stale quickly"). */
 export const MAX_SLIPPAGE_BPS = 200;
 export const QUOTE_TTL_S = 90;
+/**
+ * The router's swap in allowance settlement, as its calldata carries it. Rialto publishes no ABI for it; the layout is
+ * read from live transactions to the registry's router 0xb63cEcf4...b8b3 (whose code dispatches on the selector):
+ * Priors' own of 2026-11-02, an agent's buy and sale (0x595201f3...c7f9, 0xf0f99abb...8dda, scripts/fixtures/
+ * rialto-swaps-4663.json) and a Go mode buy (0xca316226...a6d5), each word read against its quote. The selector, then
+ * eleven static words and the offset of the route's actions, 0x180 (twelve words):
+ *   0 sellToken, 1 buyToken, 2 sellAmount, 3 minBuyAmount, 4 recipient, 5 deadline (unix s, about 5 minutes on),
+ *   6 feeRecipient, 7 srcBps, 8 dstBps, 9 referralCode, 10 quoteId, 11 0x180
+ * (words 4 to 10 in the order of the guide's RialtoSwap witness, which binds a Permit2 quote to the same fields). The
+ * minimum is the router's own check on what the recipient receives, after Rialto's fee: the guide's min_buy_amount is
+ * "encoded into tx.data". Any other selector or shape is refused, so a router upgrade that changes it falls back to the
+ * pinned pool until this is read again.
+ */
+export const SWAP_SELECTOR = "0x77963966";
+const SWAP_WORDS = 12, ACTIONS_AT = 0x180n;
+/** The latest deadline a quote's transaction may carry, from now (Rialto's is about 5 minutes on). */
+export const MAX_DEADLINE_S = 1800;
 
 export class RialtoError extends Error {
   constructor(message, o = {}) { super(message); this.name = "RialtoError"; Object.assign(this, o); }
@@ -73,10 +97,13 @@ export function quoteQuery({ sellToken, buyToken, sellAmount, sellDecimals, take
  * Permit2 payload, no signature offset), the transaction to `router` (the registry's ownerOf(2)) with no value, the
  * tokens and the raw sell amount asked, paid to `taker`, an output above 0 with a minimum within `slippageBps` of it,
  * no integrator fee, and the taker holding enough (issues.balance). An approval Rialto asks for (issues.allowance) must
- * be to the router itself. -> frozen terms: { quoteId, router, spender, data, sellToken, buyToken, sellAmount,
- * buyAmount, minBuyAmount, gas, feeBps, legs }. Throws RialtoError (balance: true when the taker holds too little).
+ * be to the router itself. Last, the transaction's data itself (checkSwap): the router's swap of those tokens and that
+ * amount, paid to `taker`, its minimum at least the quote's and not above its output, its deadline after `now` (unix s,
+ * the clock's by default) and at most MAX_DEADLINE_S on. -> frozen terms: { quoteId, router, spender, data, sellToken,
+ * buyToken, sellAmount, buyAmount, minBuyAmount (the transaction's own minimum, what the router enforces), gas, feeBps,
+ * legs }. Throws RialtoError (balance: true when the taker holds too little).
  */
-export function checkQuote(body, { sellToken, buyToken, sellAmount, taker, router, slippageBps }) {
+export function checkQuote(body, { sellToken, buyToken, sellAmount, taker, router, slippageBps, now = Math.floor(Date.now() / 1000) }) {
   if (!body || typeof body !== "object") fail("Rialto's quote: not a quote");
   const want = { sell: addr(sellToken, "sell token"), buy: addr(buyToken, "buy token"), taker: addr(taker, "taker"), router: addr(router, "router") };
   const amount = big(sellAmount, "sell amount"), slip = bps(slippageBps);
@@ -102,13 +129,48 @@ export function checkQuote(body, { sellToken, buyToken, sellAmount, taker, route
   if (issues.allowance != null && !same(issues.allowance.spender, want.router)) fail("Rialto's quote: an approval to another spender");
   if (typeof body.quote_id !== "string" || !/^[0-9a-fA-F-]{8,64}$/.test(body.quote_id)) fail("Rialto's quote: no quote id");
   const feeBps = Number(body.platform_fee && body.platform_fee.total_bps);
+  const swap = checkSwap(tx.data, { sellToken: want.sell, buyToken: want.buy, sellAmount: amount, taker: want.taker, minBuyAmount, buyAmount, now });
   return Object.freeze({
     quoteId: body.quote_id, router: want.router, spender: want.router, data: tx.data.toLowerCase(),
-    sellToken: want.sell, buyToken: want.buy, taker: want.taker, sellAmount: amount, buyAmount, minBuyAmount,
+    sellToken: want.sell, buyToken: want.buy, taker: want.taker, sellAmount: amount, buyAmount, minBuyAmount: swap.minBuyAmount,
     gas: Number.isSafeInteger(tx.estimated_gas) ? tx.estimated_gas : null,
     feeBps: Number.isFinite(feeBps) ? feeBps : null,
     legs: Array.isArray(body.route && body.route.legs) ? body.route.legs.length : null,
   });
+}
+
+/** The router's swap call `data` read (SWAP_SELECTOR's layout, above): { sellToken, buyToken, sellAmount, minBuyAmount,
+ *  recipient, deadline (bigints for the amounts and the deadline), feeRecipient, srcBps, dstBps }. Throws RialtoError
+ *  for any other call: another selector, a head that is not twelve whole words with the actions at 0x180, an address
+ *  word with its upper bytes set, a fee word over uint16. */
+export function decodeSwap(data) {
+  if (typeof data !== "string" || !HEX.test(data)) fail("Rialto's quote: no transaction data");
+  const d = data.toLowerCase(), words = (d.length - 10) / 64;
+  if (d.slice(0, 10) !== SWAP_SELECTOR || !Number.isInteger(words) || words <= SWAP_WORDS) fail("Rialto's quote: its transaction is not Rialto's swap");
+  const word = (i) => d.slice(10 + 64 * i, 74 + 64 * i), uint = (i) => BigInt("0x" + word(i));
+  const address = (i, what) => (/^0{24}/.test(word(i)) ? getAddress("0x" + word(i).slice(24)) : fail(`Rialto's quote: its transaction's ${what} is not an address`));
+  if (uint(11) !== ACTIONS_AT) fail("Rialto's quote: its transaction is not Rialto's swap");
+  const bpsOf = (i) => (uint(i) <= 0xffffn ? Number(uint(i)) : fail("Rialto's quote: its transaction is not Rialto's swap"));
+  return Object.freeze({
+    sellToken: address(0, "sell token"), buyToken: address(1, "buy token"), sellAmount: uint(2), minBuyAmount: uint(3),
+    recipient: address(4, "recipient"), deadline: uint(5), feeRecipient: address(6, "fee recipient"), srcBps: bpsOf(7), dstBps: bpsOf(8),
+  });
+}
+
+/** The router's swap call `data` taken only as the trade checked: `sellAmount` of `sellToken` for `buyToken`, paid to
+ *  `taker`, a minimum at least `minBuyAmount` (and not above `buyAmount` when given), a deadline after `now` (unix s)
+ *  and at most MAX_DEADLINE_S after it. -> decodeSwap's fields, or throws RialtoError with the reason. */
+export function checkSwap(data, { sellToken, buyToken, sellAmount, taker, minBuyAmount, buyAmount = null, now }) {
+  const s = decodeSwap(data);
+  if (!same(s.sellToken, sellToken) || !same(s.buyToken, buyToken)) fail("Rialto's quote: its transaction swaps other tokens");
+  if (s.sellAmount !== big(sellAmount, "sell amount")) fail("Rialto's quote: its transaction sells another amount");
+  if (!same(s.recipient, taker)) fail("Rialto's quote: its transaction pays another address");
+  if (s.minBuyAmount < big(minBuyAmount, "minimum")) fail("Rialto's quote: its transaction's minimum is below the quote's");
+  if (buyAmount != null && s.minBuyAmount > big(buyAmount, "buy amount")) fail("Rialto's quote: its transaction's minimum is above its output");
+  const t = big(now, "now");
+  if (s.deadline <= t) fail("Rialto's quote: its transaction's deadline has passed");
+  if (s.deadline > t + BigInt(MAX_DEADLINE_S)) fail("Rialto's quote: its transaction's deadline is too far off");
+  return s;
 }
 
 /** The route a trade takes: "rialto" only when Rialto's terms give strictly more of the bought token than the pinned
@@ -122,7 +184,7 @@ export function chooseRoute({ pinnedOut = null, rialto = null }) {
 }
 
 /** The two calls of a Rialto trade from the account: the sold token approved to the router for exactly the amount, then
- *  Rialto's transaction, unchanged. */
+ *  Rialto's transaction, unchanged (checkQuote took it only as the router's swap of these terms, checkSwap). */
 export function rialtoCalls(terms) {
   return [
     { to: terms.sellToken, data: encodeFunctionData({ abi: APPROVE_ABI, functionName: "approve", args: [terms.spender, terms.sellAmount] }), value: 0n },

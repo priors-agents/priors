@@ -58,6 +58,10 @@
 //                             take (workAgentKey; GET /api/work?agent=<id>: a worker's way back to an awarded request).
 //                             A listed row is a stored row plus `stage` (WORK_LISTED_KEYS), which says what a stored row
 //                             cannot (a cancelled request); the answer works out `state` and `act` from it and drops it.
+//   work:v1:progress          { v: 1, at, requests: [<a listed row>] }: the requests in progress, awarded or delivered
+//                             and not past the deadline plus WORK_RULES.graceS, newest first (WORK_RULES.openMax at
+//                             most), then the 10 last paid in the last 30 days (GET /api/work?show=progress: the board's
+//                             Jobs tab, beside the open list). Read by the board's own route alone; no count is kept.
 //
 // A line of work:v1:offers also carries `wallet`, the registry wallet its offer was checked against (lower case), so the
 // hub can leave out an offer whose agent has since lost or changed its registry wallet (a transfer clears it). A renter's
@@ -302,6 +306,7 @@ export const WORK_NEXT = Object.freeze({
 
 export const WORK_OPEN_KEY = "work:v1:open";
 export const WORK_OFFERS_KEY = "work:v1:offers";
+export const WORK_PROGRESS_KEY = "work:v1:progress";
 const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
 const AGENT_ID = /^(?:0|[1-9][0-9]{0,11})$/;
 /** A request's key, work:v1:req:<id> (the id in lower case). */

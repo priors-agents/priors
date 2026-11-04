@@ -42,7 +42,9 @@
 // passed every check above, the same trade is quoted by Rialto (docs.rialto.xyz) through Priors' gas gate
 // (priors_stockQuote at STOCK_QUOTE_URL, no key: Rialto's key never leaves the gate), and its answer is checked here
 // again (sdk/rialto.mjs readWire, then checkQuote against the trade asked, with the router that Rialto's Router Registry
-// names on chain at the plan's block, never the one the answer names), its output and its minimum within Chainlink's 5%,
+// names on chain at the plan's block, never the one the answer names; its transaction's data decoded and held to those
+// terms, paid to this account, with at least their minimum and a deadline after the plan's block, sdk/rialto.mjs
+// checkSwap, GHSA-cqcw-9qjc-5qc7), its output and its minimum within Chainlink's 5%,
 // its minimum never under the pinned trade's. Rialto's route is taken only when it gives strictly more of the token
 // bought than the pinned pool (chooseRoute): the sold token approved to that router for exactly the amount, then Rialto's
 // transaction unchanged, its gas estimated after the approval (a failing estimate stops the trade, the approval named).
@@ -335,7 +337,8 @@ async function askGate({ url = STOCK_QUOTE_URL, fetch: f = globalThis.fetch, tim
  * out, minOut, feeBps, legs, gas, expiresAt }, or null when there is none), pinned ({ out, minOut, label }: the pinned
  * pool's quote) }. Taking Rialto's route, the plan's out, minOut, label, spender, allowance, deviationBps, valueUsdg and
  * calls are Rialto's: the exact approval of the sold token to the registry's router (left out when its allowance already
- * is exactly the amount), then Rialto's transaction. Never throws for Rialto: whatever fails keeps the pinned trade.
+ * is exactly the amount), then Rialto's transaction. minOut is the minimum its transaction carries (the router's own
+ * check), and a sale's valueUsdg is that minimum too. Never throws for Rialto: whatever fails keeps the pinned trade.
  */
 export async function rialtoRoute(client, p, o = {}, conf = ZAP) {
   const buy = p.side === "buy";
@@ -366,7 +369,7 @@ export async function rialtoRoute(client, p, o = {}, conf = ZAP) {
       issues: { allowance: { spender: wire.spender }, balance: null },
       sell_token: wire.sellToken, buy_token: wire.buyToken, sell_amount: String(wire.sellAmount), buy_amount: String(wire.buyAmount),
       min_buy_amount: String(wire.minBuyAmount), taker: got.rialto.taker ?? p.account, platform_fee: { total_bps: wire.feeBps },
-    }, { sellToken, buyToken, sellAmount: p.amountIn, taker: p.account, router, slippageBps: p.slippageBps });
+    }, { sellToken, buyToken, sellAmount: p.amountIn, taker: p.account, router, slippageBps: p.slippageBps, ...(Number.isSafeInteger(p.at) ? { now: p.at } : {}) });
   } catch (e) { return keep(words(e?.message || e)); }
   const rialto = { quoteId: t.quoteId, router, out: t.buyAmount, minOut: t.minBuyAmount, feeBps: t.feeBps, legs: wire.legs, gas: t.gas, expiresAt: Math.floor(Date.now() / 1000) + ttl };
   const q = (x) => `${fmt(x, outD)} ${outN}`;
@@ -391,7 +394,7 @@ export async function rialtoRoute(client, p, o = {}, conf = ZAP) {
   ];
   return {
     ...p, route: "rialto", rialtoWhy: null, rialto, pinned, label: "Rialto's router", spender: router, out: t.buyAmount, minOut: t.minBuyAmount,
-    impactBps: null, deviationBps: off(t.buyAmount), valueUsdg: buy ? p.amountIn : t.buyAmount, allowance, calls,
+    impactBps: null, deviationBps: off(t.buyAmount), valueUsdg: buy ? p.amountIn : t.minBuyAmount, allowance, calls,
   };
 }
 

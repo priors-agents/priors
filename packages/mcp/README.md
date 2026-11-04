@@ -47,6 +47,7 @@ repaying.
 | `pt_buy(amount_usdg, slippage_bps?, dry_run?)` | buy PT-USDG with the wallet's USDG through Pendle's router (at most `PRIORS_MAX_PT_USD` per call, `PRIORS_MAX_PT_TOTAL_USD` per run); `dry_run` lists the calls; needs ETH for gas | yes |
 | `pt_sell(amount_pt \| "all", slippage_bps?, dry_run?)` | sell the wallet's PT-USDG for USDG at the market, before maturity; needs ETH for gas | yes |
 | `pt_redeem(amount_pt \| "all", slippage_bps?, dry_run?)` | redeem the wallet's PT-USDG for USDG 1:1, from maturity (2027-03-25) on; needs ETH for gas | yes |
+| `pt_buy_and_deposit(amount_usdg, agent_id?, include_held?, slippage_bps?, dry_run?)` | only with `PRIORS_PT_ONESTEP=on` (below): buy PT-USDG with the wallet's USDG and deposit it, with the PT-USDG the wallet already holds (unless `include_held` is false), behind the agent's line on the Priors stock vault, which opens the line, in one call: four transactions (the exact USDG approval, the buy with its minimum out, the exact PT-USDG approval to the vault, the vault's open with this wallet's pool consent). The wallet must own the agent, and the agent must have no open stock line; checked before the first is signed. `pt_buy`'s caps apply; `dry_run` lists the calls; needs ETH for gas | yes |
 | `fund_base(amount_usd, max_borrow_usd?)` | only with Base on (below): move USDG to USDC in the same address on Base through Across, keeping back what Autopay and signed payments need, borrowing the gap only with `max_borrow_usd`; needs ETH for gas | yes |
 | `return_to_robinhood(amount_usd \| "all")` | only with Base on: move USDC from the Base float back to USDG on Robinhood Chain through Relay, one signature and no gas on Base; keeps back what signed Base payments need | yes |
 | `pay_gateway(service_id, input?, seller_url?, max_price_usd?, max_borrow_usd?, use_savings?)` | (since 0.10.0) only with `PRIORS_GATEWAY=on` (below): buy one call from a seller in Vantis' Keyring catalog with one USDG payment on Robinhood Chain through Keyring's gateway, which pays the seller and relays its answer; `pay_url`'s limits and its one payment per purchase apply | yes |
@@ -102,7 +103,8 @@ trade may need a wider margin.
 
 The Priors stock vault lists PT-USDG: an agent's owner can post it behind a line in Go mode
 (https://go.priors.trade/account#ac-pt) while the vault takes new PT-USDG lines, and `pt_position` says whether it does
-right now (it reads the vault's hold live). `PRIORS_PT=off` removes the five tools.
+right now (it reads the vault's hold live). With `PRIORS_PT_ONESTEP=on`, `pt_buy_and_deposit` buys PT-USDG and deposits it
+behind the agent's line in one call. `PRIORS_PT=off` removes the PT-USDG tools.
 
 ## Trading agents (off by default)
 
@@ -337,7 +339,8 @@ may spend. Rows marked (0.8.0) take effect from that version; 0.7.x ignores them
 | `PRIORS_AUTOPAY_RESERVE` | on | with Autopay on, `pay_url` keeps back what loans whose window opens in the next 24 h will pull, and says so when a payment would cut into it; `off` turns that off |
 | `PRIORS_PT` | on | `off` (or `false`, `0`, `no`) removes the PT-USDG tools |
 | `PRIORS_MAX_PT_USD` | `50` | most USDG one `pt_buy` may spend (sales and redemptions only turn the wallet's PT back into USDG) |
-| `PRIORS_MAX_PT_TOTAL_USD` | `200` | most USDG `pt_buy` may spend in total while the server runs (a buy whose transaction was sent counts, even if its answer is lost) |
+| `PRIORS_MAX_PT_TOTAL_USD` | `200` | most USDG `pt_buy` and `pt_buy_and_deposit` may spend in total while the server runs (a buy whose transaction was sent counts, even if its answer is lost) |
+| `PRIORS_PT_ONESTEP` | off | `on`: `pt_buy_and_deposit` (PT-USDG bought and deposited behind the agent's line in one call), with the PT-USDG tools on |
 | `PRIORS_PAY_NETWORKS` | `eip155:4663` | networks `pay_url` pays on, comma-separated; add `eip155:8453` for USDC on Base (also needs `PRIORS_BRIDGE`). Robinhood Chain is always on |
 | `PRIORS_BRIDGE` | `off` | `across`: `fund_base` moves money out through Across (`relay`, the Relay route out, is not built yet); `return_to_robinhood` goes through Relay either way |
 | `PRIORS_BASE_RPC` | `https://mainnet.base.org` | Base JSON-RPC endpoint, read only (a private URL is redacted from every answer) |
@@ -367,7 +370,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.16.0"],
+      "args": ["-y", "@priors/mcp@0.17.0"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -389,7 +392,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.16.0"],
+      "args": ["-y", "@priors/mcp@0.17.0"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -402,7 +405,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 or, for your user only, from a macOS or Linux terminal:
 
 ```sh
- (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.16.0' priors-mcp ~/.config/priors/agent.key
+ (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.17.0' priors-mcp ~/.config/priors/agent.key
 ```
 
 It waits for the key without showing it (paste it, then Enter), saves it in a file only you can read, and gives Claude
@@ -483,7 +486,7 @@ to approve a borrow; this package, with the key, pays for APIs. With borrowing o
 approves each loan in Priors' Go mode. ElizaOS (`@elizaos/plugin-mcp`):
 
 ```ts
-"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.16.0"],
+"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.17.0"],
   env: { PRIORS_KEY_FILE: "/home/agent/.config/priors/agent-7311.key", PRIORS_AGENT_ID: "7311",
     PRIORS_MAX_BORROW_USD: "0", PRIORS_MAX_BORROW_DAY_USD: "0", PRIORS_MAX_SPEND_DAY_USD: "1", PRIORS_MAX_PRICE_USD: "0.10",
     PRIORS_PAY_HOSTS: "api.example.com" } }
@@ -495,7 +498,7 @@ OpenClaw (`mcp.servers`, JSON5) takes the same `command`, `args` and `env`; Herm
 mcp_servers:
   priors-wallet:
     command: npx
-    args: ["-y", "@priors/mcp@0.16.0"]
+    args: ["-y", "@priors/mcp@0.17.0"]
     env:
       PRIORS_KEY_FILE: /home/agent/.config/priors/agent-7311.key
       PRIORS_AGENT_ID: "7311"
@@ -522,7 +525,7 @@ key proves it is there: it signs the ERC-8004 identity registry's `AgentWalletSe
 agent's).
 
 ```sh
-PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.16.0 link-wallet --agent 7311
+PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.17.0 link-wallet --agent 7311
 ```
 
 It reads the registry's EIP-712 domain and refuses to sign for any other, takes the owner from the chain (`--owner`

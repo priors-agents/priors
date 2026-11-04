@@ -1,5 +1,29 @@
 # @priors/mcp changelog
 
+## 0.17.0 (2026-11-04)
+
+On @priors/x402 0.8.6, as 0.16.0.
+
+- **Rialto's route checks the quote's transaction, not only its JSON** (GHSA-cqcw-9qjc-5qc7, reported by
+  @hey-research-lab; only with `PRIORS_STOCKS` and `PRIORS_RIALTO=on`, both off by default). 0.16.0 checked the gate's
+  JSON terms (this wallet as taker, the tokens, the amount, a minimum within the slippage), then sent the quote's
+  transaction data as it came, and the router's swap carries its own recipient and minimum: an answer whose JSON was
+  honest and whose data was not could pay up to the amount sold to another address, or fill at any price. The data is
+  now decoded (`src/rialto.mjs` `decodeSwap`, `checkSwap`, `sdk/rialto.mjs` in the repository) and Rialto's route is
+  taken only when it is the router's swap of the tokens and the amount checked, paid to this wallet, with at least the
+  quote's minimum and a deadline at most 30 minutes after the plan's block. Anything else keeps the pinned trade, and
+  the answer says why. The minimum shown and sent is the transaction's own, and a sale's value is counted from it. Priors'
+  gas gate and Go mode hold Rialto's quotes to the same check.
+- `pt_buy_and_deposit` (only with `PRIORS_PT_ONESTEP=on`, off by default; docs/PT-USDG.md in the repository, "One step:
+  buy and back a line"): PT-USDG bought with the wallet's USDG and deposited, with the PT-USDG the wallet already holds,
+  behind the agent's line on the Priors stock vault in one call. Its plan and its four calls are Go mode's own
+  (`src/pt-onestep-core.cjs`, the site's `web/pt-onestep-core.js` byte for byte): the exact USDG approval to Pendle's
+  router, the buy with its minimum out from the oracle's spot rate less the slippage (at most 3%), the exact PT-USDG
+  approval to the vault, then the vault's open with this wallet's pool consent, checked against the pool's
+  `consentDigest` before it is signed. Refused before anything is signed when the wallet does not own the agent, the agent
+  has an open line, the vault takes no new PT-USDG line, the line would be under the pool's smallest, or over a cap.
+  `pt_buy`'s caps count it. Off, the server is as before, word for word.
+
 ## 0.16.0 (2026-11-02)
 
 On @priors/x402 0.8.6 (Autopay's `OWNER_IS_WALLET`, below).
