@@ -25,7 +25,8 @@ export interface AutopayStatus {
   /** The declared wallet is the agent's owner itself: AutoRepay pays that address under the owner plan only, so no
    *  wallet plan of it is ever `current` (and autopayOn refuses it, PayError OWNER_IS_WALLET). */
   ownerIsWallet: boolean;
-  /** `stale`: on, but set before the agent's owner or wallet changed (enroll again); `current` excludes it. */
+  /** `stale`: on, but set before the agent's owner or wallet changed (enroll again); `current` excludes it, and a
+   *  wallet the registry does not declare (AutoRepayV2 pays the declared wallet only). */
   plan: { on: boolean; cap: bigint; owner: string; useSavings: boolean; late: boolean; epoch: number; current: boolean; stale: boolean };
   held: boolean; paused: { until: number } | null;
   allowance: { usdg: bigint; shares: bigint }; balance: bigint; budget: bigint;

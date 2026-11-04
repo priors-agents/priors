@@ -2032,8 +2032,21 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       return [`${p.account}${wallet && p.account === wallet.address ? " (this server's wallet)" : ""} holds ${nf(p.balanceText)} PT-USDG${p.balance > 0n ? `, worth ${nf(p.valueText)} USDG now and ${nf(p.atMaturityText)} USDG at maturity` : ""}.`, termsLine(p), ...otherLines(p), listingLine(p.listing)].join("\n");
     });
 
-    /** One trade from the configured wallet: the SDK's calls, sent in order (each simulated, then waited for). */
-    async function ptTrade(kind, amount, slippage_bps, dry_run, market) {
+    // A PT buy leaves the USDG that payments signed and not settled yet still need (heldForPayments, kept back as save,
+    // stock_buy, first_line and the market tools keep it): a buy never spends it from under them (GHSA-hx6h-j9hm-9gvr).
+    const heldWords = (held, have) => `${usd(held)} of the wallet's USDG is held for signed payments that have not settled yet; at most ${usd(have > held ? have - held : 0n)} can buy PT-USDG now. Nothing was signed or sent.`;
+    const USDG_BAL = new ethers.Interface(["function balanceOf(address) view returns (uint256)"]);
+    async function usdgHeld(account) {
+      try { return USDG_BAL.decodeFunctionResult("balanceOf", await withinTime(provider.call({ to: P.PT_USDG.usdg, data: USDG_BAL.encodeFunctionData("balanceOf", [account]) }), requestTimeoutMs))[0]; } catch (e) {
+        throw new ToolError(`the wallet's USDG could not be read just now (${explain(e)}), so what signed payments still need of it can't be kept back. Nothing was signed or sent.`);
+      }
+    }
+    // the buy did nothing: said in the answer of a buy whose steps stopped after its approval
+    const boughtNothing = (units) => ` The buy did nothing: its ${usd(units)} does not count against PRIORS_MAX_PT_TOTAL_USD.`;
+
+    /** One trade from the configured wallet: the SDK's calls, sent in order (each simulated, then waited for). `count` is
+     *  serial's: a buy's amount counts against PRIORS_MAX_PT_TOTAL_USD from its check until the call ends. */
+    async function ptTrade(kind, amount, slippage_bps, dry_run, market, count) {
       const signer = needWallet(`pt_${kind}`);
       let units = null;
       if (kind === "buy") {
@@ -2041,12 +2054,22 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
         if (units === 0n) throw new ToolError("amount_usdg must be above zero");
         if (units > maxPtCeiling) throw new ToolError(`amount_usdg ${X.formatUsdg(units)} is above this server's ceiling of ${usd(maxPtCeiling)} per buy (PRIORS_MAX_PT_USD).`);
         if (!dry_run && session.ptBought + units > ptTotalCap) throw new ToolError(`this would bring what pt_buy spent in this session to ${usd(session.ptBought + units)}, above ${usd(ptTotalCap)} (PRIORS_MAX_PT_TOTAL_USD).`);
+        // what it may spend, from its check with no await between (GHSA-cq9v) until it ends: the keep back below reads the
+        // chain, and a call made once the hold of one stalled there had ended would pass the cap beside it (GHSA-hx6h)
+        if (!dry_run) count("ptBought", units);
       }
       const o = { account: signer.address, amount: units ?? amount, slippageBps: slippage_bps, ...(market ? { market } : {}) };
       if (dry_run) {
         let b;
         try { b = await pt.trade(kind, o); } catch (e) { throw asked(e); }
         return [termsLine(b.quote), `Nothing was sent. From ${b.account}, ${b.calls.length} call${b.calls.length > 1 ? "s" : ""} in order:`, callsText(b), minLine(b), ...b.warnings.map((w) => `Note: ${w}.`)].join("\n");
+      }
+      if (units !== null) {
+        const held = heldForPayments();
+        if (held > 0n) {
+          const have = await usdgHeld(signer.address);
+          if (have < units + held) throw new ToolError(heldWords(held, have));
+        }
       }
       // what left the wallet is counted even when the answer is lost: a send that started may have landed (GHSA-549m:
       // it was given back as "nothing sent" with the bare transport error). The SDK signs each step here first, so it
@@ -2063,10 +2086,12 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
         const was = (list) => `${list.length} transaction${list.length > 1 ? "s were" : " was"} sent (${list.join(", ")})`;
         if (e?.unconfirmed) throw new ToolError(`${done.length ? `${was(done)}, then another` : "A transaction"} may have been sent: its answer was lost (${why}).${units !== null ? ` Its ${usd(units)} stays counted against PRIORS_MAX_PT_TOTAL_USD.` : ""} Check pt_position and wallet_balance before trying again.`);
         // not unconfirmed: the steps that went through are the SDK's `hashes` (a refused or reverted step did nothing);
-        // an error before any step left carries none
+        // an error before any step left carries none. The step that failed is the last that ran (sendCalls sends none
+        // after it), and a buy's USDG moves only in its last step, the router's swap: a buy that failed spent nothing,
+        // whatever approval went before it, and counts nothing (GHSA-hx6h-j9hm-9gvr)
         const went = Array.isArray(e?.hashes) ? done : sent.filter(Boolean);
-        if (went.length === 0 && units !== null) session.ptBought -= units;
-        if (went.length) throw new ToolError(`${was(went)}, then: ${why}. Check pt_position and wallet_balance before trying again.`);
+        if (units !== null) session.ptBought -= units;
+        if (went.length) throw new ToolError(`${was(went)}, then: ${why}.${units !== null ? boughtNothing(units) : ""} Check pt_position and wallet_balance before trying again.`);
         throw asked(e);
       }
       const done = kind === "buy" ? `Bought about ${nf(r.quote.expectedOutText)} PT-USDG (at least ${nf(r.quote.minOutText)}) with ${usd(units)}`
@@ -2080,7 +2105,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       description: `Buy PT-USDG (Pendle's principal token for USDG, redeemable 1:1 for USDG on ${P.PT_USDG.maturity.slice(0, 10)}) with the configured wallet's USDG, through Pendle's router: an approval of exactly that USDG, then the swap, paying the PT-USDG to this wallet with a minimum out. Held to maturity it pays a fixed amount of USDG; sold earlier, it gets the market's rate then, which can be lower. Moves real money: quote it (pt_quote), state the amount and what it buys to the user and get their go-ahead first; dry_run: true lists the calls without sending. Needs ETH for gas.`,
       inputSchema: { amount_usdg: z.number().positive().describe("USDG to spend, in US dollars (required, no default)."), slippage_bps: slippage, dry_run: dryRun },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    }, serial(async ({ amount_usdg, slippage_bps, dry_run }) => ptTrade("buy", amount_usdg, slippage_bps, dry_run)));
+    }, serial(async ({ amount_usdg, slippage_bps, dry_run }, _deadline, count) => ptTrade("buy", amount_usdg, slippage_bps, dry_run, undefined, count)));
 
     tool("pt_sell", {
       title: "Sell PT-USDG for USDG",
@@ -2107,8 +2132,9 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     // Refused before anything is signed: no wallet, or one that does not own the agent (the consent is its owner's); an
     // agent with an open or written-off position, defaulted, a root, or lent to by another backer; a default on this
     // wallet; the vault not taking new PT-USDG lines (ptListing); a line under the pool's smallest, over the shared cap's
-    // room or the week's; less USDG than the buy; pt_buy's caps (PRIORS_MAX_PT_USD, PRIORS_MAX_PT_TOTAL_USD, the same
-    // session total); a plan the core refuses. Four transactions are not one operation: the open refused after the buy
+    // room or the week's; less USDG than the buy, or than the buy and what payments signed and not settled yet still
+    // need; pt_buy's caps (PRIORS_MAX_PT_USD, PRIORS_MAX_PT_TOTAL_USD, the same session total, counted from the check);
+    // a plan the core refuses. Four transactions are not one operation: the open refused after the buy
     // leaves the PT-USDG in this wallet, and the answer says so.
     if (ptOnestepOn) {
       const ONE = createRequire(import.meta.url)("./pt-onestep-core.cjs");
@@ -2147,13 +2173,17 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
           dry_run: dryRun,
         },
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-      }, serial(async ({ amount_usdg, agent_id, include_held, slippage_bps, dry_run }) => {
+      }, serial(async ({ amount_usdg, agent_id, include_held, slippage_bps, dry_run }, _deadline, count) => {
         const signer = needWallet("pt_buy_and_deposit");
         const units = dollars(amount_usdg, "amount_usdg");
         const nothing = "Nothing was signed or sent.";
         if (units === 0n) throw new ToolError(`amount_usdg must be above zero. ${nothing}`);
         if (units > maxPtCeiling) throw new ToolError(`amount_usdg ${X.formatUsdg(units)} is above this server's ceiling of ${usd(maxPtCeiling)} per buy (PRIORS_MAX_PT_USD). ${nothing}`);
         if (!dry_run && session.ptBought + units > ptTotalCap) throw new ToolError(`this would bring what pt_buy and pt_buy_and_deposit spent in this session to ${usd(session.ptBought + units)}, above ${usd(ptTotalCap)} (PRIORS_MAX_PT_TOTAL_USD). ${nothing}`);
+        // what it may spend, from its check with no await between (GHSA-cq9v) until it ends: counted only at its send, after
+        // the reads and the consent below, a call made once the hold of one stalled in them had ended passed the cap beside
+        // it (GHSA-hx6h-j9hm-9gvr)
+        if (!dry_run) count("ptBought", units);
         const id = await resolveAgent(agent_id);
         const me = signer.address;
         let r;
@@ -2171,6 +2201,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
         if (r.agent.sponsor !== 0n && r.agent.sponsor !== r.root && r.agent.activeLoans !== 0n) throw new ToolError(`Agent #${id} has an open loan with another backer: repay it first. ${nothing}`);
         if (!r.listing || !r.listing.backsLines) throw new ToolError(`${P.ptListingText(r.listing, { cap: (u) => `${X.formatUsdg(u)} USDG`, where: ptLink(GO_APP_URL) })} ${nothing}`);
         if (r.usdgHave < units) throw new ToolError(`${me} holds ${X.formatUsdg(r.usdgHave)} USDG, less than the ${X.formatUsdg(units)} this buy takes. ${nothing}`);
+        if (!dry_run) { const held = heldForPayments(); if (held > 0n && r.usdgHave < units + held) throw new ToolError(heldWords(held, r.usdgHave)); }
         let p;
         try { p = ONE.plan({ conf, usdgIn: units, rate: r.rate, rateAt: r.t, now: r.t, slippageBps: slippage_bps, held: r.ptHave, includeHeld: include_held !== false }); } catch (e) { throw new ToolError(`${PLAN_WORDS[e.code] || clean(e.message, 200)}. ${nothing}`); }
         // the line the vault would open on that deposit, and what it would refuse of it
@@ -2214,8 +2245,11 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
           const was = (list) => `${list.length} transaction${list.length > 1 ? "s were" : " was"} sent (${list.join(", ")})`;
           const bought = done.length >= 2 ? ` The buy went through: the PT-USDG it bought stays in this wallet (pt_position shows it), to deposit from Go mode's Pendle tab (${ptLink(GO_APP_URL)}) or sell (pt_sell).` : "";
           if (e?.unconfirmed) throw new ToolError(`${done.length ? `${was(done)}, then another` : "A transaction"} may have been sent: its answer was lost (${why}). Its ${usd(units)} stays counted against PRIORS_MAX_PT_TOTAL_USD.${bought} Check pt_position and stock_position before trying again.`);
-          if (done.length === 0) session.ptBought -= units;
-          if (done.length) throw new ToolError(`${was(done)}, then: ${why}.${bought} Check pt_position and stock_position before trying again.`);
+          // not unconfirmed: the step that failed did nothing and none after it was sent. The USDG moves only in the buy,
+          // the second of the four steps: with fewer than two through (the USDG approval at most), nothing was spent and
+          // nothing counts (GHSA-hx6h-j9hm-9gvr); from the buy on, its USDG was spent and stays counted
+          if (done.length < 2) session.ptBought -= units;
+          if (done.length) throw new ToolError(`${was(done)}, then: ${why}.${bought || boughtNothing(units)} Check pt_position and stock_position before trying again.`);
           throw new ToolError(`${why}. ${nothing}`);
         }
         let after = null;

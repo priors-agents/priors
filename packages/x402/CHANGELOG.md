@@ -1,5 +1,16 @@
 # @priors/x402 changelog
 
+## 0.8.7 (2026-11-04)
+
+- **Autopay's savings approval is worth the whole budget, and a plan is current only from the declared wallet**
+  (GHSA-m3hr-g75r-gmcj, reported by @sonson0910). `autopayOn` with `useSavings` approved `previewDeposit(budget)` shares,
+  which round down, and AutoRepayV2 values an approval with `previewRedeem`, which rounds down too: on the live savings
+  vault the approval was worth the budget less 0.000001 USDG, so a loan could fall short by that unit where the savings
+  paid the budget's last one. It approves `previewWithdraw(budget)` now (rounding up). `autopayStatus` called a plan
+  current without asking whether the registry declares the wallet: with AutoRepayV2's `epochOf` unread (a failed
+  read), a plan of a wallet the agent no longer declares, which AutoRepayV2 never pays, read as current, and
+  `autopayReserve` kept USDG back for it. `plan.current` now needs `declared`.
+
 ## 0.8.6 (2026-11-02)
 
 - **Autopay refuses a wallet plan AutoRepay would never pay** (GHSA-65qg-4h7m-j2cm): an agent whose declared ERC-8004

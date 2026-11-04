@@ -35,7 +35,7 @@ export const AUTOREPAY_ABI = [
 ];
 const REGISTRY_ABI = ["function ownerOf(uint256) view returns (address)", "function getAgentWallet(uint256 agentId) view returns (address)"];
 const ERC20_ABI = ["function balanceOf(address) view returns (uint256)", "function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)"];
-const VAULT_ABI = [...ERC20_ABI, "function previewRedeem(uint256 shares) view returns (uint256)", "function previewDeposit(uint256 assets) view returns (uint256)"];
+const VAULT_ABI = [...ERC20_ABI, "function previewRedeem(uint256 shares) view returns (uint256)", "function previewWithdraw(uint256 assets) view returns (uint256)"];
 const POOL_ABI = [
   "function loansOf(uint256 id) view returns (uint256[])",
   "function getLoan(uint256 loanId) view returns (tuple(uint256 agentId, uint256 sponsorId, uint256 principal, uint256 fee, uint256 sponsorCut, uint256 reserveCut, uint256 premium, address owner, uint64 issuedAt, uint64 dueAt, uint64 defaultableAt, uint64 minScoreTerm, uint64 closedAt, uint8 status))",
@@ -93,9 +93,9 @@ export function autopayContracts({ runner, address, registry, usdg, savingsVault
  *   declared: the registry names `wallet` the agent's wallet (only then can it enroll, and a plan only pays then),
  *   ownerIsWallet: that declared wallet is the agent's owner itself (an agent with no key of its own): AutoRepay pays
  *     that address under the owner plan only, so no wallet plan of it is ever current (GHSA-65qg),
- *   plan: { on, cap, owner, useSavings, late, epoch, current (its owner is the agent's owner now, it was set in the
- *     agent's current epoch, and the wallet is not the owner), stale (on, but set before the agent's owner or wallet
- *     changed: enroll again) },
+ *   plan: { on, cap, owner, useSavings, late, epoch, current (the registry declares this wallet, its owner is the
+ *     agent's owner now, it was set in the agent's current epoch, and the wallet is not the owner), stale (on, but set
+ *     before the agent's owner or wallet changed: enroll again) },
  *   held, paused: { until } | null,
  *   allowance: { usdg, shares }, budget: what a run can pull now (USDG within its allowance and balance, plus savings
  *     within the share allowance when the plan uses them),
@@ -116,7 +116,10 @@ export async function autopayStatus(c, wallet, agentId, { now = Math.floor(Date.
   // plan only, so this wallet's plan, on or not, pays nothing (GHSA-65qg)
   const ownerIsWallet = String(declaredAs).toLowerCase() === w.toLowerCase() && String(owner).toLowerCase() === w.toLowerCase();
   p.stale = Boolean(p.on && epoch !== null && p.epoch !== epoch);
-  p.current = p.on && !p.stale && !ownerIsWallet && String(p.owner).toLowerCase() === String(owner).toLowerCase();
+  // AutoRepayV2 pays a wallet plan only from the wallet the registry declares now (_walletPart): another's plan is never
+  // current, even when the epoch could not be read (GHSA-m3hr-g75r-gmcj)
+  const declared = String(declaredAs).toLowerCase() === w.toLowerCase();
+  p.current = p.on && declared && !p.stale && !ownerIsWallet && String(p.owner).toLowerCase() === String(owner).toLowerCase();
   let shares = 0n, shareAllow = 0n, savingsValue = 0n;
   if (c.vault) {
     [shares, shareAllow] = await Promise.all([c.vault.balanceOf(w), c.vault.allowance(w, c.address)]);
@@ -143,7 +146,7 @@ export async function autopayStatus(c, wallet, agentId, { now = Math.floor(Date.
     if (need > budget || l.due > p.cap) { short = { loanId: l.loanId, need, have: budget, overCap: l.due > p.cap }; break; }
   }
   return {
-    declared: String(declaredAs).toLowerCase() === w.toLowerCase(), owner, ownerIsWallet, plan: p, held, paused: Number(pausedUntil) > now ? { until: Number(pausedUntil) } : null,
+    declared, owner, ownerIsWallet, plan: p, held, paused: Number(pausedUntil) > now ? { until: Number(pausedUntil) } : null,
     allowance: { usdg: allow, shares: shareAllow }, balance: bal, budget, loans, next: loans[0] || null, short,
   };
 }
@@ -192,7 +195,9 @@ export async function autopayOn(c, signer, agentId, { cap, useSavings = false, l
   if ((await c.usdg.allowance(me, c.address)) < budget) await send(u.approve(c.address, budget));
   if (useSavings) {
     if (!c.vault) throw new PayError("NO_SAVINGS", "Autopay: no savings vault is configured, so it can't use savings");
-    const shares = await c.vault.previewDeposit(budget);
+    // shares worth at least the budget as AutoRepayV2 values them (previewRedeem, rounding down): previewWithdraw rounds
+    // up, where previewDeposit rounded down and left the approval 1 unit short (GHSA-m3hr-g75r-gmcj)
+    const shares = await c.vault.previewWithdraw(budget);
     if ((await c.vault.allowance(me, c.address)) < shares) await send(c.vault.connect(signer).approve(c.address, shares));
   }
   await send(ar.enroll(id, cap, Boolean(useSavings), Boolean(late)));

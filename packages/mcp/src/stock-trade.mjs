@@ -44,10 +44,13 @@
 // again (sdk/rialto.mjs readWire, then checkQuote against the trade asked, with the router that Rialto's Router Registry
 // names on chain at the plan's block, never the one the answer names; its transaction's data decoded and held to those
 // terms, paid to this account, with at least their minimum and a deadline after the plan's block, sdk/rialto.mjs
-// checkSwap, GHSA-cqcw-9qjc-5qc7), its output and its minimum within Chainlink's 5%,
-// its minimum never under the pinned trade's. Rialto's route is taken only when it gives strictly more of the token
-// bought than the pinned pool (chooseRoute): the sold token approved to that router for exactly the amount, then Rialto's
-// transaction unchanged, its gas estimated after the approval (a failing estimate stops the trade, the approval named).
+// checkSwap, GHSA-cqcw-9qjc-5qc7; its fee Rialto's own, paid to Rialto, GHSA-m3hr-g75r-gmcj), its output and its
+// minimum within Chainlink's 5%, its minimum never under the pinned trade's (nor the caller's `minOut`: a minOut over
+// the pinned pool's output, which a dry run through Rialto prints, asks Rialto rather than stopping MOVED, and takes
+// Rialto's route only when its transaction's minimum holds it). Rialto's route is taken only when it gives strictly
+// more of the token bought than the pinned pool (chooseRoute): the sold token approved to that router for exactly the
+// amount, then Rialto's transaction unchanged, its gas estimated after the approval (a failing estimate stops the
+// trade, the approval named).
 // After the receipt: what the account received (its balance of the bought token before and after) and the router's
 // allowance (0 after a full fill). Any other answer, an error, no answer within RIALTO_WAIT_MS (8 s) or a check failing:
 // today's pinned trade, the plan saying why (rialtoWhy). Priors takes no fee on either route.
@@ -338,7 +341,8 @@ async function askGate({ url = STOCK_QUOTE_URL, fetch: f = globalThis.fetch, tim
  * pool's quote) }. Taking Rialto's route, the plan's out, minOut, label, spender, allowance, deviationBps, valueUsdg and
  * calls are Rialto's: the exact approval of the sold token to the registry's router (left out when its allowance already
  * is exactly the amount), then Rialto's transaction. minOut is the minimum its transaction carries (the router's own
- * check), and a sale's valueUsdg is that minimum too. Never throws for Rialto: whatever fails keeps the pinned trade.
+ * check); a sale's valueUsdg is Rialto's quoted output, as the pinned trade's is its quote (GHSA-m3hr-g75r-gmcj: 0.17.0
+ * counted the minimum, up to the slippage under it). Never throws for Rialto: whatever fails keeps the pinned trade.
  */
 export async function rialtoRoute(client, p, o = {}, conf = ZAP) {
   const buy = p.side === "buy";
@@ -394,7 +398,7 @@ export async function rialtoRoute(client, p, o = {}, conf = ZAP) {
   ];
   return {
     ...p, route: "rialto", rialtoWhy: null, rialto, pinned, label: "Rialto's router", spender: router, out: t.buyAmount, minOut: t.minBuyAmount,
-    impactBps: null, deviationBps: off(t.buyAmount), valueUsdg: buy ? p.amountIn : t.minBuyAmount, allowance, calls,
+    impactBps: null, deviationBps: off(t.buyAmount), valueUsdg: buy ? p.amountIn : t.buyAmount, allowance, calls,
   };
 }
 
@@ -539,9 +543,18 @@ export async function stockTrade(client, o = {}, conf = ZAP) {
 }
 
 /** A quote and the calls, sent nothing: stockTradePlan for `side`, and with `o.rialto` Rialto's route for it
- *  (rialtoRoute). */
+ *  (rialtoRoute). With `o.rialto` and a caller's `minOut` the pinned pool's quote is under (MOVED), Rialto is still
+ *  asked, on the plan made without it, and its route is taken only when its transaction's minimum is at least that
+ *  minOut; otherwise the MOVED refusal stands (GHSA-m3hr-g75r-gmcj: a dry run through Rialto prints Rialto's minimum,
+ *  which can be over the pinned pool's output). */
 export const stockQuote = async (client, o = {}, conf = ZAP) => {
-  const p = await stockTradePlan(client, o, conf);
+  let p;
+  try { p = await stockTradePlan(client, o, conf); } catch (e) {
+    if (!o.rialto || o.minOut == null || !(e instanceof StockTradeError) || e.code !== "MOVED") throw e;
+    const r = await rialtoRoute(client, await stockTradePlan(client, { ...o, minOut: null }, conf), o, conf);
+    if (r.route === "rialto" && r.minOut >= BigInt(o.minOut)) return r;
+    throw e;
+  }
   return o.rialto ? rialtoRoute(client, p, o, conf) : p;
 };
 /** Buy `amount` USDG of `symbol`: the calls, sent when `wallet` is given. */

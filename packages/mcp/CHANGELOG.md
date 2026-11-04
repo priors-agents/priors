@@ -1,5 +1,35 @@
 # @priors/mcp changelog
 
+## 0.17.1 (2026-11-04)
+
+On @priors/x402 0.8.7 (Autopay's savings approval and current plan, below).
+
+- **Rialto's route holds the router call's fee words too** (GHSA-m3hr-g75r-gmcj, reported by @sonson0910; only with
+  `PRIORS_STOCKS` and `PRIORS_RIALTO=on`, both off by default). 0.17.0 decoded the router call's fee words
+  (`feeRecipient`, `srcBps`, `dstBps`) and checked none of them, and the router pays them to whatever address they name
+  (it checks the minimum after the fee): an answer whose JSON was honest could still pay the output above the
+  transaction's minimum, within the slippage, to another address, and a quote stating no fee showed "Rialto's fee 0
+  bps". The transaction is now taken only with no fee or Rialto's own, at most 5 bps paid to Rialto's address
+  (`src/rialto.mjs` `checkSwapFee`, `RIALTO_FEE_BPS`, `RIALTO_FEE_RECIPIENT`), never above the fee the quote states; the
+  fee shown is the one the transaction takes. Anything else keeps the pinned trade, and the answer says why. Priors' gas
+  gate and Go mode hold Rialto's quotes to the same rule.
+- **A sale through Rialto counts its quote against `PRIORS_MAX_STOCK_TOTAL_USD`** (GHSA-m3hr-g75r-gmcj): 0.17.0 counted
+  its transaction's minimum, up to the slippage under the quote. It counts the quote, as the pinned trade's does.
+- **A dry run's `min_out` through Rialto holds on the live call** (GHSA-m3hr-g75r-gmcj): when Rialto's quote beat the
+  pinned pool by more than the slippage, the `min_out` a dry run printed was above the pinned pool's output, and the
+  live call stopped "the price moved past the slippage" before Rialto was asked. Rialto is asked now, and its route
+  taken only when its transaction's minimum is at least that `min_out`; otherwise the refusal stands.
+- **The PT buys keep to `PRIORS_MAX_PT_TOTAL_USD` and keep back what signed payments still need**
+  (GHSA-hx6h-j9hm-9gvr, reported by @sonson0910). `pt_buy_and_deposit` (only with `PRIORS_PT_ONESTEP=on`) counted its
+  buy only after its chain reads and its consent: a call stalled in those reads past its hold was left out of the total
+  a later buy read, and both bought past the cap. Both PT buys now count their amount from the check, before any read,
+  until the call ends. Neither kept back the USDG of payments signed and not settled yet, as `save`, `stock_buy` and the
+  market tools do: a live buy that would spend it is now refused before anything is signed. And a buy whose swap did
+  nothing after its USDG approval (refused in its simulation, refused for gas, or mined and reverted) stayed counted, as
+  though it had spent its USDG: it counts nothing now, and the answer says so.
+- `autopay_on` with savings approves shares worth the whole budget, and `credit_status` and the reserve never count a
+  plan of a wallet the agent no longer declares (@priors/x402 0.8.7).
+
 ## 0.17.0 (2026-11-04)
 
 On @priors/x402 0.8.6, as 0.16.0.

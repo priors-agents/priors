@@ -18,7 +18,8 @@
 // recipient and deadline, so checkQuote decodes it (checkSwap) and takes it only when it is the trade it checked, paid
 // to the taker, with at least the quote's minimum (GHSA-cqcw-9qjc-5qc7, reported by @hey-research-lab: @priors/mcp
 // 0.16.0 checked the JSON alone and sent the data as it came, so an answer could pay another address or drop the
-// minimum).
+// minimum), and its fee words name Rialto's own fee, paid to Rialto, at most what the quote states (GHSA-m3hr-g75r-gmcj,
+// reported by @sonson0910: 0.17.0 decoded them and checked none, and the router pays them to any address).
 //
 //   RIALTO_REGISTRY, RIALTO_FEATURE, REGISTRY_ABI   the registry that names Rialto's router (Rialto's API address is the
 //                       gate's alone, gas-worker/rialto.mjs: this file ships in @priors/mcp, which never calls Rialto)
@@ -27,6 +28,7 @@
 //   decodeSwap(data)    the router's swap call read: { sellToken, buyToken, sellAmount, minBuyAmount, recipient, deadline,
 //                       feeRecipient, srcBps, dstBps }, or throws RialtoError
 //   checkSwap(data, o)  that call taken only as the trade checked (checkQuote's last check), or throws RialtoError
+//   checkSwapFee(s, o)  its fee words held to Rialto's own fee (RIALTO_FEE_RECIPIENT, RIALTO_FEE_BPS), or throws
 //   chooseRoute(o)      "rialto" when its quote gives more of the bought token than the pinned pool's, else "pinned"
 //   rialtoCalls(terms)  the two calls: the exact approval of the sold token to the router, then Rialto's transaction
 //   wireTerms / readWire  terms to JSON (amounts as digits) and back, checked again
@@ -60,6 +62,17 @@ export const SWAP_SELECTOR = "0x77963966";
 const SWAP_WORDS = 12, ACTIONS_AT = 0x180n;
 /** The latest deadline a quote's transaction may carry, from now (Rialto's is about 5 minutes on). */
 export const MAX_DEADLINE_S = 1800;
+/**
+ * Rialto's fee on a swap, and where its router pays it. Rialto's docs: 0.05% a swap, inside the quoted output; every
+ * live router call read (the ones above) carries 5 bps on the USDG side (srcBps on a buy, dstBps on a sale), paid to
+ * 0xEc8a...cfDD (word 6). The router pays the fee words to whatever address word 6 names, up to 2,000 bps each, and
+ * checks the minimum after the fee (read 2026-11-04 by simulating the live router on the latest block): a fee to
+ * another address is a payment out of the trade's output the quote never named. So a quote's transaction is taken only
+ * with no fee, or Rialto's at most RIALTO_FEE_BPS to RIALTO_FEE_RECIPIENT; a change of either on Rialto's side falls back
+ * to the pinned pool until it is read again, as a change of the swap's layout does.
+ */
+export const RIALTO_FEE_BPS = 5;
+export const RIALTO_FEE_RECIPIENT = getAddress("0xec8acb43c45f4b98125df8cb5f42c963e5b3cfdd");
 
 export class RialtoError extends Error {
   constructor(message, o = {}) { super(message); this.name = "RialtoError"; Object.assign(this, o); }
@@ -99,9 +112,11 @@ export function quoteQuery({ sellToken, buyToken, sellAmount, sellDecimals, take
  * no integrator fee, and the taker holding enough (issues.balance). An approval Rialto asks for (issues.allowance) must
  * be to the router itself. Last, the transaction's data itself (checkSwap): the router's swap of those tokens and that
  * amount, paid to `taker`, its minimum at least the quote's and not above its output, its deadline after `now` (unix s,
- * the clock's by default) and at most MAX_DEADLINE_S on. -> frozen terms: { quoteId, router, spender, data, sellToken,
- * buyToken, sellAmount, buyAmount, minBuyAmount (the transaction's own minimum, what the router enforces), gas, feeBps,
- * legs }. Throws RialtoError (balance: true when the taker holds too little).
+ * the clock's by default) and at most MAX_DEADLINE_S on, its fee Rialto's own and at most the fee the quote states
+ * (platform_fee.total_bps: whole basis points, or none stated, never read as 0). -> frozen terms: { quoteId, router,
+ * spender, data, sellToken, buyToken, sellAmount, buyAmount, minBuyAmount (the transaction's own minimum, what the router
+ * enforces), gas, feeBps (the transaction's own fee, what the router takes), legs }. Throws RialtoError (balance: true
+ * when the taker holds too little).
  */
 export function checkQuote(body, { sellToken, buyToken, sellAmount, taker, router, slippageBps, now = Math.floor(Date.now() / 1000) }) {
   if (!body || typeof body !== "object") fail("Rialto's quote: not a quote");
@@ -128,13 +143,15 @@ export function checkQuote(body, { sellToken, buyToken, sellAmount, taker, route
   if (issues.balance != null) fail("not enough of the sold token for that amount", { balance: true });
   if (issues.allowance != null && !same(issues.allowance.spender, want.router)) fail("Rialto's quote: an approval to another spender");
   if (typeof body.quote_id !== "string" || !/^[0-9a-fA-F-]{8,64}$/.test(body.quote_id)) fail("Rialto's quote: no quote id");
-  const feeBps = Number(body.platform_fee && body.platform_fee.total_bps);
-  const swap = checkSwap(tx.data, { sellToken: want.sell, buyToken: want.buy, sellAmount: amount, taker: want.taker, minBuyAmount, buyAmount, now });
+  // the fee the quote states: whole basis points, or none (null: then only Rialto's own is taken, never "0 bps")
+  const pf = body.platform_fee && typeof body.platform_fee === "object" ? body.platform_fee.total_bps : null;
+  const stated = pf == null ? null : (Number.isSafeInteger(pf) && pf >= 0) || (typeof pf === "string" && DIGITS.test(pf) && pf.length <= 5) ? Number(pf) : fail("Rialto's quote: an unreadable fee");
+  const swap = checkSwap(tx.data, { sellToken: want.sell, buyToken: want.buy, sellAmount: amount, taker: want.taker, minBuyAmount, buyAmount, feeBps: stated, now });
   return Object.freeze({
     quoteId: body.quote_id, router: want.router, spender: want.router, data: tx.data.toLowerCase(),
     sellToken: want.sell, buyToken: want.buy, taker: want.taker, sellAmount: amount, buyAmount, minBuyAmount: swap.minBuyAmount,
     gas: Number.isSafeInteger(tx.estimated_gas) ? tx.estimated_gas : null,
-    feeBps: Number.isFinite(feeBps) ? feeBps : null,
+    feeBps: swap.srcBps + swap.dstBps,
     legs: Array.isArray(body.route && body.route.legs) ? body.route.legs.length : null,
   });
 }
@@ -159,8 +176,9 @@ export function decodeSwap(data) {
 
 /** The router's swap call `data` taken only as the trade checked: `sellAmount` of `sellToken` for `buyToken`, paid to
  *  `taker`, a minimum at least `minBuyAmount` (and not above `buyAmount` when given), a deadline after `now` (unix s)
- *  and at most MAX_DEADLINE_S after it. -> decodeSwap's fields, or throws RialtoError with the reason. */
-export function checkSwap(data, { sellToken, buyToken, sellAmount, taker, minBuyAmount, buyAmount = null, now }) {
+ *  and at most MAX_DEADLINE_S after it, its fee Rialto's own and at most `feeBps` when given (checkSwapFee).
+ *  -> decodeSwap's fields, or throws RialtoError with the reason. */
+export function checkSwap(data, { sellToken, buyToken, sellAmount, taker, minBuyAmount, buyAmount = null, feeBps = null, now }) {
   const s = decodeSwap(data);
   if (!same(s.sellToken, sellToken) || !same(s.buyToken, buyToken)) fail("Rialto's quote: its transaction swaps other tokens");
   if (s.sellAmount !== big(sellAmount, "sell amount")) fail("Rialto's quote: its transaction sells another amount");
@@ -170,7 +188,19 @@ export function checkSwap(data, { sellToken, buyToken, sellAmount, taker, minBuy
   const t = big(now, "now");
   if (s.deadline <= t) fail("Rialto's quote: its transaction's deadline has passed");
   if (s.deadline > t + BigInt(MAX_DEADLINE_S)) fail("Rialto's quote: its transaction's deadline is too far off");
+  checkSwapFee(s, { feeBps });
   return s;
+}
+
+/** A decoded swap's fee words (decodeSwap's feeRecipient, srcBps, dstBps) held to Rialto's own fee: none at all (the
+ *  zero address, 0 bps), or at most RIALTO_FEE_BPS in all paid to RIALTO_FEE_RECIPIENT, and never above `feeBps`, the
+ *  fee the quote states, when given (GHSA-m3hr-g75r-gmcj). Throws RialtoError with the reason. */
+export function checkSwapFee(s, { feeBps = null } = {}) {
+  const fee = s.srcBps + s.dstBps;
+  if (/^0x0{40}$/i.test(s.feeRecipient)) { if (fee !== 0) fail("Rialto's quote: its transaction's fee has no recipient"); }
+  else if (!same(s.feeRecipient, RIALTO_FEE_RECIPIENT)) fail("Rialto's quote: its transaction's fee is paid to another address than Rialto's");
+  if (fee > RIALTO_FEE_BPS) fail("Rialto's quote: its transaction's fee is above Rialto's");
+  if (feeBps != null && fee > feeBps) fail("Rialto's quote: its transaction's fee is above the quote's");
 }
 
 /** The route a trade takes: "rialto" only when Rialto's terms give strictly more of the bought token than the pinned
