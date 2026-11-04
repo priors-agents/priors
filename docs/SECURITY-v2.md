@@ -492,6 +492,7 @@ Credits, by row: the first valid report, then the later reports of the same root
   P-57: @sonson0910. S-5: @Slangelange.
 - AR-1: @sonson0910; also @Slangelange. IR-1 and RT-9: @Slangelange. V5-5, V5-6 and V5-7 (SeatVaultV5's table):
   @Slangelange.
+- P-58: @hey-research-lab.
 
 Not findings: the facilitator's free tier was said to be unlimited and to halt every merchant (GHSA-gg53; GHSA-8r9x, a
 later report of the same ruling, said it was unbounded through merchants still under review paying themselves between
