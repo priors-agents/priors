@@ -2,8 +2,6 @@ import { promises as dnsPromises } from "node:dns";
 import { isIP } from "node:net";
 import { z } from "zod";
 import { decodeEventLog, encodeFunctionData, erc20Abi, formatUnits, Hex, parseUnits } from "viem";
-import { x402Client, wrapFetchWithPayment } from "@x402/fetch";
-import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { ActionProvider, CreateAction, EvmWalletProvider, Network } from "@coinbase/agentkit";
 import {
   BorrowSchema,
@@ -24,12 +22,23 @@ import {
   REGISTRY,
   REGISTRY_ABI,
   ROBINHOOD_CHAIN_ID,
-  ROBINHOOD_NETWORK,
   USDG,
   USDG_DECIMALS,
 } from "./constants";
 // @priors/mcp's data fence, sdk/fence.mjs copied byte for byte (test/provider.test.cjs checks the copy)
 import { fenced, guarded, unfenced } from "./fence.js";
+
+// @priors/x402's payer pieces (the purchase's identity, the resend of a signed payment, the USDG client) and the x402
+// client they run on: ES modules, loaded with import() from this CommonJS package
+const x402 = () => import("@priors/x402");
+const x402Fetch = () => import("@x402/fetch");
+
+/** A payment signed for a purchase and not seen settled: until it expires, the only payment sent for that purchase. */
+type Signed = { paymentHeaders: Record<string, string>; validBefore: number; price: bigint; payTo: string; borrowed: string };
+/** What @priors/x402's resend answers. */
+type Sent = Awaited<ReturnType<Awaited<ReturnType<typeof x402>>["resend"]>>;
+/** A paid request's resends while its seller answers "settlement pending", as @priors/mcp's pay_url sends them. */
+const RESEND = { retries: 2, maxSleepMs: 10_000 };
 
 const usdg = (atomic: bigint) => formatUnits(atomic, USDG_DECIMALS);
 const sameAddress = (a: unknown, b: string) => String(a).toLowerCase() === b.toLowerCase();
@@ -167,14 +176,6 @@ function settledTx(header: string | null): string | null {
   }
 }
 
-type Requirement = {
-  scheme?: string;
-  network?: string;
-  asset?: string;
-  amount?: string;
-  payTo?: string;
-};
-
 /**
  * PriorsActionProvider gives an agent on Robinhood Chain a USDG credit line from Priors: pay an x402 URL and borrow
  * the gap when the wallet is short, borrow and repay, and read another agent's repayment record before paying it.
@@ -182,6 +183,17 @@ type Requirement = {
 export class PriorsActionProvider extends ActionProvider<EvmWalletProvider> {
   private readonly auto: { perCall: bigint; perDay: bigint; hosts: Set<string> } | null;
   private borrowedToday = { day: "", amount: 0n };
+  // One signature per purchase (GHSA-pr4v), @priors/x402's rule (createPayer's unsettled payments, @priors/mcp's
+  // outstanding ones): a payment this provider signed for a wallet's purchase (the method, the URL as the seller reads
+  // it and the body: @priors/x402's purchaseKey) and has not seen settle is sent again by a later call for that
+  // purchase, never signed again, until it expires.
+  // SHORTCUT: kept in this process's memory, as createPayer keeps it (@priors/mcp adds its PRIORS_STATE_DIR file). A
+  // restart while such a payment may still settle (at most 600 s, plus SKEW_SECONDS) forgets it, and a call for the same
+  // purchase after the restart signs again: at most one more payment of at most maxPrice, to the seller the call named
+  // (P-15's class). Upgrade when the provider gets a place to keep state, or on a report of it.
+  private readonly unsettled = new Map<string, Signed>();
+  /** The call under way for each purchase: another call for it waits for it, then finds its payment. */
+  private readonly running = new Map<string, Promise<void>>();
 
   /**
    * Constructor for the PriorsActionProvider.
@@ -427,7 +439,8 @@ This tool fetches a URL that charges per call with x402 (HTTP 402) and pays it i
 wallet, with GET, or with POST and a body (an OpenAI-style chat completion, for one). If the wallet is short of the
 price, it first borrows the gap from the agent's Priors line, only when maxBorrow covers it, or, when the provider was
 set up with autoBorrow, on its own within the owner's limits while Autopay covers the loan. Real money: confirm the URL,
-the price and the most to borrow with the user first.
+the price and the most to borrow with the user first. It signs one payment per purchase: while a payment it signed may
+still settle, a call for the same purchase (the same method, URL and body) sends that payment again, never a new one.
 
 Inputs:
 - url: the https URL.
@@ -479,94 +492,124 @@ Inputs:
             ? auto.perCall
             : named;
       const days = args.days ?? (auto ? AUTO_TERM_DAYS : DEFAULT_TERM_DAYS);
-      const probe = await this.fetchImpl(args.url, init());
-      if (probe.status >= 300 && probe.status < 400) {
-        const to = probe.headers.get("location");
-        return guarded(`The URL answered a redirect (HTTP ${probe.status}), not followed: nothing was paid.${to ? `\n${fenced(to.slice(0, 500), "redirect target")}` : ""}`);
-      }
-      if (probe.status !== 402)
-        return guarded(`No payment asked (HTTP ${probe.status}). Response:\n${fenced((await probe.text()).slice(0, 2000), "response body")}`);
-      const requirement = await this.usdgRequirement(probe);
-      if (!requirement)
-        return "Error: the URL asks for no USDG payment on Robinhood Chain (x402 exact).";
-      const price = BigInt(requirement.amount ?? "0");
-      if (price > maxPrice)
-        return `Error: the URL asks ${usdg(price)} USDG, above maxPrice ${args.maxPrice}. Nothing was paid.`;
+      const X = await x402();
       const me = walletProvider.getAddress() as Hex;
-      const balance = (await walletProvider.readContract({
-        address: USDG,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [me],
-      })) as bigint;
-      if (balance < price) {
-        const params = (await walletProvider.readContract({
-          address: PRIORS_POOL,
-          abi: POOL_ABI,
-          functionName: "getParams",
-        })) as { minLoan: bigint; maxTerm: bigint };
-        const gap = price - balance;
-        const amount = gap > params.minLoan ? gap : params.minLoan;
-        if (auto && !autoHere)
-          return `Error: the wallet holds ${usdg(balance)} USDG, short of ${usdg(price)}, and auto-borrow borrows only to pay ${[...auto.hosts].join(", ")}. Nothing was borrowed or paid.`;
-        if (amount > maxBorrow) {
-          return `Error: the wallet holds ${usdg(balance)} USDG, short of ${usdg(price)}; borrowing ${usdg(amount)} (the pool's minimum loan is ${usdg(params.minLoan)}) is above ${auto ? `the most this call may borrow, ${usdg(maxBorrow)}` : `maxBorrow ${args.maxBorrow || "0"}`}. Nothing was paid.`;
+      const purchase = `${me.toLowerCase()} ${await X.purchaseKey(new Request(args.url, init()))}`;
+      return await this.onePerPurchase(purchase, async () => {
+        // a payment signed for this purchase that may still settle is sent again, before anything is probed or borrowed
+        const now = Math.floor(Date.now() / 1000);
+        for (const [k, v] of this.unsettled) if (v.validBefore + X.SKEW_SECONDS <= now) this.unsettled.delete(k);
+        const out = this.unsettled.get(purchase);
+        if (out) {
+          const r = await X.resend(args.url, out.paymentHeaders, { ...RESEND, init: init(), fetchImpl: this.fetchImpl, timeoutMs: X.DEFAULT_TIMEOUT_MS });
+          if (r.response.ok) this.unsettled.delete(purchase);
+          const first = out.borrowed ? `Its first attempt: ${out.borrowed}` : "\n";
+          return guarded(`No new payment was signed: the payment of ${usdg(out.price)} USDG to ${out.payTo} signed earlier for this purchase was sent again. ${first}${await this.outcome(r, out, X.SKEW_SECONDS)}`);
         }
-        // auto: the day's room is taken here, before any await, so two calls running at once never both pass the
-        // limit; it is given back whenever the borrow stops before it is sent, refused or a read failing (GHSA-q4cg);
-        // a borrow whose sending began stays counted (its answer may be lost: the safe direction)
-        let reserved: { day: string; amount: bigint } | null = null;
-        let sending = false;
-        if (auto) {
-          const today = utcDay();
-          if (this.borrowedToday.day !== today) this.borrowedToday = { day: today, amount: 0n };
-          if (this.borrowedToday.amount + amount > auto.perDay)
-            return `Error: the wallet holds ${usdg(balance)} USDG, short of ${usdg(price)}, and auto-borrow's limit of ${usdg(auto.perDay)} USDG a day has ${usdg(auto.perDay - this.borrowedToday.amount)} left in this process, less than ${usdg(amount)}. Nothing was borrowed or paid.`;
-          this.borrowedToday.amount += amount;
-          reserved = { day: today, amount };
+        const probe = await this.fetchImpl(args.url, init());
+        if (probe.status >= 300 && probe.status < 400) {
+          const to = probe.headers.get("location");
+          return guarded(`The URL answered a redirect (HTTP ${probe.status}), not followed: nothing was paid.${to ? `\n${fenced(to.slice(0, 500), "redirect target")}` : ""}`);
         }
-        // auto: 14 days, brought down to the pool's maxTerm; otherwise the term asked, as before
-        const termDays = auto && params.maxTerm !== undefined && BigInt(days) * 86400n > BigInt(params.maxTerm) ? Number(BigInt(params.maxTerm) / 86400n) : days;
-        const loan = await this.borrowAmount(walletProvider, args.agentId, amount, termDays,
-          auto
-            ? async (fee: bigint) => {
-                await this.autopayCovers(walletProvider, args.agentId, amount + fee);
-                sending = true; // the borrow's transaction is sent right after this check
-              }
-            : undefined, "borrowed or paid")
-          .catch((error: unknown) => {
-            if (reserved && !sending && this.borrowedToday.day === reserved.day) this.borrowedToday.amount -= reserved.amount;
-            throw error;
-          });
-        borrowed = `Borrowed ${usdg(loan.amount)} USDG first: loan #${loan.loanId}, fee ${usdg(loan.fee)}, due ${loan.dueAt} (transaction ${loan.hash}). ${auto ? "Auto-borrow: Autopay repays it from this wallet in its window, the last hours before it is due; keep its due in the wallet by then." : "Repay it with repay_priors_loan before then."}\n`;
-      }
-      // the payment signed is the requirement probed (and checked against maxPrice, and borrowed for): the paid
-      // round's own 402 is asked again, and anything it names but that, another payTo or another amount, is never signed
-      const payTo = String(requirement.payTo);
-      const client = new x402Client()
-        .register(ROBINHOOD_NETWORK, new ExactEvmScheme(walletProvider.toSigner()))
-        .registerPolicy((_version, reqs) =>
-          reqs.filter(r => {
-            const q = r as Requirement;
-            return (
-              q.scheme === "exact" &&
-              q.network === ROBINHOOD_NETWORK &&
-              sameAddress(q.asset, USDG) &&
-              sameAddress(q.payTo, payTo) &&
-              /^\d+$/.test(String(q.amount)) &&
-              BigInt(String(q.amount)) === price
-            );
-          }),
-        );
-      const paid = await wrapFetchWithPayment(this.fetchImpl, client)(args.url, init());
-      // of the settlement header, only its transaction hash: the rest is the seller's words
-      const tx = settledTx(paid.headers.get("payment-response") || paid.headers.get("x-payment-response"));
-      const body = `Response:\n${fenced((await paid.text()).slice(0, 2000), "response body")}`;
-      if (paid.status === 402)
-        return guarded(`${borrowed}The payment of ${usdg(price)} USDG to ${payTo} was signed but not accepted (HTTP 402): nothing shows it was paid.\n${body}`);
-      if (paid.status >= 300 && paid.status < 400)
-        return guarded(`${borrowed}The payment of ${usdg(price)} USDG to ${payTo} was signed, and the URL answered a redirect (HTTP ${paid.status}), not followed${tx ? `; settled in ${tx}` : ": it may still settle"}.`);
-      return guarded(`${borrowed}Paid ${usdg(price)} USDG to ${payTo} (HTTP ${paid.status})${tx ? `; settled in ${tx}` : ""}.\n${body}`);
+        if (probe.status !== 402)
+          return guarded(`No payment asked (HTTP ${probe.status}). Response:\n${fenced((await probe.text()).slice(0, 2000), "response body")}`);
+        // the 402 as @priors/x402's payer reads it (the PAYMENT-REQUIRED header, else a v2 body), and its requirement as
+        // the payer picks it: exact USDG on Robinhood Chain by EIP-3009, on USDG's own EIP-712 domain, to a 0x payTo
+        const { x402Client, x402HTTPClient } = await x402Fetch();
+        const http = new x402HTTPClient(new x402Client());
+        let body: { x402Version?: unknown; accepts?: unknown } | undefined;
+        try {
+          const text = await probe.text();
+          body = text ? JSON.parse(text) : undefined;
+        } catch {
+          body = undefined;
+        }
+        let required: ReturnType<typeof http.getPaymentRequiredResponse> | null;
+        try {
+          required = http.getPaymentRequiredResponse(n => probe.headers.get(n), body);
+        } catch {
+          required = body && body.x402Version === 2 && Array.isArray(body.accepts) ? (body as ReturnType<typeof http.getPaymentRequiredResponse>) : null;
+        }
+        const requirement = required && required.x402Version === 2 ? X.pickV2Requirement(required.accepts, USDG) : null;
+        if (!required || !requirement)
+          return "Error: the URL asks for no USDG payment on Robinhood Chain (x402 v2 exact, EIP-3009).";
+        const price = BigInt(requirement.amount);
+        if (price > maxPrice)
+          return `Error: the URL asks ${usdg(price)} USDG, above maxPrice ${args.maxPrice}. Nothing was paid.`;
+        const payTo = String(requirement.payTo);
+        // the client that signs (@priors/x402's createUsdgClient): USDG on Robinhood Chain only, at most the probed price,
+        // an authorization valid at most 600 s; asked before anything is borrowed whether it signs this requirement
+        // (@priors/x402's GHSA-f35g: a refusal at signing time must never come after a loan)
+        const client = X.createUsdgClient({ signer: walletProvider.toSigner(), maxPrice: price, asset: USDG });
+        try {
+          (client as unknown as { selectPaymentRequirements(v: number, r: unknown[]): unknown }).selectPaymentRequirements(2, [requirement]);
+        } catch {
+          return "Error: x402 would not sign the requirement this URL asks for. Nothing was borrowed or paid.";
+        }
+        const balance = (await walletProvider.readContract({
+          address: USDG,
+          abi: erc20Abi,
+          functionName: "balanceOf",
+          args: [me],
+        })) as bigint;
+        if (balance < price) {
+          const params = (await walletProvider.readContract({
+            address: PRIORS_POOL,
+            abi: POOL_ABI,
+            functionName: "getParams",
+          })) as { minLoan: bigint; maxTerm: bigint };
+          const gap = price - balance;
+          const amount = gap > params.minLoan ? gap : params.minLoan;
+          if (auto && !autoHere)
+            return `Error: the wallet holds ${usdg(balance)} USDG, short of ${usdg(price)}, and auto-borrow borrows only to pay ${[...auto.hosts].join(", ")}. Nothing was borrowed or paid.`;
+          if (amount > maxBorrow) {
+            return `Error: the wallet holds ${usdg(balance)} USDG, short of ${usdg(price)}; borrowing ${usdg(amount)} (the pool's minimum loan is ${usdg(params.minLoan)}) is above ${auto ? `the most this call may borrow, ${usdg(maxBorrow)}` : `maxBorrow ${args.maxBorrow || "0"}`}. Nothing was paid.`;
+          }
+          // auto: the day's room is taken here, before any await, so two calls running at once never both pass the
+          // limit; it is given back whenever the borrow stops before it is sent, refused or a read failing (GHSA-q4cg);
+          // a borrow whose sending began stays counted (its answer may be lost: the safe direction)
+          let reserved: { day: string; amount: bigint } | null = null;
+          let sending = false;
+          if (auto) {
+            const today = utcDay();
+            if (this.borrowedToday.day !== today) this.borrowedToday = { day: today, amount: 0n };
+            if (this.borrowedToday.amount + amount > auto.perDay)
+              return `Error: the wallet holds ${usdg(balance)} USDG, short of ${usdg(price)}, and auto-borrow's limit of ${usdg(auto.perDay)} USDG a day has ${usdg(auto.perDay - this.borrowedToday.amount)} left in this process, less than ${usdg(amount)}. Nothing was borrowed or paid.`;
+            this.borrowedToday.amount += amount;
+            reserved = { day: today, amount };
+          }
+          // auto: 14 days, brought down to the pool's maxTerm; otherwise the term asked, as before
+          const termDays = auto && params.maxTerm !== undefined && BigInt(days) * 86400n > BigInt(params.maxTerm) ? Number(BigInt(params.maxTerm) / 86400n) : days;
+          const loan = await this.borrowAmount(walletProvider, args.agentId, amount, termDays,
+            auto
+              ? async (fee: bigint) => {
+                  await this.autopayCovers(walletProvider, args.agentId, amount + fee);
+                  sending = true; // the borrow's transaction is sent right after this check
+                }
+              : undefined, "borrowed or paid")
+            .catch((error: unknown) => {
+              if (reserved && !sending && this.borrowedToday.day === reserved.day) this.borrowedToday.amount -= reserved.amount;
+              throw error;
+            });
+          borrowed = `Borrowed ${usdg(loan.amount)} USDG first: loan #${loan.loanId}, fee ${usdg(loan.fee)}, due ${loan.dueAt} (transaction ${loan.hash}). ${auto ? "Auto-borrow: Autopay repays it from this wallet in its window, the last hours before it is due; keep its due in the wallet by then." : "Repay it with repay_priors_loan before then."}\n`;
+        }
+        // the one signature for this purchase: the requirement probed (checked against maxPrice, and borrowed for), kept
+        // before it leaves, and from then on only sent again (@priors/x402's resend: once the payment may be out, a
+        // dropped connection or a timeout is an answer, never an error that loses it)
+        const payload = await client.createPaymentPayload({ ...required, accepts: [requirement] });
+        const validBefore = Number((payload.payload as { authorization?: { validBefore?: unknown } }).authorization?.validBefore);
+        const signed: Signed = {
+          paymentHeaders: http.encodePaymentSignatureHeader(payload),
+          validBefore: Number.isSafeInteger(validBefore) ? validBefore : now + X.MAX_VALIDITY_SECONDS,
+          price,
+          payTo,
+          borrowed,
+        };
+        this.unsettled.set(purchase, signed);
+        const r = await X.resend(args.url, signed.paymentHeaders, { ...RESEND, init: init(), fetchImpl: this.fetchImpl, timeoutMs: X.DEFAULT_TIMEOUT_MS });
+        if (r.response.ok) this.unsettled.delete(purchase);
+        return guarded(`${borrowed}${await this.outcome(r, signed, X.SKEW_SECONDS)}`);
+      });
     } catch (error) {
       if (error instanceof Refusal) return guarded(`${borrowed}Error: ${error.message}`);
       return guarded(`${borrowed}Error paying ${unfenced(args.url)} with Priors credit: ${unfenced(String(error))}`);
@@ -657,38 +700,45 @@ Inputs:
     network.protocolFamily === "evm" && String(network.chainId) === ROBINHOOD_CHAIN_ID;
 
   /**
-   * The x402 v2 `exact` requirement for USDG on Robinhood Chain, from the 402's header or body.
+   * What became of a payment sent: paid only on a 2xx answer. Anything else (a dropped connection, no answer in time,
+   * a 5xx, a 402, a redirect) leaves it signed and sent, cashable by the seller until it expires, and a later call for
+   * the purchase sends it again (@priors/mcp's pay_url answer).
    *
-   * @param probe - The 402 response.
-   * @returns The requirement, or null.
+   * @param r - What @priors/x402's resend answered.
+   * @param s - The payment sent.
+   * @param skew - @priors/x402's SKEW_SECONDS, the margin kept past validBefore.
+   * @returns The answer's words for it.
    */
-  private async usdgRequirement(probe: Response): Promise<Requirement | null> {
-    let accepts: Requirement[] = [];
-    const header = probe.headers.get("payment-required");
-    if (header) {
-      try {
-        accepts = JSON.parse(Buffer.from(header, "base64").toString("utf8")).accepts ?? [];
-      } catch {
-        accepts = [];
-      }
+  private async outcome(r: Sent, s: Signed, skew: number): Promise<string> {
+    const res = r.response;
+    // of the settlement header, only its transaction hash: the rest is the seller's words
+    const tx = settledTx(res.headers.get("payment-response") || res.headers.get("x-payment-response"));
+    const text = (await res.text()).slice(0, 2000);
+    const body = text ? `\nResponse:\n${fenced(text, "response body")}` : "";
+    const status = r.timedOut ? "no answer in time" : r.transportError ? "the connection was lost" : `HTTP ${res.status}`;
+    if (res.ok) return `Paid ${usdg(s.price)} USDG to ${s.payTo} (${status})${tx ? `; settled in ${tx}` : ""}.${body}`;
+    const until = new Date((s.validBefore + skew) * 1000).toISOString();
+    const redirect = res.status >= 300 && res.status < 400 ? ", a redirect, not followed" : "";
+    return `The payment of ${usdg(s.price)} USDG to ${s.payTo} was signed and sent (${status}${redirect}), and the seller may still settle it until ${until}${tx ? ` (it names ${tx})` : ""}: do NOT call pay_x402_with_priors_credit again for this purchase (the same method, URL and body) before then. A later call for it sends this same payment again, never a new one.${body}`;
+  }
+
+  /**
+   * Runs one call for a purchase at a time: a call for a purchase that another call is paying waits for it, then finds
+   * the payment it signed (two calls at once never sign two).
+   *
+   * @param purchase - The wallet and the purchase's key.
+   * @param fn - The call.
+   * @returns What the call answers.
+   */
+  private async onePerPurchase<T>(purchase: string, fn: () => Promise<T>): Promise<T> {
+    const run = (this.running.get(purchase) ?? Promise.resolve()).then(fn);
+    const done = run.then(() => undefined, () => undefined);
+    this.running.set(purchase, done);
+    try {
+      return await run;
+    } finally {
+      if (this.running.get(purchase) === done) this.running.delete(purchase);
     }
-    if (!accepts.length) {
-      try {
-        accepts = ((await probe.clone().json()) as { accepts?: Requirement[] }).accepts ?? [];
-      } catch {
-        accepts = [];
-      }
-    }
-    return (
-      accepts.find(
-        r =>
-          r.scheme === "exact" &&
-          r.network === ROBINHOOD_NETWORK &&
-          sameAddress(r.asset, USDG) &&
-          /^\d+$/.test(String(r.amount)) &&
-          /^0x[0-9a-fA-F]{40}$/.test(String(r.payTo)),
-      ) ?? null
-    );
   }
 
   /**
