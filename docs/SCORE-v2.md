@@ -87,6 +87,11 @@ is **not published**, so a score that depends on it cannot be recomputed exactly
 it as `links`; without it, only the on-chain links above apply). An agent backed by its owner's own root builds
 nothing. Clusters shape the computation only; no output names them.
 
+**Priors' own payments are no one's income.** For income alone, Priors' clusters list also has an income-only side: a
+payment from a wallet of that side, or of an agent of it, to an agent of it counts for nothing, in either direction,
+receipts and a loan's income bonus included (`incomeLinks` in `score-v2-inputs.mjs`). It only takes payments out, and it
+never touches backing: a protocol root backing an agent of that side is still someone else's risk.
+
 Next (v2.1): wallets funded from the same source, or paying each other's gas, join one cluster (`makeClusters` in
 `score-v2-inputs.mjs` is the seam).
 
@@ -384,6 +389,12 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
 
 ## Changelog
 
+- **inputs, 2026-11-05** (all versions): Priors' own payments are no one's income again, through the income-only side
+  of Priors' clusters list ("Clusters"). From 2026-10-31, when part of that list moved so that a protocol root could
+  back its agents as someone else's risk, a payment from that side to some of its agents counted. Backing, netting and
+  the line verdicts are as they were, and no weight changes. On the live snapshot at block 106,761,549, under 2.0.4 and
+  2.0.5 alike: one score changes, 30 to 25 (5.5 income points from one payer of that side), 12 agents each lose 0.1
+  USDG of receipts with no score change, and no other score, rung or component moves.
 - **2.0.5** (built 2026-10-31; published on the dev log, priors.trade/updates, on 2026-11-02; the default from
   2026-11-10 00:00 UTC): 2.0.4 plus renting's rule (`sdk/score-weights.v2.0.5.json`,
   `leases`; rules in "Renting (2.0.5)"). An agent rented out by the day on AgentLease keeps its owner's record, and the

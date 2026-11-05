@@ -551,4 +551,63 @@ check("on 200 random histories with random leases: every earlier version scores 
   }
 });
 
+// ---- Priors' own payments are no one's income (docs/SCORE-v2.md, "Clusters"): income-only links (`incomeLinks`) joined
+// to the clusters for that question alone; backing keeps the clusters list's clusters
+const SAFE = H(0x5af), PRIORS_PAYER = H(0x437), SIDE_WALLET = H(0x51de), LINED_W = H(0x11e), WORKER_W = H(0x40c), HIRER_W = H(0x41c);
+const STRANGER = H(0x5e1), OUTSIDER_OWNER = H(0x5e2);
+const TV5 = 60, LINED = 61, WORKER = 62, HIRER = 63, LISTED = 437, OUTSIDER = 50_001;
+// the clusters list: treasury v5's root and Priors' wallets (LISTED in it through its owner); the income-only side joins
+// to it three more agents and a wallet of its own, which the list leaves out so that a protocol root backs them as
+// someone else
+const OWN_LINKS = { clusters: [{ agents: [TV5, LISTED], wallets: [SAFE, PRIORS_PAYER] }] };
+const INCOME_LINKS = { clusters: [{ agents: [TV5, LISTED, LINED, WORKER, HIRER], wallets: [SAFE, PRIORS_PAYER, SIDE_WALLET, LINED_W, WORKER_W, HIRER_W] }] };
+// at `t`: an agent of the side on treasury v5's line (three loans repaid on time, 20 USDG of its delegation held now), one
+// paid by another, the one paying it, LISTED and someone else's agent; the payments: Priors' wallets paying the side (20
+// payments of 0.05 to LINED, SIDE_WALLET to HIRER), the side paying itself (HIRER to WORKER) and paying LISTED, a
+// stranger paying LINED and WORKER, and HIRER paying the outsider
+const ownWorld = (t) => ({ meta: { timestamp: t, treasuryV5AgentId: TV5, seatVaultV5AgentId: 98 }, events: [],
+  agents: [agent(TV5, SAFE, { isRoot: true, enrolledAt: t - 20 * DAY }), agent(LINED, LINED_W, { sponsor: TV5, delegatedIn: $(20) }),
+    agent(WORKER, WORKER_W), agent(HIRER, HIRER_W), agent(LISTED, PRIORS_PAYER), agent(OUTSIDER, OUTSIDER_OWNER)],
+  loans: [0, 1, 2].map((i) => ({ agentId: LINED, sponsorId: TV5, era: "v2", id: 900 + i, owner: LINED_W, principal: $(50), fee: 0,
+    issuedAt: t - (25 - i * 8) * DAY, dueAt: t - (25 - i * 8 - 14) * DAY, closedAt: t - (25 - i * 8 - 7) * DAY, status: "repaid" })) });
+const ownPaid = (t) => [
+  ...Array.from({ length: 20 }, (_, i) => paid(PRIORS_PAYER, LINED_W, 0.05, t - DAY - i * 3600)),
+  paid(SIDE_WALLET, HIRER_W, 1.5, t - 2 * DAY), paid(HIRER_W, WORKER_W, 2, t - 3 * DAY), paid(WORKER_W, PRIORS_PAYER, 2, t - 3 * DAY),
+  paid(STRANGER, LINED_W, 2, t - 4 * DAY), paid(STRANGER, WORKER_W, 3, t - 4 * DAY), paid(HIRER_W, OUTSIDER_OWNER, 2, t - 5 * DAY),
+];
+const OWN_WALLETS = { [LINED]: LINED_W, [WORKER]: WORKER_W, [HIRER]: HIRER_W, [LISTED]: PRIORS_PAYER, [OUTSIDER]: OUTSIDER_OWNER };
+const fromPriors = (p) => INCOME_LINKS.clusters[0].wallets.includes(p.payer) && p.payTo !== OUTSIDER_OWNER;
+
+check("Priors' own payments are no one's income (incomeLinks), under 2.0.4 and 2.0.5: a wallet of Priors' cluster paying an agent of the income-only side, a wallet of the side paying one, an agent of it paying another or paying an agent of Priors' cluster count for nothing, receipts included; a stranger paying an agent of the side counts as before, and so does the side paying someone else; with no income-only links, nothing changes", () => {
+  for (const [w, extra] of [[W204, {}], [W205, { leases: [] }]]) {
+    const o = { links: OWN_LINKS, income: ownPaid(NOW), agentWallets: OWN_WALLETS, now: NOW, weights: w, ...extra };
+    const before = scoreAll(ownWorld(NOW), o), after = scoreAll(ownWorld(NOW), { ...o, incomeLinks: INCOME_LINKS });
+    const strangerOnly = scoreAll(ownWorld(NOW), { ...o, income: ownPaid(NOW).filter((p) => !fromPriors(p)) });
+    const d = (all, id) => of(all, id).detail;
+    assert.deepEqual(scoreAll(ownWorld(NOW), { ...o, incomeLinks: { clusters: [] } }), before, `${w.version}: no income-only links, as before`);
+    // the premise: without the rule (the clusters list alone) Priors' own payments are income
+    assert.deepEqual([d(before, LINED).receiptPayers, d(before, WORKER).receiptPayers, d(before, HIRER).receiptsUsdg, d(before, LISTED).receiptsUsdg], [2, 2, 1.5, 2], `${w.version}: the premise`);
+    assert.ok(pts(of(before, LINED), "income") > pts(of(strangerOnly, LINED), "income"), `${w.version}: the premise, LINED's income points`);
+    // with it: only the stranger's payments count for the side, as if Priors had paid it nothing
+    assert.deepEqual([d(after, LINED).receiptsUsdg, d(after, LINED).receiptPayers, d(after, LINED).distinctPayers], [2, 1, 1], `${w.version}: LINED, the stranger alone`);
+    assert.deepEqual([d(after, WORKER).receiptsUsdg, d(after, WORKER).receiptPayers], [3, 1], `${w.version}: WORKER, the stranger alone`);
+    assert.deepEqual([d(after, HIRER).receiptsUsdg, pts(of(after, HIRER), "income")], [0, 0], `${w.version}: a wallet of the side paying HIRER`);
+    assert.deepEqual([d(after, LISTED).receiptsUsdg, pts(of(after, LISTED), "income")], [0, 0], `${w.version}: the side paying an agent of Priors' cluster`);
+    for (const id of [LINED, WORKER, HIRER, LISTED]) assert.deepEqual(of(after, id), of(strangerOnly, id), `${w.version}: #${id} scores as if Priors had paid it nothing`);
+    assert.deepEqual(of(after, OUTSIDER), of(before, OUTSIDER), `${w.version}: someone else's agent paid by the side, as before`);
+    assert.equal(d(after, OUTSIDER).receiptsUsdg, 2);
+  }
+});
+
+check("Priors' own payments: backing is not touched (the clusters list's clusters): LINED's loans on treasury v5's line stay backed by someone else, and its risk time, seasoned loans and backing are what they were, under 2.0.4 and 2.0.5", () => {
+  for (const [w, extra] of [[W204, {}], [W205, { leases: [] }]]) {
+    const o = { links: OWN_LINKS, income: ownPaid(NOW), agentWallets: OWN_WALLETS, now: NOW, weights: w, ...extra };
+    const inp = buildInputs(ownWorld(NOW), { ...o, incomeLinks: INCOME_LINKS }).find((x) => x.agentId === LINED);
+    assert.deepEqual([inp.loans.map((l) => l.backedByOthers), inp.backingByOthers], [[true, true, true], $(20)], w.version);
+    const before = of(scoreAll(ownWorld(NOW), o), LINED), after = of(scoreAll(ownWorld(NOW), { ...o, incomeLinks: INCOME_LINKS }), LINED);
+    for (const k of ["riskTime", "seasoned", "backing"]) assert.equal(pts(after, k), pts(before, k), `${w.version}: ${k}`);
+    assert.deepEqual([after.detail.repaidByOthers, pts(after, "backing") > 0, pts(after, "riskTime") > 0], [3, true, true], w.version);
+  }
+});
+
 console.log(`\n${passed} passed`);

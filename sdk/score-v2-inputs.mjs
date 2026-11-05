@@ -10,6 +10,13 @@
 // wallet linked through them, plus the links of the clusters file. Funding-source clustering (wallets paid for by
 // the same source) plugs in here later. Clusters shape the computation only: no output names them.
 //
+// Income-only links (`incomeLinks`, every version): links in the clusters list's form joined to the clusters for one
+// question alone, whether a payer is paying itself. A payment from a wallet to an agent they join is no one's income
+// (receipts and any loan's income bonus included), in either direction, as at a payment within one cluster; backing,
+// netting, the waits and a lease's sides keep the clusters without them, so they never stop a loan from counting. They
+// add exclusions only: a payment that counted nowhere still counts nowhere, and an agent and payer they join with
+// nothing are judged as without them. Priors' scores pass Priors' own (Priors' clusters list, not published).
+//
 // Income. A payment counts for the agents that declared the paid wallet as their payment wallet (the registry sets
 // it to the owner at registration, clears it when the agent changes hands, and changing it needs the wallet's
 // signature), shared evenly between them: an agent pushed onto someone's address can't take a share of their income
@@ -375,8 +382,11 @@ function leaseWindows(leases, afterS) {
  *   leaseAddress  address                          2.0.5: the lease's own address (deployments/4663.agent-lease.json):
  *                                                  what it pays out or takes in never counts. Absent: no such payment is
  *                                                  known
+ *   incomeLinks   { clusters: [{ agents, wallets }] } links joined to `links` for income alone (the header's "Income-only
+ *                                                  links"): a payment from a wallet to an agent they join is no one's
+ *                                                  income. Absent: none, as before
  */
-export function buildInputs(snapshot, { links, income = [], agentWallets = {}, transfers = [], repayers = {}, payerScores = {}, payerAgents = null, pending = {}, backerOwnerSince = {}, ownerSince = {}, sales, plainTransferAt = {}, leases, leaseAddress, now, weights = DEFAULT_WEIGHTS } = {}) {
+export function buildInputs(snapshot, { links, income = [], agentWallets = {}, transfers = [], repayers = {}, payerScores = {}, payerAgents = null, pending = {}, backerOwnerSince = {}, ownerSince = {}, sales, plainTransferAt = {}, leases, leaseAddress, incomeLinks, now, weights = DEFAULT_WEIGHTS } = {}) {
   const t = Number(now ?? snapshot.meta?.timestamp);
   if (!Number.isFinite(t) || t <= 0) throw new TypeError("score-v2 inputs: pass `now` (or a snapshot with meta.timestamp)");
   // 2.0.4: a change of hands by a sale on Priors' market keeps the record (keptOwnership), unless the sale isn't read yet
@@ -389,6 +399,11 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
   const saleLinks = keeps ? [...soldBy.values()].flat().filter((s) => isAddr(s.wallet)).map((s) => ({ wallets: [s.seller, s.wallet] })) : [];
   const linksIn = saleLinks.length ? { ...links, clusters: [...((links && links.clusters) || []), ...saleLinks] } : links;
   const K = makeClusters(snapshot, linksIn, agentWallets);
+  // the clusters with the income-only links joined (`incomeLinks`), asked only whether a payer is paying itself (KI, and
+  // selfOf below); K otherwise, and K alone without them
+  const incomeGroups = (incomeLinks && incomeLinks.clusters) || [];
+  const linksIncome = incomeGroups.length ? { ...linksIn, clusters: [...((linksIn && linksIn.clusters) || []), ...incomeGroups] } : null;
+  const KI = linksIncome ? makeClusters(snapshot, linksIncome, agentWallets) : K;
   // 2.0.5: renting's windows (leaseWindows), each renter's, the lease's own address, and for each clusters the sides
   // each lease sets against each other in its window: what a lease brings never counts (the header's "Renting")
   const rule = leaseRule(weights);
@@ -489,19 +504,31 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
   // at the sale stays in it: saleLinks), but for an agent the clusters file lists: its listing goes with it to the buyer
   // (makeClusters `listed`), so its cluster as at each sale is built again, the agent owned by the seller and declaring
   // the wallet it declared then: the wallets the file joins with it stay its own on the seller's side of the sale
-  const routesOf = new Map(); // agentId -> [{ C, self }] by route
-  for (const [id, k] of keptOf) {
-    if (!k.hops.length) continue;
-    const routes = k.hops.map((h) => {
-      if (!K.listed.has(id)) return { C: K, self: K.clusterOfWallet(h.seller) };
-      const asAt = { ...snapshot, agents: snapshot.agents.map((a) => (Number(a.id) === id ? { ...a, owner: h.seller } : a)) };
-      const C = makeClusters(asAt, linksIn, { ...agentWallets, [id]: h.wallet });
-      return { C, self: C.clusterOfAgent(id) };
-    });
-    routes.push({ C: K, self: K.clusterOfAgent(id) });
-    routesOf.set(id, routes);
-  }
+  const routesIn = (K0, linksK) => {
+    const m = new Map(); // agentId -> [{ C, self }] by route
+    for (const [id, k] of keptOf) {
+      if (!k.hops.length) continue;
+      const routes = k.hops.map((h) => {
+        if (!K0.listed.has(id)) return { C: K0, self: K0.clusterOfWallet(h.seller) };
+        const asAt = { ...snapshot, agents: snapshot.agents.map((a) => (Number(a.id) === id ? { ...a, owner: h.seller } : a)) };
+        const C = makeClusters(asAt, linksK, { ...agentWallets, [id]: h.wallet });
+        return { C, self: C.clusterOfAgent(id) };
+      });
+      routes.push({ C: K0, self: K0.clusterOfAgent(id) });
+      m.set(id, routes);
+    }
+    return m;
+  };
+  const routesOf = routesIn(K, linksIn);
   const judgeOf = (id, route) => { const r = routesOf.get(id); return r ? r[route] : { C: K, self: K.clusterOfAgent(id) }; };
+  // the same with the income-only links joined (KI): an agent they list takes its listing to the buyer, as the list's do
+  const incomeRoutes = KI === K ? null : routesIn(KI, linksIncome);
+  /** Whether `payer` is agent `id`'s own side on `route` with the income-only links joined (false without them) */
+  const selfOf = (id, route, payer) => {
+    if (!incomeRoutes) return false;
+    const r = incomeRoutes.get(id), J = r ? r[route] : { C: KI, self: KI.clusterOfAgent(id) };
+    return J.C.clusterOfWallet(payer) === J.self;
+  };
   /** The route of the owner that held agent `id` at `at`: the sales that took it to its current owner made before then */
   const ownerRoute = (id, at) => (keptOf.get(id)?.hops || []).filter((h) => h.at <= at).length;
 
@@ -577,6 +604,8 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
       if (J.C.clusterOfWallet(p.payer) === J.self) continue; // paying itself: never income
       const o = routesOf.has(x.id) ? ownerRoute(x.id, p.at) : x.route;
       if (o > x.route) { const H = judgeOf(x.id, o); if (H.C.clusterOfWallet(p.payer) === H.self) continue; }
+      // the income-only links: one side with them is paying itself too, on the same routes (incomeLinks)
+      if (selfOf(x.id, x.route, p.payer) || (o > x.route && selfOf(x.id, o, p.payer))) continue;
       const r = netRatio(J.C, p.payTo, p.payer);
       if (r <= 0) continue;
       if (!incomeOf.has(x.id)) incomeOf.set(x.id, []);
