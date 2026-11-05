@@ -1,5 +1,22 @@
 # @priors/mcp changelog
 
+## 0.18.1 (2026-11-05)
+
+On @priors/x402 0.8.8 (a plan whose AutoRepay epoch could not be read, below).
+
+- **A bid made while Priors' hub does not answer never sets the bids' approval down, and counts it** (GHSA-mc89-r73h-33vv,
+  reported by @sonson0910; only with `PRIORS_MARKET` on). With the hub's list of this wallet's bids unread, `market_bid`
+  and `market_bid_any` planned from this server's own record alone: an approval standing above `PRIORS_MAX_BIDS_USD`
+  (bids made in Go mode, on the board or on another machine) was set down to the new bid's price, leaving those bids
+  unfunded (0.16.0 had fixed the same in `market_cancel_bid`), and an approval under it was neither counted against
+  `PRIORS_MAX_BIDS_USD` nor kept back from the agent's open loans. With the hub down, the approval standing now counts
+  with the new bid: it is only ever raised, a bid that would pass `PRIORS_MAX_BIDS_USD` with it is refused before
+  anything is signed (try again once the hub answers), and keep back counts it.
+- **Auto-borrow never borrows on a plan whose AutoRepay epoch could not be read** (GHSA-mc89-r73h-33vv): with
+  `@priors/x402` 0.8.7, a failed `epochOf` read made a plan set before the agent's key or owner changed, which
+  AutoRepayV2 never pays, read as current. The borrow is refused now ("AutoRepay's epoch ... could not be read just
+  now"), and `credit_status` says the same.
+
 ## 0.18.0 (2026-11-04)
 
 - `line_key_status` and `line_key_spend` (only with `PRIORS_LINE_KEY=on`, off by default; docs/LINE-KEY.md in the

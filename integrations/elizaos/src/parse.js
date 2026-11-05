@@ -3,9 +3,11 @@
 
 const num = (s) => { const n = Number(String(s).replace(",", ".")); return Number.isFinite(n) && n >= 0 ? n : null; };
 
-const URL_RE = /https?:\/\/[^\s<>"'`)\]]+/gi;
-/** The message's own words: every URL taken out, so nothing in a seller's path or query (/pay1/borrow5.json, #123) is
- * ever read as an amount or an id (GHSA-rf6g, GHSA-62m7). */
+// a URL as the prose holds it: everything up to the next whitespace. ")", "]", "'" and the rest are a URL's own
+// characters (RFC 3986), so stopping at one left the URL's tail in the prose (GHSA-mc89)
+const URL_RE = /https?:\/\/\S+/gi;
+/** The message's own words: every URL taken out whole, so nothing in a seller's path, query or fragment
+ * (/pay1/borrow5.json, #123, #)borrow$5) is ever read as an amount or an id (GHSA-rf6g, GHSA-62m7, GHSA-mc89). */
 export const proseOf = (text) => String(text || "").replace(URL_RE, " ");
 
 /** The first https URL in the text, or null. */

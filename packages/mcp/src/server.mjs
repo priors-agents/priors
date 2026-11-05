@@ -1125,6 +1125,8 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       throw no(`agent #${id}'s declared wallet is its owner's own address (this wallet), and AutoRepay never repays from that address under a wallet plan, so no plan covers the loan. Declare a key of the agent's own as its wallet (the registry's setAgentWallet) and turn Autopay on from that key`);
     }
     if (!st.plan.on) throw no("Autopay is off for this wallet");
+    // null: AutoRepay's epoch unread, so a plan set before the agent's key or owner changed can't be told apart (GHSA-mc89)
+    if (st.plan.current === null) throw no(`AutoRepay's epoch for agent #${id} could not be read just now, so whether this wallet's plan still pays can't be told (one set before the agent's key or owner changed pays nothing); try again in a moment`);
     if (!st.plan.current) throw no("this wallet's Autopay plan was set under an earlier owner or key of the agent, so it pays nothing now");
     if (st.held) throw no("Autopay is on hold for this wallet");
     if (st.paused) throw no(`Autopay is paused by the Safe until ${when(st.paused.until)}`);
@@ -1141,6 +1143,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     if (!st.declared) return ["Autopay: off. This wallet is not the agent's declared wallet, so it can't repay the agent's loans through AutoRepay."];
     if (st.ownerIsWallet) return [`Autopay: off. The agent's declared wallet is its owner's own address (this wallet), and AutoRepay never repays from that address under a wallet plan${st.plan.on ? ", so the plan this wallet set pays nothing" : ""}. Declare a key of the agent's own as its wallet (setAgentWallet) and turn Autopay on from that key, or repay by hand before the due date.`];
     if (!st.plan.on) return ["Autopay: off. autopay_on turns it on: this wallet then repays each loan a few hours before it is due, if it holds enough."];
+    if (st.plan.current === null) return ["Autopay: on, but AutoRepay's epoch for the agent couldn't be read just now, so whether the plan still pays can't be told (one set before the agent's key or owner changed pays nothing). Ask again in a moment."];
     if (!st.plan.current) return [st.plan.stale ? "Autopay: the plan was set before the agent's key or owner changed, so it pays nothing now. Call autopay_on again." : "Autopay: the plan was set under an earlier owner of the agent, so it pays nothing now. Call autopay_on again."];
     const out = [`Autopay: on, from this wallet${st.plan.useSavings ? " (then its savings)" : ""}; limit ${usd(st.plan.cap)} per loan, budget left ${usd(st.budget)}${st.plan.late ? "; also in the grace period" : ""}.${st.held ? " On hold: it pays nothing until resumed." : ""}${st.paused ? ` Paused by the Safe until ${when(st.paused.until)}: repay by hand before the due date.` : ""}`];
     if (st.next) out.push(`Next autopay: loan #${st.next.loanId}, ${usd(st.next.due)}, from ${when(st.next.opens)} (due ${when(st.next.dueAt)}).`);

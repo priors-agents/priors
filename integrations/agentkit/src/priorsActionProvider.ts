@@ -35,8 +35,10 @@ const x402Fetch = () => import("@x402/fetch");
 
 /** A payment signed for a purchase and not seen settled: until it expires, the only payment sent for that purchase. */
 type Signed = { paymentHeaders: Record<string, string>; validBefore: number; price: bigint; payTo: string; borrowed: string };
+/** @priors/x402's module. */
+type X402 = Awaited<ReturnType<typeof x402>>;
 /** What @priors/x402's resend answers. */
-type Sent = Awaited<ReturnType<Awaited<ReturnType<typeof x402>>["resend"]>>;
+type Sent = Awaited<ReturnType<X402["resend"]>>;
 /** A paid request's resends while its seller answers "settlement pending", as @priors/mcp's pay_url sends them. */
 const RESEND = { retries: 2, maxSleepMs: 10_000 };
 
@@ -46,15 +48,19 @@ const utcDay = () => new Date().toISOString().slice(0, 10);
 
 /**
  * Auto-borrow, set by the owner in code (never by the model): pay_x402_with_priors_credit borrows the gap on its own,
- * up to `perCall` USDG a call and `perDay` USDG a UTC day in this process, for the `hosts` listed only (exact host
- * names), for 14 days, and only while this wallet's Autopay (AutoRepay v2) covers the new loan. The model's maxBorrow
- * can only lower the amount.
+ * up to `perCall` USDG a call and `perDay` USDG a UTC day in this process (each read exactly, at most 6 decimals), for
+ * the `hosts` listed only (exact host names), for 14 days whatever term the model names, and only while this wallet's
+ * Autopay (AutoRepay v2) covers the new loan. The model's maxBorrow can only lower the amount.
  */
 export type AutoBorrowOptions = { perCall: string; perDay: string; hosts: string[] };
 export type PriorsOptions = { autoBorrow?: AutoBorrowOptions };
 
 /** A refusal before anything is sent (its message is the answer). */
 class Refusal extends Error {}
+/** A transaction mined and reverted: the chain shows it moved nothing. */
+class Reverted extends Error {}
+/** A borrow sent whose answer was lost: it may have opened a loan (its message says so, with its transaction). */
+class Unconfirmed extends Error {}
 
 /**
  * Atomic USDG from an amount the model gives: a plain decimal of at most 6 places, read exactly. viem's parseUnits
@@ -62,13 +68,14 @@ class Refusal extends Error {}
  *
  * @param value - The amount, e.g. "0.10".
  * @param name - Its argument's name, for the refusal.
+ * @param after - The refusal's last words.
  * @returns Atomic USDG.
  */
-function exactUsdg(value: string, name: string): bigint {
+function exactUsdg(value: string, name: string, after = " Nothing was sent."): bigint {
   const s = String(value).trim();
-  if (!/^\d+(\.\d+)?$/.test(s)) throw new Refusal(`${name} must be a plain amount of USDG, such as 0.10. Nothing was sent.`);
+  if (!/^\d+(\.\d+)?$/.test(s)) throw new Refusal(`${name} must be a plain amount of USDG, such as 0.10.${after}`);
   if ((s.split(".")[1] ?? "").length > USDG_DECIMALS)
-    throw new Refusal(`${name} ${s} has more than ${USDG_DECIMALS} decimals, and USDG counts in millionths: give at most 6 decimals. Nothing was sent.`);
+    throw new Refusal(`${name} ${s} has more than ${USDG_DECIMALS} decimals, and USDG counts in millionths: give at most 6 decimals.${after}`);
   return parseUnits(s, USDG_DECIMALS);
 }
 
@@ -83,7 +90,7 @@ function mined(receipt: unknown, what: string, hash: string): void {
   const status = (receipt as { status?: unknown } | null)?.status;
   if (status === "success" || status === 1 || status === 1n || status === "0x1") return;
   if (status === "reverted" || status === 0 || status === 0n || status === "0x0")
-    throw new Error(`the ${what} transaction ${hash} reverted on chain: it moved nothing`);
+    throw new Reverted(`the ${what} transaction ${hash} reverted on chain: it moved nothing`);
   throw new Error(`the ${what} transaction ${hash} could not be confirmed (its receipt has no status): check it before acting on it`);
 }
 
@@ -192,7 +199,7 @@ export class PriorsActionProvider extends ActionProvider<EvmWalletProvider> {
   // purchase after the restart signs again: at most one more payment of at most maxPrice, to the seller the call named
   // (P-15's class). Upgrade when the provider gets a place to keep state, or on a report of it.
   private readonly unsettled = new Map<string, Signed>();
-  /** The call under way for each purchase: another call for it waits for it, then finds its payment. */
+  /** The money call under way for each wallet: another one of that wallet waits for it (onePerWallet). */
   private readonly running = new Map<string, Promise<void>>();
 
   /**
@@ -211,8 +218,9 @@ export class PriorsActionProvider extends ActionProvider<EvmWalletProvider> {
       this.auto = null;
       return;
     }
-    const perCall = parseUnits(String(a.perCall), USDG_DECIMALS);
-    const perDay = parseUnits(String(a.perDay), USDG_DECIMALS);
+    // read exactly, as the model's amounts are: a limit is never rounded up to the next unit (RT-4's rule)
+    const perCall = exactUsdg(String(a.perCall), "autoBorrow.perCall", "");
+    const perDay = exactUsdg(String(a.perDay), "autoBorrow.perDay", "");
     if (perCall <= 0n) throw new Error("autoBorrow.perCall must be above 0");
     if (perDay < perCall) throw new Error("autoBorrow.perDay must be at least autoBorrow.perCall");
     const hosts = (a.hosts ?? []).map(h => String(h).trim().toLowerCase());
@@ -330,18 +338,20 @@ Inputs:
     walletProvider: EvmWalletProvider,
     args: z.infer<typeof BorrowSchema>,
   ): Promise<string> {
-    try {
-      const loan = await this.borrowAmount(
-        walletProvider,
-        args.agentId,
-        exactUsdg(args.amount, "amount"),
-        args.days,
-      );
-      return `Borrowed ${usdg(loan.amount)} USDG from agent #${args.agentId}'s Priors line: loan #${loan.loanId}, fee ${usdg(loan.fee)} USDG, due ${loan.dueAt}. Transaction: ${loan.hash}`;
-    } catch (error) {
-      if (error instanceof Refusal) return `Error: ${error.message}`;
-      return `Error borrowing from Priors: ${unfenced(String(error))}`;
-    }
+    return this.onePerWallet(walletProvider, async () => {
+      try {
+        const loan = await this.borrowAmount(
+          walletProvider,
+          args.agentId,
+          exactUsdg(args.amount, "amount"),
+          args.days,
+        );
+        return `Borrowed ${usdg(loan.amount)} USDG from agent #${args.agentId}'s Priors line: loan #${loan.loanId}, fee ${usdg(loan.fee)} USDG, due ${loan.dueAt}. Transaction: ${loan.hash}`;
+      } catch (error) {
+        if (error instanceof Refusal || error instanceof Unconfirmed) return `Error: ${error.message}`;
+        return `Error borrowing from Priors: ${unfenced(String(error))}`;
+      }
+    });
   }
 
   /**
@@ -363,6 +373,20 @@ Inputs:
     schema: RepaySchema,
   })
   async repay(
+    walletProvider: EvmWalletProvider,
+    args: z.infer<typeof RepaySchema>,
+  ): Promise<string> {
+    return this.onePerWallet(walletProvider, () => this.repayLoan(walletProvider, args));
+  }
+
+  /**
+   * repay_priors_loan's work, run as the wallet's one money call (onePerWallet).
+   *
+   * @param walletProvider - The wallet provider.
+   * @param args - The loan id, and optionally its agent id.
+   * @returns The repayment, or an error message.
+   */
+  private async repayLoan(
     walletProvider: EvmWalletProvider,
     args: z.infer<typeof RepaySchema>,
   ): Promise<string> {
@@ -448,7 +472,7 @@ Inputs:
 - maxPrice: the most to pay for this call, in USDG (e.g. 0.10).
 - maxBorrow: the most to borrow if the wallet is short, in USDG (default 0: never borrow; with autoBorrow, its amount
   per call, which this can only lower).
-- days: the term of a loan taken for the gap (default 7; 14 with autoBorrow).
+- days: the term of a loan taken for the gap (default 7; with autoBorrow always 14, the owner's setting).
 - method, body: POST and its body (default GET with no body).`,
     schema: PayX402WithCreditSchema,
   })
@@ -491,11 +515,12 @@ Inputs:
           : args.maxBorrow === undefined || named > auto.perCall
             ? auto.perCall
             : named;
-      const days = args.days ?? (auto ? AUTO_TERM_DAYS : DEFAULT_TERM_DAYS);
+      // auto-borrow's term is the owner's (14 days, brought down to the pool's maxTerm below), never the model's days
+      const days = auto ? AUTO_TERM_DAYS : args.days ?? DEFAULT_TERM_DAYS;
       const X = await x402();
       const me = walletProvider.getAddress() as Hex;
       const purchase = `${me.toLowerCase()} ${await X.purchaseKey(new Request(args.url, init()))}`;
-      return await this.onePerPurchase(purchase, async () => {
+      return await this.onePerWallet(walletProvider, async () => {
         // a payment signed for this purchase that may still settle is sent again, before anything is probed or borrowed
         const now = Math.floor(Date.now() / 1000);
         for (const [k, v] of this.unsettled) if (v.validBefore + X.SKEW_SECONDS <= now) this.unsettled.delete(k);
@@ -504,22 +529,39 @@ Inputs:
           const r = await X.resend(args.url, out.paymentHeaders, { ...RESEND, init: init(), fetchImpl: this.fetchImpl, timeoutMs: X.DEFAULT_TIMEOUT_MS });
           if (r.response.ok) this.unsettled.delete(purchase);
           const first = out.borrowed ? `Its first attempt: ${out.borrowed}` : "\n";
-          return guarded(`No new payment was signed: the payment of ${usdg(out.price)} USDG to ${out.payTo} signed earlier for this purchase was sent again. ${first}${await this.outcome(r, out, X.SKEW_SECONDS)}`);
+          return guarded(`No new payment was signed: the payment of ${usdg(out.price)} USDG to ${out.payTo} signed earlier for this purchase was sent again. ${first}${await this.outcome(X, r, out)}`);
         }
-        const probe = await this.fetchImpl(args.url, init());
+        // the probe has a time bound of its own, as the payer's (DEFAULT_TIMEOUT_MS), its body included: the wallet's
+        // other money calls wait for this one
+        let probe: Response;
+        try {
+          probe = await this.fetchImpl(args.url, { ...init(), signal: AbortSignal.timeout(X.DEFAULT_TIMEOUT_MS) });
+        } catch (error) {
+          const name = (error as { name?: string })?.name;
+          if (name === "TimeoutError" || name === "AbortError")
+            return `Error: ${host} did not answer within ${X.DEFAULT_TIMEOUT_MS / 1000} s. Nothing was signed or paid.`;
+          throw error;
+        }
+        const probeText = async () => {
+          try {
+            return (await X.readCapped(probe)).text;
+          } catch {
+            return "";
+          }
+        };
         if (probe.status >= 300 && probe.status < 400) {
           const to = probe.headers.get("location");
           return guarded(`The URL answered a redirect (HTTP ${probe.status}), not followed: nothing was paid.${to ? `\n${fenced(to.slice(0, 500), "redirect target")}` : ""}`);
         }
         if (probe.status !== 402)
-          return guarded(`No payment asked (HTTP ${probe.status}). Response:\n${fenced((await probe.text()).slice(0, 2000), "response body")}`);
+          return guarded(`No payment asked (HTTP ${probe.status}). Response:\n${fenced((await probeText()).slice(0, 2000), "response body")}`);
         // the 402 as @priors/x402's payer reads it (the PAYMENT-REQUIRED header, else a v2 body), and its requirement as
         // the payer picks it: exact USDG on Robinhood Chain by EIP-3009, on USDG's own EIP-712 domain, to a 0x payTo
         const { x402Client, x402HTTPClient } = await x402Fetch();
         const http = new x402HTTPClient(new x402Client());
         let body: { x402Version?: unknown; accepts?: unknown } | undefined;
         try {
-          const text = await probe.text();
+          const text = await probeText();
           body = text ? JSON.parse(text) : undefined;
         } catch {
           body = undefined;
@@ -566,8 +608,9 @@ Inputs:
             return `Error: the wallet holds ${usdg(balance)} USDG, short of ${usdg(price)}; borrowing ${usdg(amount)} (the pool's minimum loan is ${usdg(params.minLoan)}) is above ${auto ? `the most this call may borrow, ${usdg(maxBorrow)}` : `maxBorrow ${args.maxBorrow || "0"}`}. Nothing was paid.`;
           }
           // auto: the day's room is taken here, before any await, so two calls running at once never both pass the
-          // limit; it is given back whenever the borrow stops before it is sent, refused or a read failing (GHSA-q4cg);
-          // a borrow whose sending began stays counted (its answer may be lost: the safe direction)
+          // limit; it is given back whenever the borrow stops before it is sent, refused or a read failing, the
+          // controller check's included (GHSA-q4cg, GHSA-87h5), and when it is mined and reverts (it moved nothing:
+          // GHSA-mc89); a borrow whose sending began and whose answer is lost stays counted (the safe direction)
           let reserved: { day: string; amount: bigint } | null = null;
           let sending = false;
           if (auto) {
@@ -581,14 +624,13 @@ Inputs:
           // auto: 14 days, brought down to the pool's maxTerm; otherwise the term asked, as before
           const termDays = auto && params.maxTerm !== undefined && BigInt(days) * 86400n > BigInt(params.maxTerm) ? Number(BigInt(params.maxTerm) / 86400n) : days;
           const loan = await this.borrowAmount(walletProvider, args.agentId, amount, termDays,
-            auto
-              ? async (fee: bigint) => {
-                  await this.autopayCovers(walletProvider, args.agentId, amount + fee);
-                  sending = true; // the borrow's transaction is sent right after this check
-                }
-              : undefined, "borrowed or paid")
+            auto ? (fee: bigint) => this.autopayCovers(walletProvider, args.agentId, amount + fee) : undefined,
+            "borrowed or paid",
+            () => {
+              sending = true; // right before the borrow's transaction is sent, every check passed
+            })
             .catch((error: unknown) => {
-              if (reserved && !sending && this.borrowedToday.day === reserved.day) this.borrowedToday.amount -= reserved.amount;
+              if (reserved && (!sending || error instanceof Reverted) && this.borrowedToday.day === reserved.day) this.borrowedToday.amount -= reserved.amount;
               throw error;
             });
           borrowed = `Borrowed ${usdg(loan.amount)} USDG first: loan #${loan.loanId}, fee ${usdg(loan.fee)}, due ${loan.dueAt} (transaction ${loan.hash}). ${auto ? "Auto-borrow: Autopay repays it from this wallet in its window, the last hours before it is due; keep its due in the wallet by then." : "Repay it with repay_priors_loan before then."}\n`;
@@ -608,10 +650,11 @@ Inputs:
         this.unsettled.set(purchase, signed);
         const r = await X.resend(args.url, signed.paymentHeaders, { ...RESEND, init: init(), fetchImpl: this.fetchImpl, timeoutMs: X.DEFAULT_TIMEOUT_MS });
         if (r.response.ok) this.unsettled.delete(purchase);
-        return guarded(`${borrowed}${await this.outcome(r, signed, X.SKEW_SECONDS)}`);
+        return guarded(`${borrowed}${await this.outcome(X, r, signed)}`);
       });
     } catch (error) {
       if (error instanceof Refusal) return guarded(`${borrowed}Error: ${error.message}`);
+      if (error instanceof Unconfirmed) return guarded(`Error: ${error.message} Nothing was signed or paid.`);
       return guarded(`${borrowed}Error paying ${unfenced(args.url)} with Priors credit: ${unfenced(String(error))}`);
     }
   }
@@ -702,42 +745,56 @@ Inputs:
   /**
    * What became of a payment sent: paid only on a 2xx answer. Anything else (a dropped connection, no answer in time,
    * a 5xx, a 402, a redirect) leaves it signed and sent, cashable by the seller until it expires, and a later call for
-   * the purchase sends it again (@priors/mcp's pay_url answer).
+   * the purchase sends it again (@priors/mcp's pay_url answer). A body that fails mid-read (a reset, or the request's
+   * time bound firing during a long answer) is said, never an error that hides the payment (@priors/mcp's issue #19,
+   * GHSA-87h5): once paid, the purchase is complete, so a call again for it pays again.
    *
+   * @param X - @priors/x402 (its readCapped and SKEW_SECONDS).
    * @param r - What @priors/x402's resend answered.
    * @param s - The payment sent.
-   * @param skew - @priors/x402's SKEW_SECONDS, the margin kept past validBefore.
    * @returns The answer's words for it.
    */
-  private async outcome(r: Sent, s: Signed, skew: number): Promise<string> {
+  private async outcome(X: X402, r: Sent, s: Signed): Promise<string> {
     const res = r.response;
     // of the settlement header, only its transaction hash: the rest is the seller's words
     const tx = settledTx(res.headers.get("payment-response") || res.headers.get("x-payment-response"));
-    const text = (await res.text()).slice(0, 2000);
-    const body = text ? `\nResponse:\n${fenced(text, "response body")}` : "";
+    let text = "";
+    let unread = false;
+    try {
+      ({ text } = await X.readCapped(res));
+    } catch {
+      unread = true;
+    }
+    const lost = "\nThe response body could not be read completely (the connection failed while it was sent).";
+    const body = text ? `\nResponse:\n${fenced(text.slice(0, 2000), "response body")}` : unread ? lost : "";
     const status = r.timedOut ? "no answer in time" : r.transportError ? "the connection was lost" : `HTTP ${res.status}`;
-    if (res.ok) return `Paid ${usdg(s.price)} USDG to ${s.payTo} (${status})${tx ? `; settled in ${tx}` : ""}.${body}`;
-    const until = new Date((s.validBefore + skew) * 1000).toISOString();
+    if (res.ok)
+      return `Paid ${usdg(s.price)} USDG to ${s.payTo} (${status})${tx ? `; settled in ${tx}` : ""}.${body}${unread ? " This does not undo the payment, and calling again for this purchase pays again: ask the seller for the result instead." : ""}`;
+    const until = new Date((s.validBefore + X.SKEW_SECONDS) * 1000).toISOString();
     const redirect = res.status >= 300 && res.status < 400 ? ", a redirect, not followed" : "";
     return `The payment of ${usdg(s.price)} USDG to ${s.payTo} was signed and sent (${status}${redirect}), and the seller may still settle it until ${until}${tx ? ` (it names ${tx})` : ""}: do NOT call pay_x402_with_priors_credit again for this purchase (the same method, URL and body) before then. A later call for it sends this same payment again, never a new one.${body}`;
   }
 
   /**
-   * Runs one call for a purchase at a time: a call for a purchase that another call is paying waits for it, then finds
-   * the payment it signed (two calls at once never sign two).
+   * Runs a wallet's money calls (pay, borrow, repay) one at a time, as @priors/x402's createPayer queues its payments
+   * and @priors/mcp runs its money calls: two calls at once on a short wallet would each read the balance short and each
+   * borrow, both passing auto-borrow's Autopay check on an approval that covers one loan (GHSA-482p F3, GHSA-87h5). A
+   * call for a purchase another call is paying waits for it, then finds its payment while that may still settle; once
+   * it is paid (a 2xx), the purchase is complete and a call for it is a new one.
    *
-   * @param purchase - The wallet and the purchase's key.
+   * @param walletProvider - The wallet whose calls queue.
    * @param fn - The call.
    * @returns What the call answers.
    */
-  private async onePerPurchase<T>(purchase: string, fn: () => Promise<T>): Promise<T> {
-    const run = (this.running.get(purchase) ?? Promise.resolve()).then(fn);
+  private async onePerWallet<T>(walletProvider: EvmWalletProvider, fn: () => Promise<T>): Promise<T> {
+    const key = String(walletProvider.getAddress()).toLowerCase();
+    const run = (this.running.get(key) ?? Promise.resolve()).then(fn);
     const done = run.then(() => undefined, () => undefined);
-    this.running.set(purchase, done);
+    this.running.set(key, done);
     try {
       return await run;
     } finally {
-      if (this.running.get(purchase) === done) this.running.delete(purchase);
+      if (this.running.get(key) === done) this.running.delete(key);
     }
   }
 
@@ -750,6 +807,7 @@ Inputs:
    * @param days - The term in days.
    * @param check - Called with the quoted fee before the borrow is sent; a throw refuses it.
    * @param did - What did not happen when the borrow is refused ("borrowed", "borrowed or paid").
+   * @param onSend - Called once every check has passed, right before the borrow's transaction is sent.
    * @returns The loan.
    */
   private async borrowAmount(
@@ -759,6 +817,7 @@ Inputs:
     days: number,
     check?: (fee: bigint) => Promise<void>,
     did = "borrowed",
+    onSend?: () => void,
   ) {
     const me = walletProvider.getAddress() as Hex;
     const term = BigInt(days * 86400);
@@ -772,6 +831,7 @@ Inputs:
     // the same rule as repay, before anything is sent: no key borrows here for an agent it would then be refused to
     // repay for
     await this.control(walletProvider, BigInt(agentId), did);
+    onSend?.();
     const hash = await walletProvider.sendTransaction({
       to: PRIORS_POOL,
       data: encodeFunctionData({
@@ -780,7 +840,14 @@ Inputs:
         args: [BigInt(agentId), amount, term, me, fee],
       }),
     });
-    const receipt = await walletProvider.waitForTransactionReceipt(hash);
+    // sent: an answer lost from here on may hide a loan, so it is said with its transaction, never a bare error (P-18's
+    // rule, GHSA-87h5)
+    let receipt: Awaited<ReturnType<EvmWalletProvider["waitForTransactionReceipt"]>>;
+    try {
+      receipt = await walletProvider.waitForTransactionReceipt(hash);
+    } catch (error) {
+      throw new Unconfirmed(`the borrow of ${usdg(amount)} USDG was sent (transaction ${hash}) and its answer was lost (${unfenced(String(error))}), so it may have opened a loan: check that transaction before calling again, and repay the loan with repay_priors_loan before its due date.`);
+    }
     mined(receipt, "borrow", hash);
     let loanId = "?";
     let dueAt = "?";

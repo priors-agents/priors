@@ -556,6 +556,18 @@ function reserveOf(c, { ids, me, now, except = [], extra = 0n }) {
   }
   return sum;
 }
+/** A new bid's reserve (`extra` on top of the open bids in `ids`), and what an over-limit refusal says. With Priors' hub
+ *  down (`hubDown`), the bids this wallet made elsewhere (Go mode, the board, another machine) are unknown, and the
+ *  approval standing (c.reserve) may fund them: the bid counts on top of it, so it is never set down (P-55's rule) and
+ *  the limit and keep back see it (P-54's) (GHSA-mc89-r73h-33vv). `standing`: the approval as the call first read it,
+ *  when it plans again after its own approval (which then stands for this bid too). */
+function newReserve(c, { ids, me, now, extra, hubDown, maxReserve, standing: first = null }) {
+  const known = reserveOf(c, { ids, me, now, extra });
+  if (known == null) return { error: "unread" };
+  const standing = first ?? big(c.reserve), reserve = hubDown && standing + extra > known ? standing + extra : known;
+  if (reserve > big(maxReserve)) return { error: "over", reserve, max: big(maxReserve), ...(hubDown ? { down: true, standing } : {}) };
+  return { reserve, ...(hubDown ? { standing } : {}) };
+}
 /** The terms both bids check first, in the contract's order: the pause, the wallet's standing, the price, the days. */
 function bidTerms(c, { me, now, price, days, expiry }) {
   if (unread(c.paused, c.custodian, c.refused, c.marked, c.cash, c.reserve, c.feeBps, c.minFee)) return { error: "unread" };
@@ -576,9 +588,12 @@ function bidTerms(c, { me, now, price, days, expiry }) {
  * market stops doesn't count, as bid() takes the bid then), "short" (`short`, `cash`), "over" (`reserve`, `max`)), or
  * { steps ("approveReserve": the reserve set to exactly what all its open bids and this one take, when the allowance
  * is under it or above `maxReserve`; "bid"), reserve, price, expiry, uriHash (only as its file is now: the URI's bytes
- * hashed here, with `sameFile`), minRepaid, minLine, fee, share, net (what the owner gets now), pins }.
+ * hashed here, with `sameFile`), minRepaid, minLine, fee, share, net (what the owner gets now), pins }. `hubDown`:
+ * Priors' hub didn't answer, so `myBids` lacks the bids made elsewhere: the reserve is at least the approval standing
+ * plus this bid ("over" then carries `down` and `standing`), and the approval is never set down (newReserve); the plan
+ * keeps that `standing`, which its call passes back when it plans again after its own approval.
  */
-export function bidPlan(c, { addr, me, id, now, price, days, expiry = null, sameFile = true, minRepaid = 0n, minLine = 0n, myBids = [], maxReserve, minRecord = 0n, adapters = [], shares = false }) {
+export function bidPlan(c, { addr, me, id, now, price, days, expiry = null, sameFile = true, minRepaid = 0n, minLine = 0n, myBids = [], maxReserve, minRecord = 0n, adapters = [], shares = false, hubDown = false, standing = null }) {
   c = c || {};
   const t = bidTerms(c, { me, now, price, days, expiry });
   if (t.error) return t;
@@ -597,15 +612,15 @@ export function bidPlan(c, { addr, me, id, now, price, days, expiry = null, same
     if (!k.error) return { error: "listed", price: l.price };
   }
   if (big(c.cash) < t.p) return { error: "short", short: t.p - big(c.cash), cash: big(c.cash) };
-  const reserve = reserveOf(c, { ids: myBids, me, now, extra: t.p });
-  if (reserve == null) return { error: "unread" };
-  if (reserve > big(maxReserve)) return { error: "over", reserve, max: big(maxReserve) };
+  const nr = newReserve(c, { ids: myBids, me, now, extra: t.p, hubDown, maxReserve, standing });
+  if (nr.error) return nr;
+  const { reserve } = nr;
   const bi = builderIn(c, shares);
   if (bi.error) return bi;
   const { fee, share, net } = netOf(t.p, { ...feesOf(c), builder: bi.builder, seller: c.owner });
   const uriHash = sameFile ? lc(ethers.keccak256(ethers.toUtf8Bytes(c.uri))) : ZERO32;
   const r = big(c.reserve), mr = big(minRepaid), ml = big(minLine);
-  return { steps: [...(r < reserve || r > big(maxReserve) ? ["approveReserve"] : []), "bid"], reserve, price: t.p, expiry: t.e, uriHash, minRepaid: mr, minLine: ml, fee, share, net,
+  return { steps: [...(r < reserve || r > big(maxReserve) ? ["approveReserve"] : []), "bid"], reserve, ...(nr.standing != null ? { standing: nr.standing } : {}), price: t.p, expiry: t.e, uriHash, minRepaid: mr, minLine: ml, fee, share, net,
     pins: { id: big(id), price: t.p, expiry: t.e, uriHash, minRepaid: mr, minLine: ml } };
 }
 /**
@@ -613,9 +628,9 @@ export function bidPlan(c, { addr, me, id, now, price, days, expiry = null, same
  * first (its ids don't make its root: the index's answer is refused), "count" (1 to 20, at most the list's size: `max`),
  * then bidPlan's terms, "short" (price × count), "over"; else { steps ("approveReserve", "bidAny"), reserve, price,
  * total, count, root, expiry, minRepaid, minLine, fee, net (what an owner gets now; no share is known before an agent
- * is), pins }.
+ * is), pins }. `hubDown` as bidPlan's.
  */
-export function bidAnyPlan(c, { me, now, set, count, price, days, expiry = null, minRepaid = 0n, minLine = 0n, myBids = [], maxReserve }) {
+export function bidAnyPlan(c, { me, now, set, count, price, days, expiry = null, minRepaid = 0n, minLine = 0n, myBids = [], maxReserve, hubDown = false, standing = null }) {
   c = c || {};
   let root;
   try { root = set && Array.isArray(set.ids) && set.ids.length ? idsRootOf(set.ids) : null; } catch (_) { root = null; }
@@ -626,12 +641,12 @@ export function bidAnyPlan(c, { me, now, set, count, price, days, expiry = null,
   if (t.error) return t;
   const total = t.p * BigInt(count);
   if (big(c.cash) < total) return { error: "short", short: total - big(c.cash), cash: big(c.cash) };
-  const reserve = reserveOf(c, { ids: myBids, me, now, extra: total });
-  if (reserve == null) return { error: "unread" };
-  if (reserve > big(maxReserve)) return { error: "over", reserve, max: big(maxReserve) };
+  const nr = newReserve(c, { ids: myBids, me, now, extra: total, hubDown, maxReserve, standing });
+  if (nr.error) return nr;
+  const { reserve } = nr;
   const { fee, net } = netOf(t.p, feesOf(c));
   const r = big(c.reserve), mr = big(minRepaid), ml = big(minLine);
-  return { steps: [...(r < reserve || r > big(maxReserve) ? ["approveReserve"] : []), "bidAny"], reserve, price: t.p, total, count, root, expiry: t.e, minRepaid: mr, minLine: ml, fee, net,
+  return { steps: [...(r < reserve || r > big(maxReserve) ? ["approveReserve"] : []), "bidAny"], reserve, ...(nr.standing != null ? { standing: nr.standing } : {}), price: t.p, total, count, root, expiry: t.e, minRepaid: mr, minLine: ml, fee, net,
     pins: { root, count, price: t.p, expiry: t.e, minRepaid: mr, minLine: ml } };
 }
 /**
@@ -816,6 +831,7 @@ export const PLAN_WORDS = Object.freeze({
   ceiling: "This could take {amount} USDG, above this server's limit of {max} USDG for one buy or bid. The user can raise PRIORS_MAX_MARKET_USD.",
   day: "This would bring today's buys and bids for agent #{self} and this wallet to {total} USDG, above {cap} USDG a day. {used} USDG was counted today, and the limit starts again at 00:00 UTC.",
   bidsOver: "Your open bids would take up to {reserve} USDG, above this server's limit of {max} USDG. Cancel a bid, then bid.",
+  bidsOverDown: "Priors' hub didn't answer, so bids this wallet made elsewhere can't be counted, and the bids' approval, which may fund them, stands at {standing} USDG: with this bid, all open bids could take up to {reserve} USDG, above this server's limit of {max} USDG. Try again once the hub answers.",
   dupBid: "This wallet made bid #{bidId} on the same terms in the last 10 minutes, and it is still open. To bid again, cancel it with market_cancel_bid, then bid.",
   record: "#{id} has {m} repaid loan{s}. This server buys and bids only on agents with {n} or more.",
   // money

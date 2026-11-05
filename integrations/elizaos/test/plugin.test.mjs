@@ -169,6 +169,25 @@ test("PRIORS_PAY_X402 passes the caps the message's own words name, never a numb
   assert.deepEqual(calls.map((c) => c.args), [{ url: "https://merchant.example/pay1/borrow5.json", max_price_usd: 0.1 }]);
 });
 
+// ---- the private report of 2026-11-04 (GHSA-mc89, item 3): a URL's tail after ")", "]" or "'" ----------------------------
+test("GHSA-mc89: a URL with ), ] or ' inside it is taken out whole: nothing after them in the URL is read as an amount or an id", async () => {
+  const t = "Pay https://seller.example/data?item=1#)borrow$5,max$0.50";
+  assert.equal(borrowOf(t), null, "the message names no borrow");
+  assert.equal(maxPriceOf(t), null, "nor a price");
+  assert.equal(maxPriceOf("Pay https://seller.example/a)max$9 at most 0.10"), 0.1);
+  assert.equal(borrowOf("Pay https://seller.example/a]borrow5 at most 0.10"), null);
+  assert.equal(borrowOf("Pay https://seller.example/it's/borrow$5 at most 0.10"), null);
+  assert.equal(agentIdOf("check https://example.com/x)agent#123"), null);
+  assert.equal(loanIdOf("repay https://example.com/x'loan77"), null);
+  // the URL paid is as before: up to the first of those marks, so a parenthesis of the prose stays out of it
+  assert.equal(urlOf("(see https://seller.example/check)"), "https://seller.example/check");
+  const { runtime, calls } = fakeRuntime();
+  await run(payX402Action, runtime, t);
+  assert.deepEqual(calls, [], "no price named in the message's own words: nothing is paid");
+  await run(payX402Action, runtime, "Pay https://seller.example/data?item=1#)borrow$5 at most 0.10");
+  assert.deepEqual(calls.map((c) => c.args), [{ url: "https://seller.example/data?item=1#", max_price_usd: 0.1 }]);
+});
+
 test("the money actions answer only the operator's entities (PRIORS_OWNER_ENTITY_IDS): any other room member, or no setting, moves nothing", async () => {
   const stranger = "22222222-2222-4222-8222-222222222222";
   const text = "Pay https://example.test/x at most 1, borrow up to 25";

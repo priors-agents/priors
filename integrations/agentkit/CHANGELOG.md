@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.2.4 (2026-11-05)
+
+Security fixes from the private reports of 2026-11-04 by @sonson0910 (GHSA-87h5-q328-gmx4, GHSA-mc89-r73h-33vv;
+0.2.3 is affected, and 0.1.0 to 0.2.2 by the parts they share):
+
+- **A paid answer whose body breaks off is reported as paid.** `pay_x402_with_priors_credit` forgot the payment on a
+  2xx, as it should, then read the body unguarded: a body that failed mid-read (a reset, or the request's own 60 s time
+  bound firing during a long answer, such as a streamed completion) answered "Error paying ...", with nothing said of
+  the payment, so a call again signed a second one. It now answers "Paid ...", says the body could not be read
+  completely and that calling again for this purchase pays again (`@priors/mcp`'s `pay_url` answer). A non-2xx whose body
+  breaks off still says the payment was signed and sent, and not to call again before it expires. Bodies are read at
+  most 256 KB (`@priors/x402`'s `readCapped`).
+- **One money call per wallet at a time.** Calls ran one at a time per purchase only: two purchases at once on a short
+  wallet each read the balance short and each borrowed, and both passed auto-borrow's Autopay check on an approval that
+  covers one loan. `pay_x402_with_priors_credit`, `borrow_from_priors` and `repay_priors_loan` of one wallet now run one
+  after the other, as `@priors/x402`'s payer queues its payments (GHSA-482p). The probe has 60 s to answer, so a seller
+  that never answers cannot hold the wallet's other calls.
+- **A borrow sent whose answer is lost is said, with its transaction.** A receipt that never came after the borrow was
+  sent answered a bare error with no trace of it, and a call again could borrow again; the answer now names the
+  transaction, says it may have opened a loan and to check it before calling again, and nothing is signed after it.
+- **Auto-borrow's day room comes back when no loan was opened**: when the borrow stops at the controller check
+  (refused, or its read failing; the room was taken as "sending" before that check), and when it is mined and reverts.
+  A borrow sent and not answered stays counted.
+- **Auto-borrow's term is the owner's 14 days**, whatever `days` the model names (it set the term of an auto-borrow), at
+  most the pool's longest. `autoBorrow`'s `perCall` and `perDay` are read exactly: more than 6 decimals is refused when
+  the provider is built, never rounded.
+- Depends on `@priors/x402` 0.8.8.
+
 ## 0.2.3 (2026-11-04)
 
 Security fix from the private report of 2026-11-04 by @mr-hrydarie (GHSA-pr4v-mc2c-995x; published versions 0.1.0 to

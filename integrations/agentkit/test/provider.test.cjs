@@ -241,7 +241,8 @@ test("method and body: a POST with a JSON body is probed and paid with that body
   const body = JSON.stringify({ model: "m", messages: [{ role: "user", content: "hi" }] });
   const out = await priorsActionProvider(fetchImpl).payX402WithCredit(wallet({ balanceOf: 1000000n }), { url: CHAT, agentId: 437, maxPrice: "0.02", body });
   assert.match(out, /Paid 0\.02 USDG/);
-  assert.deepEqual(probeInits[0], { method: "POST", body, headers: { "content-type": "application/json" }, redirect: "manual" });
+  const { signal: _signal, ...probeInit } = probeInits[0]; // the probe's time bound (GHSA-87h5), checked on its own
+  assert.deepEqual(probeInit, { method: "POST", body, headers: { "content-type": "application/json" }, redirect: "manual" });
   const { method, contentType, redirect } = paid[0];
   assert.deepEqual({ method, body: paid[0].body, contentType, redirect }, { method: "POST", body, contentType: "application/json", redirect: "manual" });
   assert.match(await priorsActionProvider(fetchImpl).payX402WithCredit(wallet({}), { url: CHAT, agentId: 437, maxPrice: "0.02", method: "GET", body }), /cannot carry a body/);
@@ -447,6 +448,105 @@ test("GHSA-pr4v: an authorization is valid at most 600 s, whatever maxTimeoutSec
   await priorsActionProvider(ask402("50000", { maxTimeoutSeconds: 31536000 })).payX402WithCredit(wallet({ balanceOf: 1000000n }), { url: URL_, agentId: 437, maxPrice: "0.10" });
   assert.equal(paid.length, 1);
   assert.ok(Number(paid[0].authorization.validBefore) - t0 <= 601, `valid for ${Number(paid[0].authorization.validBefore) - t0} s`);
+});
+
+// ---- the private reports of 2026-11-04 by @sonson0910 (GHSA-87h5, GHSA-mc89): 0.2.3's holes ---------------------
+/** A seller's answer whose body starts, then fails mid-read (a reset; the request's own time bound firing does the same). */
+const broken = (status) => () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("partial ")); }, pull() { throw new TypeError("terminated: other side closed"); } }), { status });
+
+test("GHSA-87h5: a paid 2xx whose body fails mid-read is answered as paid, says the body was not read and that a call again pays again; a non-2xx whose body fails still says not to call again, and a call again resends that payment", async () => {
+  paid.length = 0;
+  const w = wallet({ balanceOf: 1000000n });
+  nextPaid = broken(200);
+  const out = await priorsActionProvider(ask402("50000")).payX402WithCredit(w, { url: `${URL_}?body=1`, agentId: 437, maxPrice: "0.10" });
+  assert.match(out, /^Paid 0\.05 USDG to 0x86727111a44084cc7a7c1c5d8ac4b0eca4d7db66 \(HTTP 200\)/m, out);
+  assert.match(out, /response body could not be read completely.*calling again for this purchase pays again/s, out);
+  assert.doesNotMatch(out, /Error paying/, out);
+  paid.length = 0;
+  const p = priorsActionProvider(ask402("50000"));
+  const args = { url: `${URL_}?body=2`, agentId: 437, maxPrice: "0.10" };
+  nextPaid = broken(500);
+  const first = await p.payX402WithCredit(w, args);
+  assert.match(first, /signed and sent \(HTTP 500\).*do NOT call pay_x402_with_priors_credit again for this purchase/s, first);
+  assert.match(first, /could not be read completely/, first);
+  nextPaid = broken(200); // the resend is answered 200, its body failing too
+  const again = await p.payX402WithCredit(w, args);
+  assert.equal(new Set(paid.map((x) => x.header)).size, 1, "the same payment resent, none signed anew");
+  assert.match(again, /No new payment was signed.*Paid 0\.05 USDG.*could not be read completely/s, again);
+});
+
+/** A short wallet whose balance grows by the 5 USDG loan once a borrow's receipt is in, a moment after it is sent. */
+function growing(reads) {
+  const w = wallet(reads);
+  let balance = reads.balanceOf ?? 0n;
+  const loans = [];
+  const read = w.readContract;
+  w.readContract = async (q) => (q.functionName === "balanceOf" ? balance : q.functionName === "loansOf" ? [...loans] : read(q));
+  const wait = w.waitForTransactionReceipt;
+  w.waitForTransactionReceipt = async (h) => { await new Promise((ok) => setTimeout(ok, 30)); const r = await wait(h); balance += 5000000n; loans.push(BigInt(50900 + loans.length)); return r; };
+  return w;
+}
+
+test("GHSA-87h5: calls for two purchases at once on one short wallet borrow once (one money call per wallet at a time, as @priors/x402's payer, GHSA-482p), with or without autoBorrow; the probe carries a time bound", async () => {
+  paid.length = 0;
+  const w = growing({ balanceOf: 0n, getParams: { minLoan: 5000000n }, quoteFee: [11666n, 0n, 0n, 0n] });
+  const p = priorsActionProvider(ask402("100000"));
+  const outs = await Promise.all([1, 2].map((n) => p.payX402WithCredit(w, { url: `${URL_}?two=${n}`, agentId: 437, maxPrice: "0.10", maxBorrow: "5" })));
+  assert.equal(w.sent.length, 1, outs.join(" | "));
+  assert.equal(paid.length, 2);
+  // auto-borrow on an Autopay approval that covers one loan (6 USDG): the second call never borrows past it
+  paid.length = 0;
+  const a = growing(covered({ allowance: 6000000n, getLoan: { principal: 5000000n, fee: 11666n, status: 1 } }));
+  const q = priorsActionProvider(ask402("20000"), AUTO);
+  const autoOuts = await Promise.all([1, 2].map((n) => q.payX402WithCredit(a, { url: `${CHAT}?two=${n}`, agentId: 437, maxPrice: "0.02" })));
+  assert.equal(a.sent.length, 1, autoOuts.join(" | "));
+  // the probe: a time bound of its own, so a seller that never answers cannot hold the wallet's other calls
+  let signal = null;
+  await priorsActionProvider(async (input, init) => { if (!(input instanceof Request)) signal = init && init.signal; return ask402("50000")(input, init); }).payX402WithCredit(wallet({ balanceOf: 1000000n }), { url: URL_, agentId: 437, maxPrice: "0.10" });
+  assert.ok(signal instanceof AbortSignal, "the probe's fetch has a signal");
+});
+
+test("GHSA-87h5: a borrow sent whose receipt never came is in the answer (its transaction, that it may have opened a loan), and nothing is signed after it", async () => {
+  paid.length = 0;
+  const lost = async () => { throw new Error("Timed out while waiting for transaction"); };
+  const w = wallet({ balanceOf: 0n, getParams: { minLoan: 5000000n }, quoteFee: [11666n, 0n, 0n, 0n] });
+  w.waitForTransactionReceipt = lost;
+  const out = await priorsActionProvider(ask402("100000")).payX402WithCredit(w, { url: URL_, agentId: 437, maxPrice: "0.10", maxBorrow: "5" });
+  assert.equal(w.sent.length, 1);
+  assert.match(out, /borrow of 5 USDG was sent \(transaction 0x0{63}1\).*may have opened a loan/s, out);
+  assert.match(out, /Nothing was signed or paid/, out);
+  assert.equal(paid.length, 0);
+  const b = wallet({ quoteFee: [11666n, 0n, 0n, 0n] });
+  b.waitForTransactionReceipt = lost;
+  const bo = await priorsActionProvider().borrow(b, { agentId: 437, amount: "5", days: 7 });
+  assert.match(bo, /borrow of 5 USDG was sent \(transaction 0x0{63}1\).*may have opened a loan/s, bo);
+});
+
+test("GHSA-87h5, GHSA-mc89: auto-borrow's day room comes back when the borrow stops at the controller check (refused, or its read failing) or is mined and reverts", async () => {
+  const p = priorsActionProvider(ask402("20000"), { autoBorrow: { perCall: "6", perDay: "6", hosts: ["models.example"] } });
+  const refused = wallet(covered({ isController: false }));
+  assert.match(await p.payX402WithCredit(refused, { url: CHAT, agentId: 437, maxPrice: "0.02" }), /does not control agent #437/);
+  assert.deepEqual(refused.sent, []);
+  const failing = wallet(covered());
+  const read = failing.readContract;
+  failing.readContract = async (q) => { if (q.functionName === "isController") throw new Error("connection reset"); return read(q); };
+  assert.match(await p.payX402WithCredit(failing, { url: CHAT, agentId: 437, maxPrice: "0.02" }), /connection reset/);
+  assert.deepEqual(failing.sent, []);
+  const reverted = wallet(covered(), { status: "reverted" });
+  assert.match(await p.payX402WithCredit(reverted, { url: CHAT, agentId: 437, maxPrice: "0.02" }), /reverted on chain/);
+  assert.equal(reverted.sent.length, 1);
+  const after = wallet(covered());
+  const out = await p.payX402WithCredit(after, { url: CHAT, agentId: 437, maxPrice: "0.02" });
+  assert.equal(after.sent.length, 1, `the day's 6 USDG came back each time: ${out}`);
+});
+
+test("GHSA-87h5: with autoBorrow the loan's term is the owner's 14 days, whatever days the model names; the owner's amounts are read exactly", async () => {
+  const w = wallet(covered());
+  const action = priorsActionProvider(ask402("20000"), AUTO).getActions(w).find((a) => a.name === "PriorsActionProvider_pay_x402_with_priors_credit");
+  await action.invoke({ url: CHAT, agentId: 437, maxPrice: "0.02", days: 30 });
+  assert.deepEqual(w.sent, [borrowTx(5000000n, 14n * 86400n)]);
+  assert.throws(() => priorsActionProvider(undefined, { autoBorrow: { perCall: "5.0000001", perDay: "10", hosts: ["models.example"] } }), /6 decimals/);
+  assert.throws(() => priorsActionProvider(undefined, { autoBorrow: { perCall: "5", perDay: "9.9999999", hosts: ["models.example"] } }), /6 decimals/);
 });
 
 test("src/fence.js is the repository's sdk/fence.mjs byte for byte (the fence @priors/mcp and the hosted server use)", (t) => {

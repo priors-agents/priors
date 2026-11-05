@@ -94,7 +94,8 @@ export function autopayContracts({ runner, address, registry, usdg, savingsVault
  *   ownerIsWallet: that declared wallet is the agent's owner itself (an agent with no key of its own): AutoRepay pays
  *     that address under the owner plan only, so no wallet plan of it is ever current (GHSA-65qg),
  *   plan: { on, cap, owner, useSavings, late, epoch, current (the registry declares this wallet, its owner is the
- *     agent's owner now, it was set in the agent's current epoch, and the wallet is not the owner), stale (on, but set
+ *     agent's owner now, it was set in the agent's current epoch, and the wallet is not the owner; null when all but the
+ *     epoch hold and AutoRepay's epoch could not be read: not known to pay, so never borrowed on), stale (on, but set
  *     before the agent's owner or wallet changed: enroll again) },
  *   held, paused: { until } | null,
  *   allowance: { usdg, shares }, budget: what a run can pull now (USDG within its allowance and balance, plus savings
@@ -119,7 +120,11 @@ export async function autopayStatus(c, wallet, agentId, { now = Math.floor(Date.
   // AutoRepayV2 pays a wallet plan only from the wallet the registry declares now (_walletPart): another's plan is never
   // current, even when the epoch could not be read (GHSA-m3hr-g75r-gmcj)
   const declared = String(declaredAs).toLowerCase() === w.toLowerCase();
-  p.current = p.on && declared && !p.stale && !ownerIsWallet && String(p.owner).toLowerCase() === String(owner).toLowerCase();
+  const live = p.on && declared && !p.stale && !ownerIsWallet && String(p.owner).toLowerCase() === String(owner).toLowerCase();
+  // and only when it was set in the agent's current epoch (_walletPart: a.epoch == epoch): with the epoch unread (a
+  // failed read) that can't be told, so a plan current on every other count is null, never true: nothing borrows on it,
+  // and what it may pull is still kept back (GHSA-mc89-r73h-33vv)
+  p.current = live ? (epoch === null ? null : true) : false;
   let shares = 0n, shareAllow = 0n, savingsValue = 0n;
   if (c.vault) {
     [shares, shareAllow] = await Promise.all([c.vault.balanceOf(w), c.vault.allowance(w, c.address)]);
@@ -141,7 +146,7 @@ export async function autopayStatus(c, wallet, agentId, { now = Math.floor(Date.
   }
   loans.sort((x, y) => x.dueAt - y.dueAt);
   let need = 0n, short = null;
-  if (p.current) for (const l of loans.filter((x) => x.dueAt <= now + 7 * 86400)) {
+  if (p.current !== false) for (const l of loans.filter((x) => x.dueAt <= now + 7 * 86400)) {
     need += l.due;
     if (need > budget || l.due > p.cap) { short = { loanId: l.loanId, need, have: budget, overCap: l.due > p.cap }; break; }
   }
@@ -153,10 +158,10 @@ export async function autopayStatus(c, wallet, agentId, { now = Math.floor(Date.
 
 /**
  * What the wallet must keep for Autopay: the loans whose window opens within `horizon` seconds (24 h), while the plan
- * is on and current. 0n otherwise.
+ * is on and current, or current but for its epoch, unread (`current` null: it may still pull). 0n otherwise.
  */
 export function autopayReserve(status, now = Math.floor(Date.now() / 1000), horizon = RESERVE_SECONDS) {
-  if (!status || !status.plan || !status.plan.current || status.held) return 0n;
+  if (!status || !status.plan || !(status.plan.current === true || status.plan.current === null) || status.held) return 0n;
   return status.loans.filter((l) => l.opens <= now + horizon && l.due <= status.plan.cap).reduce((t, l) => t + l.due, 0n);
 }
 

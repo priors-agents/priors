@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1 (2026-11-05)
+
+Security fix from the private report of 2026-11-04 by @sonson0910 (GHSA-mc89-r73h-33vv; 0.3.0 is affected):
+
+- A URL is taken out of the message whole, up to the next space, before any amount or id is read. 0.3.0 stopped a URL
+  at `)`, `]` or `'`, which are a URL's own characters, so what followed in it stayed in the message's words:
+  `https://seller.example/data#)borrow$5,max$0.50` named a borrow of 5 and a price of 0.50, and a `max$9` there won over
+  the user's "at most 0.10". The URL paid is as before.
+
+On `@priors/mcp` 0.18.1 (was 0.16.0): among its changes, auto-borrow never borrows on a plan whose AutoRepay epoch could
+not be read (GHSA-mc89-r73h-33vv), and Autopay's plan is current only from the declared wallet (GHSA-m3hr-g75r-gmcj).
+
 ## 0.3.0 (2026-11-03)
 
 **Breaking: the money actions answer no one until `PRIORS_OWNER_ENTITY_IDS` is set.** An agent upgraded from 0.2.x

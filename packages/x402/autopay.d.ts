@@ -26,8 +26,9 @@ export interface AutopayStatus {
    *  wallet plan of it is ever `current` (and autopayOn refuses it, PayError OWNER_IS_WALLET). */
   ownerIsWallet: boolean;
   /** `stale`: on, but set before the agent's owner or wallet changed (enroll again); `current` excludes it, and a
-   *  wallet the registry does not declare (AutoRepayV2 pays the declared wallet only). */
-  plan: { on: boolean; cap: bigint; owner: string; useSavings: boolean; late: boolean; epoch: number; current: boolean; stale: boolean };
+   *  wallet the registry does not declare (AutoRepayV2 pays the declared wallet only). `current` is null when all but the
+   *  epoch hold and AutoRepay's epoch could not be read: not known to pay (never borrow on it), still kept back for. */
+  plan: { on: boolean; cap: bigint; owner: string; useSavings: boolean; late: boolean; epoch: number; current: boolean | null; stale: boolean };
   held: boolean; paused: { until: number } | null;
   allowance: { usdg: bigint; shares: bigint }; balance: bigint; budget: bigint;
   loans: AutopayLoan[]; next: AutopayLoan | null;

@@ -912,6 +912,7 @@ export function registerMarketTools(ctx) {
     return { ids: [...new Set([...myBidIds(rec), ...(fromHub || [])])], hubDown: fromHub === null };
   }
   const reserveLine = (x) => `Your bids can take up to ${amt(x)} USDG from this wallet.`;
+  const downLine = " Priors' hub didn't answer, so bids this wallet made elsewhere can't be listed: the approval standing, which may fund them, is counted in it with this bid, and never set down.";
   tool("market_bid", {
     title: "Bid on an agent",
     description: `Bid price_usd on one agent on Priors' agent market (AgentMarketV2): the agent's owner can accept it at any time until it ends, and the agent then comes to this wallet at once. The USDG stays in this wallet until then: one approval to the bids' spender, set to exactly what all of this wallet's open bids take, covers every bid. Its pins, Go mode's defaults: same_file (default true: only as its file is now), min_repaid (default its repaid loans now, never under PRIORS_MARKET_MIN_REPAID), min_line_usd (default its treasury line when it lends). Held to PRIORS_MAX_MARKET_USD (${amt(S.maxMarket)} USDG) a bid, PRIORS_MAX_BIDS_USD (${amt(S.maxBids)} USDG) for all open bids, PRIORS_MAX_MARKET_DAY_USD a day, and agent #${S.agentId}'s open loans. Refused when it is listed at or below the bid (buy it instead). Commits real money: state the agent, the price, the fee and what the owner gets to the user and get their go-ahead first; dry_run: true lists the transactions without sending. Needs ETH for gas.`,
@@ -932,8 +933,9 @@ export function registerMarketTools(ctx) {
         const follows = BigInt(a.sponsor) !== 0n && s.c.followed === true, lent = BigInt(a.delegatedIn);
         const minRepaid = first ? first.minRepaid : (() => { const r = min_repaid != null ? BigInt(min_repaid) : BigInt(a.loansRepaid); return r < S.minRepaid ? S.minRepaid : r; })();
         const minLine = first ? first.minLine : min_line_usd != null ? units(min_line_usd, "min_line_usd") : follows && lent > 0n ? lent : 0n;
-        const p = M.bidPlan(s.c, { addr: k.addr, me, id, now: s.now, price, days, expiry: first ? first.expiry : null, sameFile: same_file, minRepaid, minLine, myBids: [...s.c.bids.keys()], maxReserve: S.maxBids, minRecord: S.minRepaid, adapters: REC.adapters, shares: k.shares });
-        return p.error === "over" ? { ...p, error: "bidsOver" } : p;
+        // the hub down: the approval standing counts with this bid, and is never set down (GHSA-mc89-r73h-33vv)
+        const p = M.bidPlan(s.c, { addr: k.addr, me, id, now: s.now, price, days, expiry: first ? first.expiry : null, sameFile: same_file, minRepaid, minLine, myBids: [...s.c.bids.keys()], maxReserve: S.maxBids, minRecord: S.minRepaid, adapters: REC.adapters, shares: k.shares, hubDown, standing: first ? first.standing : null });
+        return p.error === "over" ? { ...p, error: p.down ? "bidsOverDown" : "bidsOver" } : p;
       },
       // a retry whose terms differ only in days (or whose answer was lost and its settling is past the replay) is a
       // second bid on chain: refused while the record's stands
@@ -943,7 +945,7 @@ export function registerMarketTools(ctx) {
       },
       changed: (p, f) => (p.pins.uriHash !== f.pins.uriHash ? M.planWords("fileMoved", { id }) : "Its terms changed since the first read."),
       keep: (p) => p.reserve, day: (p) => p.price, counted: (step, p) => (step === "bid" ? p.price : 0n),
-      facts: (p) => [`Bids on #${id}: ${amt(p.price)} USDG. Fee ${amt(p.fee)}.${p.share > 0n ? ` Builder share ${amt(p.share)}.` : ""} The owner gets ${amt(p.net)}. Until ${M.dayText(p.expiry)}.`, `${reserveLine(p.reserve)}${hubDown ? " Priors' hub didn't answer, so bids this wallet made elsewhere aren't counted in it." : ""}`],
+      facts: (p) => [`Bids on #${id}: ${amt(p.price)} USDG. Fee ${amt(p.fee)}.${p.share > 0n ? ` Builder share ${amt(p.share)}.` : ""} The owner gets ${amt(p.net)}. Until ${M.dayText(p.expiry)}.`, `${reserveLine(p.reserve)}${hubDown ? downLine : ""}`],
       done: async ({ k, sent, plan, events, T }) => {
         const txs = sent.map((x) => x.hash), ev = events.find((e) => e.name === "BidMade" && same(e.args.maker, me) && BigInt(e.args.agentId) === id);
         if (!ev) return { text: `${cap1(stageWords("bid", id))} was mined (tx ${txs[txs.length - 1]}), but its receipt carries no BidMade event for #${id} from this wallet. ${NOTHING_MORE} market_agent shows its bids.`, structured: { tool: "market_bid", agentId: String(id), txs, bid: null } };
@@ -985,13 +987,13 @@ export function registerMarketTools(ctx) {
     return execute({
       name: "market_bid_any", role: "bid", args: { origin, count, price_usd, days, min_repaid, min_line_usd }, id: null, me, dry: dry_run, vars: { price, max: S.maxBids },
       read: async (rec, k, T) => { const b = await myBids(rec, T); hubDown = b.hubDown; return { me, self: S.agentId, bidIds: b.ids }; },
-      plan: (s, k, first) => { const p = M.bidAnyPlan(s.c, { me, now: s.now, set, count, price, days, expiry: first ? first.expiry : null, minRepaid, minLine, myBids: [...s.c.bids.keys()], maxReserve: S.maxBids }); return p.error === "over" ? { ...p, error: "bidsOver" } : p; },
+      plan: (s, k, first) => { const p = M.bidAnyPlan(s.c, { me, now: s.now, set, count, price, days, expiry: first ? first.expiry : null, minRepaid, minLine, myBids: [...s.c.bids.keys()], maxReserve: S.maxBids, hubDown, standing: first ? first.standing : null }); return p.error === "over" ? { ...p, error: p.down ? "bidsOverDown" : "bidsOver" } : p; },
       check: (p, s, rec) => {
         const dup = recentBid(rec, s.c, s.now, (x) => x.any && lc(x.target) === lc(p.root) && BigInt(x.price) === p.price && BigInt(x.minRepaid) === p.minRepaid && BigInt(x.minLine) === p.minLine);
         if (dup) throw refuse("dupBid", { bidId: BigInt(dup) }, "bid");
       },
       keep: (p) => p.reserve, day: (p) => p.total, counted: (step, p) => (step === "bidAny" ? p.total : 0n),
-      facts: (p) => [`Bids on any of ${listWords}: ${amt(p.price)} USDG each, up to ${count}. Fee ${amt(p.fee)}. An owner gets ${amt(p.net)}, less any builder share on its agent. Until ${M.dayText(p.expiry)}.${recordWords}`, `${reserveLine(p.reserve)}${hubDown ? " Priors' hub didn't answer, so bids this wallet made elsewhere aren't counted in it." : ""}`],
+      facts: (p) => [`Bids on any of ${listWords}: ${amt(p.price)} USDG each, up to ${count}. Fee ${amt(p.fee)}. An owner gets ${amt(p.net)}, less any builder share on its agent. Until ${M.dayText(p.expiry)}.${recordWords}`, `${reserveLine(p.reserve)}${hubDown ? downLine : ""}`],
       done: async ({ sent, plan, events }) => {
         const txs = sent.map((x) => x.hash), ev = events.find((e) => e.name === "BidAnyMade" && same(e.args.maker, me) && lc(e.args.root) === set.root);
         if (!ev) return { text: `${cap1(stageWords("bidAny", null))} was mined (tx ${txs[txs.length - 1]}), but its receipt carries no BidAnyMade event from this wallet. ${NOTHING_MORE}`, structured: { tool: "market_bid_any", txs, bid: null } };

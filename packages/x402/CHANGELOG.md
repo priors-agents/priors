@@ -1,5 +1,14 @@
 # @priors/x402 changelog
 
+## 0.8.8 (2026-11-05)
+
+- **A plan whose AutoRepay epoch could not be read is never current** (GHSA-mc89-r73h-33vv, reported by @sonson0910).
+  AutoRepayV2 pays a wallet plan only when it was set in the agent's current epoch, and `autopayStatus` read a failed
+  `epochOf` as "not stale": a plan of the declared wallet set before the agent's key or owner changed (the key rotated
+  away and declared again, the agent sold and bought back), which AutoRepayV2 never pays, read as current, and
+  `@priors/mcp`'s auto-borrow could borrow on it. `plan.current` is now `null` in that case: not known to pay, so nothing
+  borrows on it, while `autopayReserve` still keeps back what such a plan may pull.
+
 ## 0.8.7 (2026-11-04)
 
 - **Autopay's savings approval is worth the whole budget, and a plan is current only from the declared wallet**

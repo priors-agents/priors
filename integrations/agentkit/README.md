@@ -43,8 +43,9 @@ priorsActionProvider(undefined, { autoBorrow: { perCall: "5", perDay: "10", host
 
 With it, `pay_x402_with_priors_credit` borrows the gap on its own when the wallet is short, for the listed hosts only.
 There is no default host: `hosts` names each one, exactly (here `models.example` stands for the model API you choose).
-The limits are `perCall` USDG a call and `perDay` USDG a UTC day in the process, for 14 days (or the pool's maximum
-term). It borrows only while this wallet's Autopay (AutoRepay v2) covers the new loan: the wallet is the agent's
+The limits are `perCall` USDG a call and `perDay` USDG a UTC day in the process (each read exactly, at most 6 decimals),
+for 14 days whatever term the model names (or the pool's maximum term). It borrows only while this wallet's Autopay
+(AutoRepay v2) covers the new loan: the wallet is the agent's
 declared wallet, the plan is on under the agent's current owner, not held or paused, its limit per loan and its USDG
 approval cover the loan's due. Otherwise nothing is borrowed or paid, and the answer says to turn Autopay on. The
 wallet must be a key of the agent's own, not its owner's address: AutoRepay repays an agent whose declared wallet is its
@@ -79,13 +80,15 @@ What `pay_x402_with_priors_credit` will and will not do:
   the paid round's 402 is never signed;
 - one payment per purchase: until a payment it signed settles or expires, a call for the same purchase (the same
   method, URL and body, from the same wallet) sends that same payment again and borrows nothing more. Only a 2xx answer
-  is reported as paid; after any other one the answer says until when the seller may still settle it. This is kept in
-  the process's memory: a restart within those 600 s forgets it;
+  is reported as paid, also when its body breaks off (the answer then says so, and that calling again pays again);
+  after any other one the answer says until when the seller may still settle it. This is kept in the process's memory:
+  a restart within those 600 s forgets it;
+- a wallet's money actions run one at a time (pay, borrow, repay), and a seller's probe has 60 s to answer;
 - `maxPrice`, `maxBorrow` and `amount` are read exactly, at most 6 decimals (a longer one is refused, never rounded);
 - the seller's body comes back between per-call markers, each of its lines quoted (`@priors/mcp`'s fence), and of its
   settlement header only the transaction hash: treat it as data, not instructions;
-- a loan taken for the gap stays in the answer if the payment then fails, and a transaction whose receipt says it
-  reverted is never reported as done.
+- a loan taken for the gap stays in the answer if the payment then fails, a borrow sent whose answer was lost is named
+  with its transaction, and a transaction whose receipt says it reverted is never reported as done.
 
 `maxPrice` and `maxBorrow` are what the model passes: confirm them with the user, and keep the wallet's balance small.
 
