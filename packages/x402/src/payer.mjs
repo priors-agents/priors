@@ -479,11 +479,12 @@ export const SKEW_SECONDS = 60;
  * @returns {import("../index.d.ts").Payer}
  */
 export function createPayer(opts = {}) {
-  const { signer, agentId, pool, termSeconds, fitTerm, beforeBorrow, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = DEFAULT_TIMEOUT_MS, signal, maxValiditySeconds = MAX_VALIDITY_SECONDS, topUp, onSigned, reserve, v5, v5Root, baseProvider, baseReserve } = opts;
+  const { signer, agentId, pool, termSeconds, fitTerm, beforeBorrow, beforePay, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = DEFAULT_TIMEOUT_MS, signal, maxValiditySeconds = MAX_VALIDITY_SECONDS, topUp, onSigned, reserve, v5, v5Root, baseProvider, baseReserve } = opts;
   if (!signer || typeof signer.getAddress !== "function" || typeof signer.signTypedData !== "function") {
     throw new PayError("NO_SIGNER", "createPayer: `signer` must be an ethers v6 Signer (a Wallet connected to a Robinhood Chain provider)");
   }
   if (typeof fetchImpl !== "function") throw new PayError("NO_FETCH", "createPayer: no fetch implementation");
+  if (beforePay !== undefined && typeof beforePay !== "function") throw new PayError("BAD_BEFORE_PAY", "createPayer: `beforePay` must be a function");
   // The networks it signs for (networks.mjs): Robinhood Chain only unless the caller names another. Every network but
   // Robinhood Chain is paid from what the wallet holds there, read through that network's provider: Base's is needed.
   let networks;
@@ -616,6 +617,21 @@ export function createPayer(opts = {}) {
       try { client.selectPaymentRequirements(2, [req]); } catch (_) {
         throw new PayError("NO_USDG_REQUIREMENT", "pay: x402 core would not sign the requirement this payer picked; nothing was read, borrowed or signed");
       }
+    }
+    // The caller's last word on the payment itself, once its requirement is picked and has passed the price cap, the
+    // gateway's pins and core's own selection, and before anything is read, topped up, borrowed or signed: a check of
+    // the payee (src/toll.mjs is one), an allowlist, a budget. A throw refuses the payment. A PayError is passed on as
+    // the caller threw it; any other error becomes BEFORE_PAY_REFUSED with the caller's message (the caller's words,
+    // never the merchant's) and the error as `cause`.
+    if (beforePay) {
+      stopIfAborted();
+      try {
+        await beforePay({ requirement: req, x402Version: version, resource: base.url, price, payTo: req.payTo, network: n.network, asset: token, payer: me });
+      } catch (e) {
+        if (e instanceof PayError) throw e;
+        throw new PayError("BEFORE_PAY_REFUSED", `pay: beforePay refused the payment; nothing was read, borrowed or signed${e?.message ? ` (${String(e.message).slice(0, 200)})` : ""}`, { cause: e });
+      }
+      stopIfAborted();
     }
     let savings;
     let loan = { borrowed: 0n, loanId: null, dueAt: null };

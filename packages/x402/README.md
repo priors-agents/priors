@@ -305,6 +305,33 @@ import { createUsdgClient } from "@priors/x402";
 const fetchWithPay = wrapFetchWithPayment(fetch, createUsdgClient({ signer, maxPrice: "$0.10" }));
 ```
 
+### Check who gets paid before paying (`beforePay`, `@priors/x402/toll`)
+
+`beforePay` is the caller's last word on a payment: it is shown the requirement once it has passed `maxPrice`, the
+gateway's pins and x402 core's own selection, and before anything is read, topped up, borrowed or signed. A throw
+refuses the payment (a `PayError` is passed on as thrown; anything else becomes `BEFORE_PAY_REFUSED`). An allowlist, a
+budget or a payee check plugs in here.
+
+`tollCheck()` is one: it asks [Toll](https://t0ll.xyz)'s free pre-sign check (`POST https://t0ll.xyz/api/tx/check`,
+keyless), which reads the seller's ERC-8004 identity and checks `payTo` against its registered agent wallet or a payee
+delegation (the ERC-8478 draft), the asset and the amount, and answers ALLOW / WARN / BLOCK with reason codes. A payTo
+that is not the seller's is BLOCK (`x402-payee-mismatch`), so borrowed USDG is never sent to an address the seller did
+not register.
+
+```js
+import { tollCheck } from "@priors/x402/toll";
+
+const payer = createPayer({
+  signer, pool: robinhood.pool, agentId: 1234, maxBorrow: "$5",
+  beforePay: tollCheck(),                       // refuse BLOCK; tollCheck({ refuse: ["BLOCK", "WARN"] }) for a strict agent
+});
+// a refused payment: PayError TOLL_REFUSED { action, codes, link }; nothing was read, borrowed or signed
+```
+
+Only the 402's requirement and the URL bought are sent to Toll. An answer it cannot give (timeout, default 8 s; an HTTP
+error) is `TOLL_UNREAD` and refuses the payment; `failOpen: true` pays without it. `agentId` names the seller's
+ERC-8004 id when the 402 does not; `onResult({ action, codes, link })` sees every answer.
+
 ## Credit helpers
 
 `@priors/x402/credit` has the Priors v2 pieces the MCP server uses: `creditContracts`, `creditStatus`, `quoteBorrow`,
@@ -499,5 +526,5 @@ chain 4663 where a standard `@x402/express` server priced with `registerUsdg` is
 `@x402/express`), Hono and a fetch handler, and `scripts/demo-x402-check.mjs` runs the demo from the packed tarball
 against the live check API. `scripts/test-x402-base.mjs` (also part of `npm test`) covers the Base path and the
 bridge; with `--fork`, `BASE_RPC_URL` settles a seller's USDC 402 on a Base fork, and `RPC_URL` deposits into the real Across spoke on a
-Robinhood Chain fork. `scripts/test-x402-routes.mjs` (part of `npm test`) runs `payViaGateway` against a mock Keyring
+Robinhood Chain fork. `scripts/test-x402-toll.mjs` (part of `npm test`, network-free) runs `beforePay` through `createPayer` and `tollCheck` against a mock Toll. `scripts/test-x402-routes.mjs` (part of `npm test`) runs `payViaGateway` against a mock Keyring
 and a mock Base seller, and pays 4663 merchants whose facilitator is a mock of Dexter's.

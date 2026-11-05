@@ -1,5 +1,15 @@
 # @priors/x402 changelog
 
+## Unreleased
+
+- **`beforePay`: the caller's last word on a payment, and `@priors/x402/toll`.** `createPayer({ beforePay })` is called
+  once per purchase with the picked requirement (`payTo`, `price`, `network`, `asset`, `resource`, `payer`), after
+  `maxPrice`, the gateway's pins and x402 core's selection, and before anything is read, topped up, borrowed or signed;
+  a throw refuses the payment (a `PayError` as thrown, anything else `BEFORE_PAY_REFUSED`). `tollCheck()` from
+  `@priors/x402/toll` is one: it asks Toll's free pre-sign check (t0ll.xyz, keyless) whether `payTo` is the seller's
+  registered ERC-8004 agent wallet (the ERC-8478 draft) and refuses BLOCK (`TOLL_REFUSED`), failing closed when Toll
+  cannot answer (`TOLL_UNREAD`, or `failOpen`). Off unless given. `scripts/test-x402-toll.mjs` (network-free).
+
 ## 0.8.8 (2026-11-05)
 
 - **A plan whose AutoRepay epoch could not be read is never current** (GHSA-mc89-r73h-33vv, reported by @sonson0910).

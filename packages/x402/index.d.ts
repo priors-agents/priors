@@ -127,6 +127,11 @@ export interface CreatePayerOptions {
   /** Called once a loan is known and before anything is sent for it; a throw refuses the borrow (nothing is sent or
    *  signed) and pay() rejects with that error. */
   beforeBorrow?: (loan: { agentId: bigint; amount: bigint; fee: bigint; term: bigint; due: bigint }) => void | Promise<void>;
+  /** Called once per purchase, after the requirement is picked and passed maxPrice, the gateway's pins and x402 core's
+   *  own selection, and before anything is read, topped up, borrowed or signed: a throw refuses the payment. A PayError
+   *  is passed on as thrown; any other error becomes PayError BEFORE_PAY_REFUSED (the error as `cause`). A payee check
+   *  that plugs in here: `tollCheck()` from "@priors/x402/toll". */
+  beforePay?: (payment: BeforePayInput) => void | Promise<void>;
   /** Refuse a loan whose fee is above this (atomic USDG). */
   maxFee?: bigint;
   /** Signed authorizations are valid at most this long (≤ 600 s, the default). */
@@ -249,6 +254,21 @@ export interface Payer {
   settleLoans(o?: { onlyInWindow?: boolean }): Promise<{ repaid: bigint[]; open: bigint[]; others: Array<{ loanId: bigint; openedBy: string }>; waiting?: Array<{ loanId: bigint; opens: number }>; savings?: SavingsTopUp }>;
 }
 
+/** What `beforePay` is shown: the requirement as the merchant sent it (x402 v2 `accepts` entry, or v1), and the payer's
+ *  own reading of it (price in atomic units, network and asset as the payer will pay them). */
+export interface BeforePayInput {
+  requirement: Record<string, unknown>;
+  x402Version: 1 | 2;
+  /** the URL being bought */
+  resource: string;
+  price: bigint;
+  payTo: string;
+  /** CAIP-2, e.g. "eip155:4663" */
+  network: string;
+  asset: string;
+  /** the address that will sign */
+  payer: string;
+}
 export declare function createPayer(opts: CreatePayerOptions): Payer;
 
 /** An x402Client for USDG on eip155:4663 with a price cap and a ≤600 s signing window (for @x402/fetch, @x402/mcp). */
