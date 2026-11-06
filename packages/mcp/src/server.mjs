@@ -121,8 +121,8 @@
 //                          or http for localhost only, no credentials, query or fragment
 //   With both on, PRIORS_AGENT_ID and PRIORS_STATE_DIR are required: a buy leaves what that agent's open loans owe, and
 //   the zap's 5 buys and 5 sales a UTC day are counted there for the agent and the wallet.
-import { readFileSync, writeFileSync, mkdirSync, renameSync, openSync, closeSync, statSync, rmSync, existsSync, realpathSync, lstatSync, readlinkSync } from "node:fs";
-import { homedir } from "node:os";
+import { readFileSync, writeFileSync, mkdirSync, renameSync, statSync, rmSync, existsSync, realpathSync, lstatSync, readlinkSync, linkSync } from "node:fs";
+import { homedir, hostname } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
@@ -674,23 +674,58 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   }
   // Several servers can share one wallet (two sessions, Claude Desktop and Claude Code): every change is a
   // read-modify-write of the file under an exclusive lock file, so no server rewrites it from its own map and erases
-  // another's entries. Best effort: a lock older than 10 s is stale, and after 2 s the write goes ahead without it.
+  // another's entries. Best effort: after 2 s the write goes ahead without it.
   // Waiting for it delays this call only (an async wait, never a blocking one): the server keeps answering meanwhile.
   // Inside one process the lock is held only across synchronous code, so two calls of this server never contend.
+  // The lock names its holder (this host, its pid, a random token), written as it is made, and only that holder removes
+  // it. No clock says a lock was abandoned (GHSA-wqww-vjpx-w8mq): its file time against this process's clock read a lock
+  // milliseconds old as one over 10 s old after a clock step (NTP, a resumed VM) or on a file server whose clock is
+  // behind, so a second server took it and wrote at the same time, one erasing the other's entry, and the first then
+  // removed the second's lock. A lock is taken over only when its holder is a process of this host no longer running,
+  // or once this process has seen that same lock for 10 s of its own monotonic clock, over its calls (a holder stopped
+  // that long, a pid reused, another host's lock, the empty lock of a server before this rule).
+  const lockHost = hostname();
+  let lockSeen = null; // the lock this process last found held, and when (performance.now()) it first found it
+  const running = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e?.code === "EPERM"; } };
+  /** The lock at `path`: which one it is (its file and its token, never its time against a clock), and whether its
+   *  holder is a process of this host no longer running (in this process a lock never outlives a call). Throws if none. */
+  function lockAt(path) {
+    const st = statSync(path);
+    let h = null;
+    try { h = JSON.parse(readFileSync(path, "utf8")); } catch (_) { /* empty: being written, or an older server's */ }
+    const pid = Number(h?.pid);
+    return { id: `${st.dev}:${st.ino}:${st.mtimeMs}:${h?.token ?? ""}`, gone: h?.host === lockHost && Number.isSafeInteger(pid) && pid > 0 && (pid === process.pid || !running(pid)) };
+  }
+  /** Moves the lock `id` aside and removes it. If what moved is another lock by then (a server that took it over first
+   *  and made its own), it is put back, unless a third took the name meanwhile: as sdk/tx-record.mjs's lockKey. */
+  function takeOver(path, id) {
+    const aside = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.stale`;
+    try { renameSync(path, aside); } catch (e) { return e?.code === "ENOENT"; }
+    try { if (lockAt(aside).id !== id) linkSync(aside, path); } catch (_) { /* a third took the name */ }
+    rmSync(aside, { force: true });
+    return true;
+  }
   async function locked(fn) {
     const lock = `${stateFile}.lock`;
-    const giveUp = Date.now() + 2000;
+    const token = randomBytes(12).toString("hex");
+    const start = performance.now();
     let held = false;
     for (;;) {
-      try { closeSync(openSync(lock, "wx", 0o600)); held = true; break; } catch (e) {
+      try { writeFileSync(lock, JSON.stringify({ host: lockHost, pid: process.pid, token }), { flag: "wx", mode: 0o600 }); held = true; break; } catch (e) {
         if (e?.code === "ENOENT") { try { mkdirSync(stateDir, { recursive: true, mode: 0o700 }); continue; } catch (_) { break; } }
         if (e?.code !== "EEXIST") break;
-        try { if (Date.now() - statSync(lock).mtimeMs > 10_000) { rmSync(lock, { force: true }); continue; } } catch (_) { continue; }
-        if (Date.now() > giveUp) break;
+        let now;
+        try { now = lockAt(lock); } catch (_) { continue; } // released meanwhile
+        const t = performance.now();
+        if (lockSeen?.id !== now.id) lockSeen = { id: now.id, at: t };
+        if ((now.gone || t - lockSeen.at >= 10_000) && takeOver(lock, now.id)) continue;
+        if (t - start > 2000) break;
         await new Promise((res) => setTimeout(res, 10));
       }
     }
-    try { return fn(); } finally { if (held) rmSync(lock, { force: true }); }
+    try { return fn(); } finally {
+      if (held) { try { if (JSON.parse(readFileSync(lock, "utf8")).token === token) rmSync(lock, { force: true }); } catch (_) { /* gone, or not ours */ } }
+    }
   }
   /** Entries another server of this wallet wrote since: merged in before any decision to sign. */
   function refresh() { if (stateFile) for (const [k, e] of readState()) if (!outstanding.has(k)) outstanding.set(k, e); }
@@ -2055,7 +2090,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
 
     /** One trade from the configured wallet: the SDK's calls, sent in order (each simulated, then waited for). `count` is
      *  serial's: a buy's amount counts against PRIORS_MAX_PT_TOTAL_USD from its check until the call ends. */
-    async function ptTrade(kind, amount, slippage_bps, dry_run, market, count) {
+    async function ptTrade(kind, amount, slippage_bps, dry_run, market, count, floor) {
       const signer = needWallet(`pt_${kind}`);
       let units = null;
       if (kind === "buy") {
@@ -2068,6 +2103,17 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
         if (!dry_run) count("ptBought", units);
       }
       const o = { account: signer.address, amount: units ?? amount, slippageBps: slippage_bps, ...(market ? { market } : {}) };
+      // the least the caller holds the trade to (pt_quote's or a dry_run's "at least", the quote the user agreed to): a
+      // fresh quote under it is refused before anything is signed, and the router call names the larger of it and the
+      // fresh quote's own minimum, never a lower one (GHSA-3fwm-95gh-5xh4, as stock_buy's min_out)
+      if (floor !== undefined) {
+        const what = kind === "buy" ? "min_out_pt" : "min_out_usdg";
+        const least = dollars(floor, what);
+        let b;
+        try { b = await pt.trade(kind, o); } catch (e) { throw asked(e); }
+        if (b.quote.expectedOut < least) throw new ToolError(`pt_${kind} refused: the price moved: a fresh quote gives ${nf(b.quote.expectedOutText)} ${b.quote.tokenOut}, under the ${nf(ethers.formatUnits(least, 6))} ${b.quote.tokenOut} asked for at least (${what}). Nothing was signed or sent: quote it again (pt_quote) and ask the user.`);
+        o.minOut = b.quote.minOut > least ? b.quote.minOut : least;
+      }
       if (dry_run) {
         let b;
         try { b = await pt.trade(kind, o); } catch (e) { throw asked(e); }
@@ -2112,16 +2158,16 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     tool("pt_buy", {
       title: "Buy PT-USDG with USDG",
       description: `Buy PT-USDG (Pendle's principal token for USDG, redeemable 1:1 for USDG on ${P.PT_USDG.maturity.slice(0, 10)}) with the configured wallet's USDG, through Pendle's router: an approval of exactly that USDG, then the swap, paying the PT-USDG to this wallet with a minimum out. Held to maturity it pays a fixed amount of USDG; sold earlier, it gets the market's rate then, which can be lower. Moves real money: quote it (pt_quote), state the amount and what it buys to the user and get their go-ahead first; dry_run: true lists the calls without sending. Needs ETH for gas.`,
-      inputSchema: { amount_usdg: z.number().positive().describe("USDG to spend, in US dollars (required, no default)."), slippage_bps: slippage, dry_run: dryRun },
+      inputSchema: { amount_usdg: z.number().positive().describe("USDG to spend, in US dollars (required, no default)."), slippage_bps: slippage, min_out_pt: z.number().positive().optional().describe("The least PT-USDG to accept, e.g. pt_quote's \"at least\": a fresh quote under it is refused before anything is signed."), dry_run: dryRun },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    }, serial(async ({ amount_usdg, slippage_bps, dry_run }, _deadline, count) => ptTrade("buy", amount_usdg, slippage_bps, dry_run, undefined, count)));
+    }, serial(async ({ amount_usdg, slippage_bps, min_out_pt, dry_run }, _deadline, count) => ptTrade("buy", amount_usdg, slippage_bps, dry_run, undefined, count, min_out_pt)));
 
     tool("pt_sell", {
       title: "Sell PT-USDG for USDG",
       description: "Sell the configured wallet's PT-USDG for USDG at the market, before maturity, through Pendle's router: an approval of exactly that PT-USDG, then the swap, paying the USDG to this wallet with a minimum out. Moves real money: quote it (pt_quote), state the amount to the user and get their go-ahead first; dry_run: true lists the calls without sending. Needs ETH for gas.",
-      inputSchema: { amount_pt: ptAmount, slippage_bps: slippage, dry_run: dryRun },
+      inputSchema: { amount_pt: ptAmount, slippage_bps: slippage, min_out_usdg: z.number().positive().optional().describe("The least USDG to accept, e.g. pt_quote's \"at least\": a fresh quote under it is refused before anything is signed."), dry_run: dryRun },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    }, serial(async ({ amount_pt, slippage_bps, dry_run }) => ptTrade("sell", amount_pt, slippage_bps, dry_run)));
+    }, serial(async ({ amount_pt, slippage_bps, min_out_usdg, dry_run }) => ptTrade("sell", amount_pt, slippage_bps, dry_run, undefined, undefined, min_out_usdg)));
 
     tool("pt_redeem", {
       title: "Redeem PT-USDG for USDG",

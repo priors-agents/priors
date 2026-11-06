@@ -37,7 +37,7 @@ Do not use it for speculative browsing of paid APIs, or to pay anything the user
 
 ## Prerequisites
 
-1. Install the local server once, pinned: `npm install -g @priors/mcp@0.18.1` (it provides the `priors-mcp` command).
+1. Install the local server once, pinned: `npm install -g @priors/mcp@0.18.2` (it provides the `priors-mcp` command).
 2. An ERC-8004 agent on Robinhood Chain with a Priors credit line. A new agent can ask for a first line with the
    `join` and `first_line` tools of `priors-mcp`, or in Go mode at https://go.priors.trade.
 3. In the Hermes profile's `.env`, set:

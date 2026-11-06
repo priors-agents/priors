@@ -1,5 +1,20 @@
 # @priors/mcp changelog
 
+## 0.18.2 (2026-11-06)
+
+- **The state file's lock is never taken from a running server by a clock** (GHSA-wqww-vjpx-w8mq, reported by
+  @JasmeJun). A lock was judged abandoned by its file time against this process's clock, so after a clock step (NTP, a
+  resumed VM), or on a file server whose clock is behind, a lock held for milliseconds was taken, two servers of one
+  wallet wrote at once, and an unsettled payment's entry could be lost; another session, or a restart, then signed that
+  purchase again. The lock now names its holder and is removed only by it, and is taken over only when that holder, on
+  this host, has ended, or once this server has seen it unchanged for 10 s. After 2 s the write still goes ahead
+  without it, as before.
+- **`pt_buy` and `pt_sell` hold the trade to the quote the user agreed to** (GHSA-3fwm-95gh-5xh4, reported by
+  @SanjilVinsmoke): `min_out_pt` and `min_out_usdg`, such as `pt_quote`'s "at least". A fresh quote under it is refused
+  before anything is signed; otherwise the router call names the larger of it and the fresh quote's own minimum, never a
+  lower one. Without it, the minimum came from the fresh quote alone, so a trade could fill below the quote the user
+  agreed to (never below the oracle's rate at its own block less the slippage).
+
 ## 0.18.1 (2026-11-05)
 
 On @priors/x402 0.8.8 (a plan whose AutoRepay epoch could not be read, below).

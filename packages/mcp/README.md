@@ -44,8 +44,8 @@ repaying.
 | `find_services(query?)` | services registered with the Priors facilitator that accept USDG (`GET /merchants`): the ones Priors approved, and the ones under review whose own endpoint passed the facilitator's 402 check, marked so; hidden or unchecked ones are not listed | no |
 | `pt_quote(side, amount, slippage_bps?)` | quote buying PT-USDG with USDG, selling it before maturity or redeeming it after: what comes out at the oracle's spot rate, the minimum a trade would name, the days to maturity and the fixed APY to maturity | no |
 | `pt_position(address?)` | the wallet's (or any address's) PT-USDG: balance, what it is worth now, what it pays at maturity, and whether the Priors stock vault takes PT-USDG behind a line yet | no (with `address`) |
-| `pt_buy(amount_usdg, slippage_bps?, dry_run?)` | buy PT-USDG with the wallet's USDG through Pendle's router (at most `PRIORS_MAX_PT_USD` per call, `PRIORS_MAX_PT_TOTAL_USD` per run), keeping back what payments signed and not settled yet still need; `dry_run` lists the calls; needs ETH for gas | yes |
-| `pt_sell(amount_pt \| "all", slippage_bps?, dry_run?)` | sell the wallet's PT-USDG for USDG at the market, before maturity; needs ETH for gas | yes |
+| `pt_buy(amount_usdg, slippage_bps?, min_out_pt?, dry_run?)` | buy PT-USDG with the wallet's USDG through Pendle's router (at most `PRIORS_MAX_PT_USD` per call, `PRIORS_MAX_PT_TOTAL_USD` per run), keeping back what payments signed and not settled yet still need; `min_out_pt` (`pt_quote`'s "at least", the quote the user agreed to): a fresh quote under it is refused before anything is signed, and the swap names the larger of it and the fresh quote's own minimum; `dry_run` lists the calls; needs ETH for gas | yes |
+| `pt_sell(amount_pt \| "all", slippage_bps?, min_out_usdg?, dry_run?)` | sell the wallet's PT-USDG for USDG at the market, before maturity; `min_out_usdg` holds the sale to the quote the user agreed to, as `min_out_pt` does a buy; needs ETH for gas | yes |
 | `pt_redeem(amount_pt \| "all", slippage_bps?, dry_run?)` | redeem the wallet's PT-USDG for USDG 1:1, from maturity (2027-03-25) on; needs ETH for gas | yes |
 | `pt_buy_and_deposit(amount_usdg, agent_id?, include_held?, slippage_bps?, dry_run?)` | only with `PRIORS_PT_ONESTEP=on` (below): buy PT-USDG with the wallet's USDG and deposit it, with the PT-USDG the wallet already holds (unless `include_held` is false), behind the agent's line on the Priors stock vault, which opens the line, in one call: four transactions (the exact USDG approval, the buy with its minimum out, the exact PT-USDG approval to the vault, the vault's open with this wallet's pool consent). The wallet must own the agent, and the agent must have no open stock line; checked before the first is signed. `pt_buy`'s caps apply; `dry_run` lists the calls; needs ETH for gas | yes |
 | `fund_base(amount_usd, max_borrow_usd?)` | only with Base on (below): move USDG to USDC in the same address on Base through Across, keeping back what Autopay and signed payments need, borrowing the gap only with `max_borrow_usd`; needs ETH for gas | yes |
@@ -388,7 +388,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.18.1"],
+      "args": ["-y", "@priors/mcp@0.18.2"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -410,7 +410,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.18.1"],
+      "args": ["-y", "@priors/mcp@0.18.2"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -423,7 +423,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 or, for your user only, from a macOS or Linux terminal:
 
 ```sh
- (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.18.1' priors-mcp ~/.config/priors/agent.key
+ (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.18.2' priors-mcp ~/.config/priors/agent.key
 ```
 
 It waits for the key without showing it (paste it, then Enter), saves it in a file only you can read, and gives Claude
@@ -504,7 +504,7 @@ to approve a borrow; this package, with the key, pays for APIs. With borrowing o
 approves each loan in Priors' Go mode. ElizaOS (`@elizaos/plugin-mcp`):
 
 ```ts
-"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.18.1"],
+"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.18.2"],
   env: { PRIORS_KEY_FILE: "/home/agent/.config/priors/agent-7311.key", PRIORS_AGENT_ID: "7311",
     PRIORS_MAX_BORROW_USD: "0", PRIORS_MAX_BORROW_DAY_USD: "0", PRIORS_MAX_SPEND_DAY_USD: "1", PRIORS_MAX_PRICE_USD: "0.10",
     PRIORS_PAY_HOSTS: "api.example.com" } }
@@ -516,7 +516,7 @@ OpenClaw (`mcp.servers`, JSON5) takes the same `command`, `args` and `env`; Herm
 mcp_servers:
   priors-wallet:
     command: npx
-    args: ["-y", "@priors/mcp@0.18.1"]
+    args: ["-y", "@priors/mcp@0.18.2"]
     env:
       PRIORS_KEY_FILE: /home/agent/.config/priors/agent-7311.key
       PRIORS_AGENT_ID: "7311"
@@ -543,7 +543,7 @@ key proves it is there: it signs the ERC-8004 identity registry's `AgentWalletSe
 agent's).
 
 ```sh
-PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.18.1 link-wallet --agent 7311
+PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.18.2 link-wallet --agent 7311
 ```
 
 It reads the registry's EIP-712 domain and refuses to sign for any other, takes the owner from the chain (`--owner`
