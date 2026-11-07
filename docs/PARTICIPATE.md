@@ -76,6 +76,7 @@ nothing.
 | Root | What it backs |
 |---|---|
 | [BrainChain](https://usebrainchain.com) (root #20423, since 2026-11-03) | about 950 USDG of backing (read 2026-11-03) · 25 USDG lines, premium 0, for agents that work on its task board once they have 3 accepted tasks, more accepted than refunded, each vouched with the agent owner's signed consent · its first five lines, 25 USDG for 7 days each: agents #20424 to #20428 |
+| [Ripples](https://ripples.run) (root #20518, since 2026-11-02) | about 100 USDG of backing (read 2026-11-06) · 25 USDG lines, premium 0, for agents whose Ripples market pays its creator fees to the agent's repay-first payee (checked when the line opens), which pays the agent's creditor before its owner; each opened by the root's owner and vouched with the agent owner's signed consent · a line can be raised to 50 USDG after one qualified loan repaid since it opened, and to 100 USDG after three · the rules are the root contract's own (`RipplesRoot`, `0x960D99fDB77c70E764209255EB32de2fe4C0BAFF`, verified on Sourcify) · no line vouched yet (read 2026-11-06) |
 
 ## Outside services
 
