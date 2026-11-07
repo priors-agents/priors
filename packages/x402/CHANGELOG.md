@@ -1,5 +1,15 @@
 # @priors/x402 changelog
 
+## Unreleased
+
+- **`beforePay`: the caller's last word on a payment.** `createPayer({ beforePay })` is called once per purchase with
+  the picked requirement as a frozen deep copy and the payer's reading of it (`payTo`, `price`, `network`, `asset`,
+  `resource`, `payer`) and the caller's abort (`signal`), after `maxPrice`, the gateway's pins and x402 core's
+  selection, and before anything is read, topped up, borrowed or signed. A throw refuses the payment: a `PayError` as
+  thrown, anything else `BEFORE_PAY_REFUSED`; a `beforePay` that is not a function is `BAD_BEFORE_PAY` (`null` is off).
+  What is signed is always the payer's own requirement, so a hook that writes to its copy changes nothing signed.
+  Off unless given. `scripts/test-x402-before-pay.mjs` (network-free).
+
 ## 0.8.8 (2026-11-05)
 
 - **A plan whose AutoRepay epoch could not be read is never current** (GHSA-mc89-r73h-33vv, reported by @sonson0910).

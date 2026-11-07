@@ -284,7 +284,8 @@ when the 402 asks for USDG by Permit2, which this payer does not sign), `BAD_402
 `UNSUPPORTED_TRANSFER_METHOD` (a requirement that is not EIP-3009), `BAD_NETWORK` (a `networks` entry not in the
 allowlist), `BASE_FLOAT_SHORT` (a Base requirement, and the wallet's USDC on Base, less what `baseReserve()` keeps
 back, is short of the price: nothing was signed; `price`, `balance`, `reserve`, `network` and `asset` on the error),
-`NOT_CONTROLLER` (`repayLoan`, `settleLoans`), `NOT_OWNERS_LOAN` (`repayLoan`, 0.6.3), `NOT_AGENTS_WALLET` (`repayLoan`,
+`BAD_BEFORE_PAY` (`beforePay` is not a function), `BEFORE_PAY_REFUSED` (`beforePay` threw an error that is not a
+`PayError`: nothing was read, borrowed or signed), `NOT_CONTROLLER` (`repayLoan`, `settleLoans`), `NOT_OWNERS_LOAN` (`repayLoan`, 0.6.3), `NOT_AGENTS_WALLET` (`repayLoan`,
 `settleLoans`, `borrowGap`, `borrowLine`, 0.8.1). The
 bridge and `payViaGateway` (below) add their own codes. The credit helpers add
 `LOAN_SIZE_OUT_OF_RANGE` (`quoteBorrow`, `borrowLine`), `LOAN_NOT_ACTIVE`, `INSUFFICIENT_USDG`, `REPAY_WOULD_REVERT`
@@ -304,6 +305,29 @@ import { wrapFetchWithPayment } from "@x402/fetch";
 import { createUsdgClient } from "@priors/x402";
 const fetchWithPay = wrapFetchWithPayment(fetch, createUsdgClient({ signer, maxPrice: "$0.10" }));
 ```
+
+### Check a payment before paying (`beforePay`)
+
+`beforePay` is the caller's last word on a payment: it is shown the requirement once it has passed `maxPrice`, the
+gateway's pins and x402 core's own selection, and before anything is read, topped up, borrowed or signed. An allowlist,
+a budget or a payee check plugs in here. A throw refuses the payment: a `PayError` is passed on as thrown, anything
+else becomes `BEFORE_PAY_REFUSED` (the caller's message, the error as `cause`). Unlike `beforeBorrow`, whose error is
+passed on as is, this one is wrapped so a `pay()` caller can branch on one code that also says nothing was read,
+borrowed or signed.
+
+```js
+const payer = createPayer({
+  signer, pool: robinhood.pool, agentId: 1234, maxBorrow: "$5",
+  beforePay: async ({ payTo, price, resource, signal }) => {
+    if (!ALLOWED.has(payTo.toLowerCase())) throw new Error("payee not on my allowlist");
+  },
+});
+```
+
+It is given `{ requirement, x402Version, resource, price, payTo, network, asset, payer, signal }`. `requirement` is a
+frozen deep copy (`extra` included): the payer always signs its own copy, so a hook cannot change what is signed.
+`signal` fires on the caller's `init.signal` or the payer's `signal`, for a hook that reads something. `null` or
+`undefined` is off.
 
 ## Credit helpers
 
@@ -499,5 +523,5 @@ chain 4663 where a standard `@x402/express` server priced with `registerUsdg` is
 `@x402/express`), Hono and a fetch handler, and `scripts/demo-x402-check.mjs` runs the demo from the packed tarball
 against the live check API. `scripts/test-x402-base.mjs` (also part of `npm test`) covers the Base path and the
 bridge; with `--fork`, `BASE_RPC_URL` settles a seller's USDC 402 on a Base fork, and `RPC_URL` deposits into the real Across spoke on a
-Robinhood Chain fork. `scripts/test-x402-routes.mjs` (part of `npm test`) runs `payViaGateway` against a mock Keyring
+Robinhood Chain fork. `scripts/test-x402-before-pay.mjs` (part of `npm test`, network-free) runs `beforePay` through `createPayer` against a mock merchant and a mock chain. `scripts/test-x402-routes.mjs` (part of `npm test`) runs `payViaGateway` against a mock Keyring
 and a mock Base seller, and pays 4663 merchants whose facilitator is a mock of Dexter's.
