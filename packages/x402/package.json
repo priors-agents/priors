@@ -31,10 +31,6 @@
       "types": "./check.d.ts",
       "import": "./src/check.mjs"
     },
-    "./toll": {
-      "types": "./toll.d.ts",
-      "import": "./src/toll.mjs"
-    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -45,7 +41,6 @@
     "autopay.d.ts",
     "bridge.d.ts",
     "check.d.ts",
-    "toll.d.ts",
     "src",
     "README.md",
     "CHANGELOG.md"

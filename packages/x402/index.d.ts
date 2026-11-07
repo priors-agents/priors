@@ -129,9 +129,8 @@ export interface CreatePayerOptions {
   beforeBorrow?: (loan: { agentId: bigint; amount: bigint; fee: bigint; term: bigint; due: bigint }) => void | Promise<void>;
   /** Called once per purchase, after the requirement is picked and passed maxPrice, the gateway's pins and x402 core's
    *  own selection, and before anything is read, topped up, borrowed or signed: a throw refuses the payment. A PayError
-   *  is passed on as thrown; any other error becomes PayError BEFORE_PAY_REFUSED (the error as `cause`). A payee check
-   *  that plugs in here: `tollCheck()` from "@priors/x402/toll". */
-  beforePay?: (payment: BeforePayInput) => void | Promise<void>;
+   *  is passed on as thrown; any other error becomes PayError BEFORE_PAY_REFUSED (the error as `cause`). null: off. */
+  beforePay?: ((payment: BeforePayInput) => void | Promise<void>) | null;
   /** Refuse a loan whose fee is above this (atomic USDG). */
   maxFee?: bigint;
   /** Signed authorizations are valid at most this long (≤ 600 s, the default). */
@@ -254,10 +253,11 @@ export interface Payer {
   settleLoans(o?: { onlyInWindow?: boolean }): Promise<{ repaid: bigint[]; open: bigint[]; others: Array<{ loanId: bigint; openedBy: string }>; waiting?: Array<{ loanId: bigint; opens: number }>; savings?: SavingsTopUp }>;
 }
 
-/** What `beforePay` is shown: the requirement as the merchant sent it (x402 v2 `accepts` entry, or v1), and the payer's
- *  own reading of it (price in atomic units, network and asset as the payer will pay them). */
+/** What `beforePay` is shown: a frozen deep copy of the requirement as the merchant sent it (x402 v2 `accepts` entry,
+ *  or v1; what is signed is the payer's own copy), and the payer's own reading of it (price in atomic units, network
+ *  and asset as the payer will pay them). */
 export interface BeforePayInput {
-  requirement: Record<string, unknown>;
+  readonly requirement: Readonly<Record<string, unknown>>;
   x402Version: 1 | 2;
   /** the URL being bought */
   resource: string;
@@ -268,6 +268,8 @@ export interface BeforePayInput {
   asset: string;
   /** the address that will sign */
   payer: string;
+  /** fires on the caller's init.signal or the payer's signal: stops the hook's own reads */
+  signal?: AbortSignal;
 }
 export declare function createPayer(opts: CreatePayerOptions): Payer;
 
