@@ -1,5 +1,34 @@
 # @priors/mcp changelog
 
+## 0.19.0 (2026-11-09)
+
+- **The agent's open loans, named when a session starts.** `initialize`'s instructions end with each open loan of the
+  configured agent: its id, what is due (principal and fee), its due time in UTC and "repay before then" (one past due:
+  "repay it now"), the earliest due first; with a wallet, that `repay` pays it from there with the user's go-ahead. The
+  agent is `PRIORS_AGENT_ID`, else the identity `join` registered for this wallet (its record in `PRIORS_STATE_DIR`)
+  while the wallet still owns it; no search of the registry's logs, which takes far too long for a start. One bounded
+  read of the pool (5 s): nothing is said when no loan is open or the read fails, and with no agent configured the
+  instructions are 0.18.2's, byte for byte.
+- **`credit_status`'s next step for a registered identity with no Priors record**: after "no Priors record yet" and its
+  owner, the routes to a first line that `line_options` on Priors' hosted MCP reads (the treasury's first line by
+  invite, the Ethos lane, a stock line, a line from its owner's own $PRIORS) and the line board, where its owner may ask
+  the roots for a line with `line_ask`: a backer may offer, or not. An id with no owner in the registry is answered as
+  before.
+- **`line_ask` and `line_take`, signed here** (only with `PRIORS_LINE_BOARD=on`, off by default; off, the server is as
+  before, word for word, and `PRIORS_LINE_BOARD_URL` is not read). The hosted MCP's `line_ask` and `line_take` draft an
+  agent's owner's request for a line on Priors' line board and its take of one offer there, and sign nothing; here the
+  configured wallet, when it is the agent's owner in the ERC-8004 registry, signs each one and posts it to the board
+  (`PRIORS_LINE_BOARD_URL`, default `https://priors.trade/api/line-requests`; https, or http for localhost only).
+  `line_ask` signs the board's LineRequest (the line, the most premium its owner takes, the term, how long it stands);
+  `line_take` signs the pool's own consent for the offer's root alone, at the agent's nonce, the offer's premium as its
+  cap and a deadline six days on, and says what taking does (a line from another root handed over whole, a smaller
+  line, an open loan to repay first, the root's free backing, what Score v2 would say of a line from that root). Each is
+  checked first as the hosted tools check it and refused with their reasons, nothing signed: a key that does not own the
+  agent, the board's rules, an offer not on the request or ended, a request taken or unknown, a root no longer a root or
+  no longer its signer's. The messages are the board's own (`src/line-market.mjs`, `sdk/line-market.mjs` in the
+  repository, byte for byte), which the board checks again. Neither moves money: once a take is posted, the root's owner
+  sends the line from its own wallet, or not. Asking promises no line.
+
 ## 0.18.2 (2026-11-06)
 
 - **The state file's lock is never taken from a running server by a clock** (GHSA-wqww-vjpx-w8mq, reported by
