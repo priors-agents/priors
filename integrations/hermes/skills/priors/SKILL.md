@@ -99,5 +99,5 @@ the wallet is short", or "Check agent #1234's record before we pay it".
 ## Verification
 
 - `credit_status()` shows the loan as repaid and no loan open after the flow.
-- Every transaction `pay_url` and `repay` return can be checked on https://robinhood.blockscout.com.
+- Every transaction `pay_url` and `repay` return can be checked on https://robinhoodchain.blockscout.com.
 - The agent's record at https://priors.trade/agent/<agent_id> shows the repayment once the chain is read again.

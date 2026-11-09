@@ -444,7 +444,7 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | Hosted MCP (read-only) | `https://mcp.priors.trade/mcp` |
 | Paid API (x402 v2, 0.03 USDG) | `https://api.priors.trade` |
 | RPC (official; the only one that serves `eth_getLogs`) | `https://rpc.mainnet.chain.robinhood.com` |
-| RPC backups, for plain calls | `https://robinhood-rpc.publicnode.com`, `https://rpc.ordofi.network` |
+| RPC backup, for plain calls | `https://robinhood-rpc.publicnode.com` |
 | Explorer | `https://robinhoodchain.blockscout.com` |
 | ~~CreditPool~~ v1 (**paused**, superseded by v2; history imported) | `0x0259889e6EBab1a18CeE7e62Bc5B9648FB6C44e5` |
 | ~~TreasurySponsor~~ v3 (v1 pool, superseded by v4, sponsor `#486`) | `0x59f212317b42D308E81EaF8C078fc8189E2a77Df` |
@@ -477,12 +477,12 @@ default takes a share of that one event's fee, the bound `docs/SECURITY-v2.md` s
 when that one fails or refuses to serve the request:
 
 ```bash
-RPC_URL=https://rpc.mainnet.chain.robinhood.com,https://robinhood-rpc.publicnode.com,https://rpc.ordofi.network
+RPC_URL=https://rpc.mainnet.chain.robinhood.com,https://robinhood-rpc.publicnode.com
 ```
 
 Worth doing: the official endpoint rate-limits under load, and a 429 there is otherwise the end of the
-read. The backups take plain calls happily but **cannot serve event history** — publicnode answers 403
-`Archive requests require a personal token` and ordofi answers `-32005 the network is busy` — so anything
+read. The backup takes plain calls happily but **cannot serve event history** — publicnode answers 403
+`Archive requests require a personal token` — so anything
 reading logs still needs the official endpoint reachable. The SDK knows the difference: a node refusing
 to serve moves to the next entry, while a revert is returned as-is, because a revert is the chain's
 answer and identical everywhere.

@@ -67,7 +67,7 @@ export const deploymentPathV2 = (chainId) => join(ROOT, "deployments", `${chainI
 /** Robinhood Chain's official endpoint: the default for the v2 tools, which have no local devnet. */
 export const MAINNET_RPC = "https://rpc.mainnet.chain.robinhood.com";
 /** The public Robinhood Chain endpoints .env.example names (mainnet, and the testnet). */
-const PUBLIC_RPC_HOSTS = new Set(["rpc.mainnet.chain.robinhood.com", "robinhood-rpc.publicnode.com", "rpc.ordofi.network", "rpc.testnet.chain.robinhood.com"]);
+const PUBLIC_RPC_HOSTS = new Set(["rpc.mainnet.chain.robinhood.com", "robinhood-rpc.publicnode.com", "rpc.testnet.chain.robinhood.com"]);
 
 /**
  * On a real chain, an RPC that a .env names must be one of the public endpoints: a .env in a directory the user did not
