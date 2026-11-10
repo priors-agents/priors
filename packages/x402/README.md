@@ -311,8 +311,10 @@ const fetchWithPay = wrapFetchWithPayment(fetch, createUsdgClient({ signer, maxP
 `borrowLine`, `repayLoan`, `settleLoans`, `balances`, `borrowGap`, plus `poolContract`, `explainRevert` (a revert as
 `Name(args)`), (0.8.2) `refusedUnsent` and `refusedTxHash` (whether a failed broadcast sent nothing, by the hash of
 its signed bytes), `LOAN_STATUS` and the ABIs (`POOL_ABI`, `LENS_ABI`, `ERC20_ABI`, `STOCK_VAULT_ABI`). `repayLoan` pays
-only a loan of an agent the signer controls (owner or pool delegate); any other loan is refused with `NOT_CONTROLLER`
-before anything is sent. From 0.6.3 it also pays only a loan the agent's owner now took: a loan opened while someone
+only a loan of an agent the signer controls (owner or pool delegate) or is the declared ERC-8004 wallet of (whether or
+not the pool names it the delegate: an agent whose delegate is LineKey, the spending key, is repaid from its own key;
+GHSA-45h8-v5q8-4j43, `settleLoans` too); any other loan is refused with `NOT_CONTROLLER` before anything is sent.
+From 0.6.3 it also pays only a loan the agent's owner now took: a loan opened while someone
 else held the agent (`Loan.owner` is another address) is refused with `NOT_OWNERS_LOAN`, and `settleLoans` leaves such
 loans in `open` and lists them in `others` with who opened them (GHSA-mmp8).
 

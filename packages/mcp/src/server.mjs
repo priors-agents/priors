@@ -1141,11 +1141,26 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
    */
   async function needController(id, did = "done") {
     if (!(await credit.isController(id, wallet.address))) throw new ToolError(`This wallet (${wallet.address}) does not control agent #${id} on the pool (it is neither the owner nor its delegate).`);
+    await needActsFor(id, did);
+  }
+  /** The wallet is agent `id`'s current owner or its declared ERC-8004 wallet: needController's proof, on its own. */
+  async function needActsFor(id, did = "done", named = "the pool lets an owner name any address its delegate") {
     const me = wallet.address.toLowerCase();
     const holder = String(await credit.agentOwner(id));
     if (holder.toLowerCase() === me) return;
     if (String(await credit.agentWallet(id)).toLowerCase() === me) return;
-    throw new ToolError(`This wallet (${wallet.address}) is neither agent #${id}'s owner (${holder}) nor its declared ERC-8004 wallet, so nothing shows it acts for that owner: the pool lets an owner name any address its delegate. Nothing was ${did}. If this is the agent's own key, declare it as the agent's wallet (\`priors-mcp link-wallet\`, then its owner sends the registry's setAgentWallet), or act from the owner's key.`);
+    throw new ToolError(`This wallet (${wallet.address}) is neither agent #${id}'s owner (${holder}) nor its declared ERC-8004 wallet, so nothing shows it acts for that owner: ${named}. Nothing was ${did}. If this is the agent's own key, declare it as the agent's wallet (\`priors-mcp link-wallet\`, then its owner sends the registry's setAgentWallet), or act from the owner's key.`);
+  }
+  /**
+   * Before this wallet's USDG repays agent `id`'s loans, or its allowance goes to Autopay: needController, except that
+   * the agent's declared ERC-8004 wallet needs no control at the pool. The pool has one delegate per agent, and once
+   * the owner names LineKey (the spending key, docs/LINE-KEY.md) its delegate, the agent's own key controls nothing
+   * there, while repaying stays its job (AutoRepayV2's wallet plan asks the declared wallet only). GHSA-45h8-v5q8-4j43.
+   */
+  async function needPayer(id, did = "done") {
+    if (String(await credit.agentWallet(id)).toLowerCase() === wallet.address.toLowerCase()) return;
+    if (!(await credit.isController(id, wallet.address))) throw new ToolError(`This wallet (${wallet.address}) does not control agent #${id} on the pool (it is neither the owner nor its delegate), and is not its declared ERC-8004 wallet.`);
+    await needActsFor(id, did);
   }
 
   // Every answer as the model gets it (fence.mjs guarded): the third-party strings it quotes outside the server's own
@@ -1780,10 +1795,11 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     needWallet("repay");
     const pre = [];
     if ((loan_id === undefined) === (all !== true)) throw new ToolError("Give exactly one of loan_id or all: true.");
-    // Only the loans of an agent this wallet controls: the pool lets anyone repay any loan, and this wallet's USDG is
-    // not for others. PRIORS_AGENT_ID alone is not proof: a stale or mistyped id would point at someone else's agent.
+    // Only the loans of an agent this wallet acts for (its owner, or its declared ERC-8004 wallet whether or not the pool
+    // names it the delegate: needPayer): the pool lets anyone repay any loan, and this wallet's USDG is not for others.
+    // PRIORS_AGENT_ID alone is not proof: a stale or mistyped id would point at someone else's agent.
     const id = await resolveAgent();
-    await needController(id, "paid");
+    await needPayer(id, "paid");
     // Only loans the agent's current owner took: one opened while someone else held the agent is theirs (the pool marks
     // them if it defaults), and an identity that changed hands can arrive carrying it (GHSA-mmp8).
     const holder = String(await credit.agentOwner(id)).toLowerCase();
@@ -1986,7 +2002,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     needWallet("autopay_on");
     const ap = needAutopay();
     const id = await resolveAgent();
-    await needController(id, "sent"); // autopay_on approves an allowance: the same rule
+    await needPayer(id, "sent"); // autopay_on approves an allowance: repay's rule
     let cap = cap_usd !== undefined ? dollars(cap_usd, "cap_usd") : null;
     if (cap === null) { const st = await credit.status(id); cap = A.defaultCap(st.line, maxAutopayCap); }
     if (cap === 0n) throw new ToolError("cap_usd must be above zero");
@@ -2409,8 +2425,10 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   // refusals as codes, the payment's call and the key's state read back are ./line-key-core.cjs (web/line-key-core.js
   // byte for byte: what Go mode's Spending key uses).
   //   line_key_status reads the key, no wallet needed: its state (the core's view()), terms, payees, window and room.
-  //   line_key_spend pays from this wallet, which must be the key's operator. Refused before anything is signed: no
-  //   wallet; a bad payee or ref; an amount of 0, over PRIORS_MAX_BORROW_USD, under the pool's smallest loan or over its
+  //   line_key_spend pays from this wallet, which must be the key's operator and the agent's owner or declared ERC-8004
+  //   wallet (needActsFor: the owner names an operator with no word from it). Refused before anything is signed: no
+  //   wallet; neither the agent's owner nor its declared wallet; a bad payee or ref; an amount of 0, over
+  //   PRIORS_MAX_BORROW_USD, under the pool's smallest loan or over its
   //   largest (getParams, read now); the key's check() other than ok, in words; the line's refusal in a simulation of the
   //   spend from this wallet (the core's refusal(): the key's Refused, or the pool's own error inside LineRefused); too
   //   little ETH for the gas. Then ONE transaction to LineKey, its gas limit the core's STAGE.spendGas, simulated again
@@ -2463,17 +2481,19 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       const me = wallet ? wallet.address : null;
       let r;
       try {
-        const [[key], [list], spent, [room], [active], owner, [delegate], [pp], latest] = await Promise.all([
+        const [[key], [list], spent, [room], [active], owner, [delegate], [pp], latest, declared] = await Promise.all([
           kc(LINE_KEY, "keyOf", [id]), kc(LINE_KEY, "payeesOf", [id]), kc(LINE_KEY, "spentInPeriod", [id, ethers.ZeroAddress]), kc(LINE_KEY, "remaining", [id]), kc(LINE_KEY, "isActive", [id]),
           // a registry that gives no owner (an id never minted): a key pays nothing then (LineKey fails closed)
-          kc(REGISTRY, "ownerOf", [id]).then(([o]) => o, () => null), kc(POOL, "delegateOf", [id]), kc(POOL, "getParams"), withinTime(provider.getBlock("latest"), requestTimeoutMs)]);
+          kc(REGISTRY, "ownerOf", [id]).then(([o]) => o, () => null), kc(POOL, "delegateOf", [id]), kc(POOL, "getParams"), withinTime(provider.getBlock("latest"), requestTimeoutMs),
+          // the agent's declared ERC-8004 wallet, for whether line_key_spend pays from this one (needActsFor); null unread
+          me ? Promise.resolve().then(() => credit.agentWallet(id)).then(String, () => null) : null]);
         const v = LK.view({ key, owner, delegate, payees: list, spent, remaining: room, active, conf, now: Number(latest.timestamp) });
         // each payee: what the key's rules let it be paid now, and what it was paid in the window
         const per = v.state === "none" ? [] : await Promise.all(v.payees.map(async (p) => {
           const [[max], s] = await Promise.all([kc(LINE_KEY, "maxPayment", [id, p.payee]), kc(LINE_KEY, "spentInPeriod", [id, p.payee])]);
           return { ...p, max, spent: s[0], payments: Number(s[1]) };
         }));
-        r = { v, owner, per, minLoan: pp.minLoan, maxLoan: pp.maxLoan };
+        r = { v, owner, declared, per, minLoan: pp.minLoan, maxLoan: pp.maxLoan };
       } catch (e) { throw new ToolError(`agent #${id}'s spending key could not be read from the chain just now (${explain(e)}): try again in a minute.`); }
       const { v } = r;
       if (v.state === "none") return `Agent #${id} has no spending key (LineKey ${LINE_KEY}): nothing can be paid through one. ${SETUP}: it names the key the line's delegate and sets its operator, caps and payees.${v.delegateIsKey ? " The pool already names LineKey the line's delegate." : ""}`;
@@ -2484,7 +2504,9 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
         expired: `expired on ${when(t.expiresAt)}: the key pays nothing until its owner sets a later expiry.`,
         "not-delegate": `not the line's delegate: the pool names ${noAddr(v.delegate) ? "no delegate" : v.delegate} as agent #${id}'s delegate, so the key pays nothing until its owner names it the delegate again (Spending key, in Go mode's agent panel).`,
       }[v.state];
-      const who = !me ? " (this server has no wallet configured: line_key_spend pays only from the operator's)" : sameAddr(t.operator, me) ? " (this server's wallet: line_key_spend pays from it)" : ` (not this server's wallet, ${me}: line_key_spend pays only from the operator's)`;
+      // an operator that is neither the agent's owner nor its declared wallet: line_key_spend refuses it (needActsFor)
+      const stranger = me && r.declared !== null && r.owner && !sameAddr(r.owner, me) && !sameAddr(r.declared, me);
+      const who = !me ? " (this server has no wallet configured: line_key_spend pays only from the operator's)" : sameAddr(t.operator, me) ? (stranger ? ` (this server's wallet, but neither agent #${id}'s owner nor its declared ERC-8004 wallet, so line_key_spend does not pay from it: if it is the agent's own key, its owner declares it as the agent's wallet, \`priors-mcp link-wallet\`)` : " (this server's wallet: line_key_spend pays from it)") : ` (not this server's wallet, ${me}: line_key_spend pays only from the operator's)`;
       return [
         `Agent #${id}'s spending key (LineKey ${LINE_KEY}, generation ${v.generation}, set by ${v.owner}): ${head}`,
         `Operator: ${t.operator}${who}.`,
@@ -2594,6 +2616,10 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       if (!dry_run) count("borrowed", units); // until this call ends (GHSA-cq9v)
       try {
         const id = await resolveAgent(agent_id);
+        // the operator alone is no proof this wallet acts for the agent's owner: configure names any address with no
+        // word from it, as setDelegate does (GHSA-9pw7). Payments for an agent it is neither the owner nor the declared
+        // ERC-8004 wallet of would spend its gas and its borrowing limits on a stranger's line (GHSA-45h8-v5q8-4j43).
+        await needActsFor(id, "signed or sent", "the agent's owner names its spending key's operator with no word from that address");
         const me = signer.address;
         let pp, reason, key;
         try {

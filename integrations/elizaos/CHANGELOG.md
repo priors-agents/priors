@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.2 (2026-11-10)
+
+Security fixes from the private reports of 2026-11-07 by @pa-khan (GHSA-p87w-g46g-5w3h) and 2026-11-08 by @mr-hrydarie
+(GHSA-8pvh-wx87-mf7x); 0.2.0 to 0.3.1 are affected:
+
+- **The request body is found wherever it stands, and nothing in braces is read as an amount** (GHSA-p87w-g46g-5w3h,
+  reported by @pa-khan; GHSA-8pvh-wx87-mf7x, reported by @mr-hrydarie). A brace before the body that was not JSON (a
+  template's `{model}`, a URL's `?u={id}`) hid the body, so its prompt was read for the price and a borrow and the
+  payment went out as a GET; an example block before the body was sent instead of it; a `{}` inside a seller's URL was
+  taken for the body and cut the URL, whose tail was then read. Every ``` block and `{...}` outside a URL is now taken
+  out before the URL and the amounts are read, and the body is the message's one JSON object: two, one that does not
+  parse, or one joined to the URL pay nothing.
+- **A cap phrase's count is not a price** (GHSA-p87w-g46g-5w3h): "up to 50 items" no longer names a price of 50, and
+  "borrow 0.50 USDG (up to 5)" no longer a price of 5.
+
+On `@priors/mcp` 0.19.1 (was 0.18.1): among its changes, `repay` pays from the agent's declared ERC-8004 wallet when
+LineKey is the agent's pool delegate (GHSA-45h8-v5q8-4j43), and the state file's lock, which keeps a purchase to one
+signature, is never taken from a running server by a clock (GHSA-wqww-vjpx-w8mq).
+
 ## 0.3.1 (2026-11-05)
 
 Security fix from the private report of 2026-11-04 by @sonson0910 (GHSA-mc89-r73h-33vv; 0.3.0 is affected):

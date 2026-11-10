@@ -549,6 +549,59 @@ test("GHSA-87h5: with autoBorrow the loan's term is the owner's 14 days, whateve
   assert.throws(() => priorsActionProvider(undefined, { autoBorrow: { perCall: "5", perDay: "9.9999999", hosts: ["models.example"] } }), /6 decimals/);
 });
 
+// ---- the private report of 2026-11-08 (GHSA-j679): auto-borrow's day limit across a restart ----
+/** A wallet over a pool that lists the agent's loans oldest first, as CreditPoolV2's loansOf does (`loans`: principal
+ *  and issuedAt, in seconds); each borrow mined lists a new 5 USDG loan issued now. */
+function pool(reads, loans = []) {
+  const w = wallet(reads);
+  const read = w.readContract;
+  w.readContract = async (q) => {
+    if (q.functionName === "loansOf") return loans.map((_, i) => BigInt(i + 1));
+    if (q.functionName === "getLoan") {
+      const l = loans[Number(q.args[0]) - 1];
+      return { agentId: 437n, principal: l.principal, fee: 11666n, owner: AGENT_OWNER, issuedAt: l.issuedAt, status: 1 };
+    }
+    return read(q);
+  };
+  const wait = w.waitForTransactionReceipt;
+  w.waitForTransactionReceipt = async (h) => { const r = await wait(h); loans.push({ principal: 5000000n, issuedAt: BigInt(Math.floor(Date.now() / 1000)) }); return r; };
+  return w;
+}
+
+test("GHSA-j679: auto-borrow's day limit holds across a restart (what the pool lent the agent since 00:00 UTC counts), and nothing is borrowed when that cannot be read", async () => {
+  paid.length = 0;
+  const loans = [];
+  const w = pool(covered(), loans);
+  const before = priorsActionProvider(ask402("20000"), AUTO); // perCall 6, perDay 10
+  for (const n of [1, 2]) await before.payX402WithCredit(w, { url: `${CHAT}?n=${n}`, agentId: 437, maxPrice: "0.02" });
+  assert.equal(w.sent.length, 2, "the day's 10 USDG borrowed");
+  assert.match(await before.payX402WithCredit(w, { url: `${CHAT}?n=3`, agentId: 437, maxPrice: "0.02" }), /limit of 10 USDG a day has 0 left/);
+  // the process restarts the same UTC day: a fresh provider, the same wallet, agent and pool
+  const after = priorsActionProvider(ask402("20000"), AUTO);
+  const out = await after.payX402WithCredit(w, { url: `${CHAT}?n=4`, agentId: 437, maxPrice: "0.02" });
+  assert.equal(w.sent.length, 2, `nothing borrowed past the day's 10 USDG after the restart: ${out}`);
+  assert.match(out, /limit of 10 USDG a day has 0 left: the pool lent agent #437 10 USDG since 00:00 UTC.*Nothing was borrowed or paid/s, out);
+  assert.equal(paid.length, 2, "the refused purchase was not paid");
+
+  // loans of an earlier day do not count; every loan of the agent today does, whoever took it
+  const midnight = BigInt(Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`) / 1000);
+  const mixed = pool(covered(), [{ principal: 5000000n, issuedAt: midnight - 7200n }, { principal: 5000000n, issuedAt: midnight - 1n }, { principal: 5000000n, issuedAt: midnight }]);
+  const fresh = priorsActionProvider(ask402("20000"), AUTO);
+  await fresh.payX402WithCredit(mixed, { url: `${CHAT}?m=1`, agentId: 437, maxPrice: "0.02" });
+  assert.equal(mixed.sent.length, 1, "5 lent today, so 5 of the day's 10 are left: one loan");
+  assert.match(await fresh.payX402WithCredit(mixed, { url: `${CHAT}?m=2`, agentId: 437, maxPrice: "0.02" }), /limit of 10 USDG a day has 0 left: the pool lent agent #437 10 USDG since 00:00 UTC/);
+  assert.equal(mixed.sent.length, 1);
+
+  // a loan whose record cannot be read: nothing is borrowed, and the day's room comes back
+  const q = priorsActionProvider(ask402("20000"), { autoBorrow: { perCall: "6", perDay: "6", hosts: ["models.example"] } });
+  const unreadable = pool(covered(), [{ principal: 5000000n, issuedAt: undefined }]);
+  assert.match(await q.payX402WithCredit(unreadable, { url: `${CHAT}?u=1`, agentId: 437, maxPrice: "0.02" }), /day limit could not be checked.*Nothing was borrowed or paid/s);
+  assert.deepEqual(unreadable.sent, []);
+  const good = pool(covered());
+  await q.payX402WithCredit(good, { url: `${CHAT}?u=2`, agentId: 437, maxPrice: "0.02" });
+  assert.equal(good.sent.length, 1, "the refused borrow's room came back");
+});
+
 test("src/fence.js is the repository's sdk/fence.mjs byte for byte (the fence @priors/mcp and the hosted server use)", (t) => {
   const fs = require("node:fs");
   const path = require("node:path");

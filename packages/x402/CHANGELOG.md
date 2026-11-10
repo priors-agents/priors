@@ -1,5 +1,13 @@
 # @priors/x402 changelog
 
+## 0.8.9 (2026-11-10)
+
+- **`repayLoan` and `settleLoans` repay from the agent's declared ERC-8004 wallet whether or not the pool names it the
+  agent's controller** (GHSA-45h8-v5q8-4j43, reported by @pa-khan). The pool has one delegate per agent; once the owner
+  names LineKey, the spending key, its delegate, the agent's own key controlled nothing there and was refused
+  `NOT_CONTROLLER`. A signer that is neither the agent's controller nor its declared wallet is refused `NOT_CONTROLLER`
+  as before, and a pool delegate that is neither its owner nor its declared wallet `NOT_AGENTS_WALLET`.
+
 ## 0.8.8 (2026-11-05)
 
 - **A plan whose AutoRepay epoch could not be read is never current** (GHSA-mc89-r73h-33vv, reported by @sonson0910).

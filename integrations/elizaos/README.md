@@ -54,7 +54,7 @@ Example messages:
 
 - "Before we pay it, check agent #1234's record on Priors."
 - "Pay https://api.priors.trade/v1/report/1234 at most 0.05, borrow up to 5 if the wallet is short."
-- "Buy a chat completion from https://models.example/v1/chat/completions at most 0.02: {"model": "…", "messages": [{"role": "user", "content": "…"}]}" (the URL, the price and any borrow are read outside the JSON; `models.example` stands for an OpenAI-compatible model API you choose that charges over x402, its host in `PRIORS_PAY_HOSTS`)
+- "Buy a chat completion from https://models.example/v1/chat/completions at most 0.02: {"model": "…", "messages": [{"role": "user", "content": "…"}]}" (the URL, the price and any borrow are read outside the JSON, which must be the message's only JSON object; `models.example` stands for an OpenAI-compatible model API you choose that charges over x402, its host in `PRIORS_PAY_HOSTS`)
 - "Repay loan 50900 now."
 
 ## How it works
@@ -67,7 +67,11 @@ allowlist and the signing are `@priors/mcp`'s own: a payment above `max_price_us
 URLs are read from the message of a sender listed in `PRIORS_OWNER_ENTITY_IDS`, never chosen by the model: the URL is
 taken out before the amounts are read, so nothing in a seller's path or query (`/pay1/borrow5.json`, `#123`) is ever
 read as a price, a borrow or an id, and a bare "pay 5" is a price only when no cap phrase ("at most", "max", "up to",
-"no more than") is named and it is an amount, not a count ("pay 5 items").
+"no more than") is named and it is an amount, not a count ("pay 5 items"); a cap phrase's number is an amount too, not
+a count ("up to 50 items"). The JSON body, and anything else the message writes in braces or a ``` block (a
+template's `{model}`, an example), is taken out the same way wherever it stands, so nothing in a prompt is read as a
+price or a borrow. A message must write exactly one JSON object for the body: with two (an example before the body),
+one that does not parse, or one joined to the URL with no space, nothing is paid.
 
 ## Disclosure
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.5 (2026-11-10)
+
+Security fix from the private report of 2026-11-08 by @bunba99 (GHSA-j679-rc5w-mj9h; 0.2.0 to 0.2.4 are affected):
+
+- **Auto-borrow's `perDay` holds across a restart.** The day's count was kept in the provider's memory only, as the
+  README and the refusal said ("in the process"), so a restart (a deploy, a crash) started the UTC day again and
+  auto-borrow could take a whole `perDay` more. Before an auto-borrow is sent, what the pool lent the agent since
+  00:00 UTC (every loan of the agent, whoever took it) now counts against `perDay` beside the process's own count; if
+  those loans cannot be read, nothing is borrowed.
+
 ## 0.2.4 (2026-11-05)
 
 Security fixes from the private reports of 2026-11-04 by @sonson0910 (GHSA-87h5-q328-gmx4, GHSA-mc89-r73h-33vv;

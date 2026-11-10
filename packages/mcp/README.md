@@ -34,7 +34,7 @@ repaying.
 | `stock_assets(symbol?)` | the stock tokens the Priors stock vault accepts: live Chainlink price, whether it lends against each now (or why not: a sharp price move, a multiplier change, a paused or blocked token), loan-to-value | no |
 | `stock_position(agent_id?)` | the stock tokens behind an agent's stock line: amount, what the vault values them at, loan-to-value, what the line can draw now, any lending hold | no (with `agent_id`) |
 | `borrow(amount_usd, days, dry_run?)` | borrow USDG from the line into the wallet; both amounts required; `dry_run` quotes the fee. (0.10.2) Needs the wallet to be the agent's owner or its declared ERC-8004 wallet, the same rule as `repay`. A borrow sent whose answer is lost is counted and said to be possibly open (check `credit_status`); (0.12.0) so is one the node refused for "insufficient funds" while it holds the signed borrow (a copy sent again after an HTTP 429). (0.12.1) On a line SeatVaultV5 backs, a term over 10 days is refused before anything is sent | yes |
-| `repay(loan_id? \| all, use_savings?)` | repay one of the agent's own loans, or all of them earliest due first; another agent's loan is refused, and (0.8.1) so is a loan opened while someone else held the agent; (0.10.2) a wallet that is neither the agent's owner nor its declared ERC-8004 wallet (a pool delegate the owner named) repays nothing — and, symmetrically, borrows nothing, so no loan is drawn that this server would then refuse to repay: the owner declares the agent's key with `priors-mcp link-wallet`. If the wallet is short of what is due, it first takes the difference out of savings (unless `use_savings: false`). From 0.8.0 its answer ends with share facts for each loan repaid (amount, on time or late, the record's page; also as structured content); the server never posts | yes |
+| `repay(loan_id? \| all, use_savings?)` | repay one of the agent's own loans, or all of them earliest due first; another agent's loan is refused, and (0.8.1) so is a loan opened while someone else held the agent; (0.10.2) a wallet that is neither the agent's owner nor its declared ERC-8004 wallet (a pool delegate the owner named) repays nothing — and, symmetrically, borrows nothing, so no loan is drawn that this server would then refuse to repay: the owner declares the agent's key with `priors-mcp link-wallet`. (0.19.1) The declared wallet repays whether or not the pool names it the agent's delegate (an agent whose delegate is the spending key, LineKey, below), and `autopay_on` takes the same rule. If the wallet is short of what is due, it first takes the difference out of savings (unless `use_savings: false`). From 0.8.0 its answer ends with share facts for each loan repaid (amount, on time or late, the record's page; also as structured content); the server never posts | yes |
 | `savings(address?)` | what the wallet (or any address) has saved in the savings vault, how much can come out right now, and the USDG in the wallet | no (with `address`) |
 | `save(amount_usd)` | move spare USDG from the wallet into the savings vault, where it earns the vault's rate (at most `PRIORS_MAX_SAVE_USD` per call, `PRIORS_MAX_SAVE_TOTAL_USD` per run); needs ETH for gas | yes |
 | `unsave(amount_usd? \| all)` | take USDG back out of savings into the wallet: a normal withdrawal, and when that is not enough, the rest from the vault's other markets in the same transaction (only where that costs no penalty); refused before any transaction when even that cannot pay it; needs ETH for gas | yes |
@@ -54,7 +54,7 @@ repaying.
 | `join()` | (since 0.11.0) only with `PRIORS_JOIN=on`: register an ERC-8004 identity on Robinhood Chain for the wallet when it owns none (one transaction, its gas in the wallet's ETH; too little is refused before anything is signed) and answer its id and its routes to a first line; a wallet that owns one gets its id and nothing is sent; a registration whose answer is lost is never sent twice | yes |
 | `first_line(agent_id?)` | (since 0.12.0) only with `PRIORS_JOIN=on`: take the treasury's first line by invite for the identity the wallet owns, when it has no Priors record (after `join`), with no clone or Telegram: post the invite's 5 USDG bond from the wallet (USDG's approve, then InviteBond's deposit; it comes back by InviteBond's release, and a default forfeits it), get the invite from Priors' invite bot with one signature that proves ownership (only the bot's own start-page text, rebuilt here byte for byte, is signed), then sign the pool consent and redeem it (treasury v4's `firstLine`). Refused before anything is signed when the wallet does not own the identity, the identity already has a record (its state is the answer), the wallet lacks the ETH or the USDG, the bond would pass `PRIORS_MAX_BOND_TOTAL_USD` or `PRIORS_MAX_SPEND_DAY_USD`, or the bot says no invite is open now (its reason, with `line_options`' routes). A transaction whose answer is lost answers `TX_UNCONFIRMED`, and a second call never posts a second bond; needs ETH for gas | yes |
 | `line_key_status(agent_id?)` | only with `PRIORS_LINE_KEY=on` (below): the agent's spending key on LineKey: whether one is set and live (or stale: the agent changed hands; expired; not the line's delegate: each pays nothing), its operator and whether that is this wallet, its caps per payment and per trailing period, its expiry, each payment's loan term and most fee, the payees with their own caps and what each can be paid now, what was paid in the period and when room frees up, and the pool's smallest loan (5 USDG) | no (with `agent_id`) |
-| `line_key_spend(payee, amount_usdg, ref?, agent_id?, dry_run?)` | only with `PRIORS_LINE_KEY=on`: pay a payee the agent's owner listed on the key, from the agent's line, as a loan of the agent: the pool pays the payee directly, never through this wallet, which must be the key's operator. A `ref` (a job or an invoice: up to 31 bytes of text, or 32 in hex) is paid once per payee. Refused before anything is signed when the key's `check` refuses (each reason in words), the amount is under the pool's smallest loan or over its largest, the line refuses it in a simulation (no room, its backer's rule, a fee above the key's most), the wallet lacks the ETH for the gas, or a borrowing limit would pass. One transaction to LineKey, gas limit 900,000; the answer names the loan (from LineKey's `Paid` log), its fee and due date, to repay with `repay`; `dry_run` lists the call; needs ETH for gas | yes |
+| `line_key_spend(payee, amount_usdg, ref?, agent_id?, dry_run?)` | only with `PRIORS_LINE_KEY=on`: pay a payee the agent's owner listed on the key, from the agent's line, as a loan of the agent: the pool pays the payee directly, never through this wallet, which must be the key's operator and (0.19.1) the agent's owner or its declared ERC-8004 wallet (the owner names an operator with no word from it). A `ref` (a job or an invoice: up to 31 bytes of text, or 32 in hex) is paid once per payee. Refused before anything is signed when the key's `check` refuses (each reason in words), the amount is under the pool's smallest loan or over its largest, the line refuses it in a simulation (no room, its backer's rule, a fee above the key's most), the wallet lacks the ETH for the gas, or a borrowing limit would pass. One transaction to LineKey, gas limit 900,000; the answer names the loan (from LineKey's `Paid` log), its fee and due date, to repay with `repay`; `dry_run` lists the call; needs ETH for gas | yes |
 
 Tools that move money state the amounts in their answer, are marked destructive for MCP clients, and their
 descriptions tell the assistant to confirm with you first. They run one at a time and each answers within 45 s, under an
@@ -128,10 +128,13 @@ spending key for an agent's Priors line. The agent's owner names it the line's d
 an operator (a hot key, such as this server's wallet), caps per payment and per trailing period, the payees it may pay
 (each with an optional cap of its own), an expiry, the loan term and the most fee. The owner sets it up in Go mode's
 agent panel, Spending key (on the test site for now). With `PRIORS_LINE_KEY=on`, `line_key_status` reads the key, and
-`line_key_spend` pays a listed payee from this wallet when it is the key's operator: the pool lends the amount and pays
-it straight to the payee, so every payment is an ordinary loan of the agent, repaid like any other before its due date.
-The operator holds nothing for it and pays only its own gas, in ETH. The key's caps bound what a stolen operator key
-could pay, and only to the listed payees; this server's borrowing limits count each payment too.
+`line_key_spend` pays a listed payee from this wallet when it is the key's operator and (0.19.1) the agent's owner or
+its declared ERC-8004 wallet (`priors-mcp link-wallet` declares it; the owner names an operator with no word from it):
+the pool lends the amount and pays it straight to the payee, so every payment is an ordinary loan of the agent, repaid
+like any other before its due date, by `repay` from the agent's owner or its declared wallet (the pool no longer names
+that wallet the agent's delegate: the key is). The operator holds nothing for it and pays only its own gas, in ETH.
+The key's caps bound what a stolen operator key could pay, and only to the listed payees; this server's borrowing
+limits count each payment too.
 
 ## Asking for a line on the line board (off by default, since 0.19.0)
 
@@ -422,7 +425,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.19.0"],
+      "args": ["-y", "@priors/mcp@0.19.1"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -444,7 +447,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.19.0"],
+      "args": ["-y", "@priors/mcp@0.19.1"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -457,7 +460,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 or, for your user only, from a macOS or Linux terminal:
 
 ```sh
- (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.19.0' priors-mcp ~/.config/priors/agent.key
+ (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.19.1' priors-mcp ~/.config/priors/agent.key
 ```
 
 It waits for the key without showing it (paste it, then Enter), saves it in a file only you can read, and gives Claude
@@ -538,7 +541,7 @@ to approve a borrow; this package, with the key, pays for APIs. With borrowing o
 approves each loan in Priors' Go mode. ElizaOS (`@elizaos/plugin-mcp`):
 
 ```ts
-"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.19.0"],
+"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.19.1"],
   env: { PRIORS_KEY_FILE: "/home/agent/.config/priors/agent-7311.key", PRIORS_AGENT_ID: "7311",
     PRIORS_MAX_BORROW_USD: "0", PRIORS_MAX_BORROW_DAY_USD: "0", PRIORS_MAX_SPEND_DAY_USD: "1", PRIORS_MAX_PRICE_USD: "0.10",
     PRIORS_PAY_HOSTS: "api.example.com" } }
@@ -550,7 +553,7 @@ OpenClaw (`mcp.servers`, JSON5) takes the same `command`, `args` and `env`; Herm
 mcp_servers:
   priors-wallet:
     command: npx
-    args: ["-y", "@priors/mcp@0.19.0"]
+    args: ["-y", "@priors/mcp@0.19.1"]
     env:
       PRIORS_KEY_FILE: /home/agent/.config/priors/agent-7311.key
       PRIORS_AGENT_ID: "7311"
@@ -577,7 +580,7 @@ key proves it is there: it signs the ERC-8004 identity registry's `AgentWalletSe
 agent's).
 
 ```sh
-PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.19.0 link-wallet --agent 7311
+PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.19.1 link-wallet --agent 7311
 ```
 
 It reads the registry's EIP-712 domain and refuses to sign for any other, takes the owner from the chain (`--owner`

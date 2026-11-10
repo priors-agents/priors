@@ -6,7 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 export const HOSTED_URL = "https://mcp.priors.trade/mcp";
-export const CLIENT = { name: "elizaos-plugin-priors", version: "0.3.1" };
+export const CLIENT = { name: "elizaos-plugin-priors", version: "0.3.2" };
 
 /** The settings @priors/mcp reads, taken from the agent's settings (runtime.getSetting), else the process env. */
 export const SETTINGS = Object.freeze([

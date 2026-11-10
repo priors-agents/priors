@@ -1,5 +1,17 @@
 # @priors/mcp changelog
 
+## 0.19.1 (2026-11-10)
+
+- **`line_key_spend` pays only for an agent this wallet owns or is the declared ERC-8004 wallet of, and that wallet
+  repays under LineKey** (GHSA-45h8-v5q8-4j43, reported by @pa-khan). An agent's owner names its spending key's operator
+  with no word from it, as it names a pool delegate (GHSA-9pw7), and `line_key_spend` (0.18.0, with
+  `PRIORS_LINE_KEY=on`) took being the operator as enough: a stranger who named this wallet, and a model told to pass
+  that `agent_id`, had it pay from the stranger's line with its own gas and borrowing limits. It now refuses a wallet
+  that is neither the agent's owner nor its declared wallet before the key is read, and `line_key_status` says so. Once
+  LineKey is the agent's pool delegate, the agent's own key controls nothing at the pool, and `repay` and `autopay_on`
+  refused it, though `line_key_spend`'s answer sends it there: the declared wallet now repays and turns Autopay on
+  whether or not the pool names it the delegate; any other wallet is refused as before. With `@priors/x402` 0.8.9.
+
 ## 0.19.0 (2026-11-09)
 
 - **The agent's open loans, named when a session starts.** `initialize`'s instructions end with each open loan of the
