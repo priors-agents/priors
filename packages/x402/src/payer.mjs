@@ -472,6 +472,12 @@ function multipartFields(bytes, boundary) {
 /** Seconds an unsettled authorization is kept past its validBefore, for clock skew between the payer and the chain. */
 export const SKEW_SECONDS = 60;
 
+/** freezes an object and everything in it (a structuredClone'd requirement: plain objects and arrays) */
+function deepFreeze(o) {
+  if (o && typeof o === "object" && !Object.isFrozen(o)) { Object.freeze(o); for (const v of Object.values(o)) deepFreeze(v); }
+  return o;
+}
+
 /**
  * A payer for x402 USDG on Robinhood Chain (and, with `networks` naming Base and a `baseProvider`, USDC on Base from
  * the wallet's Base float).
@@ -479,11 +485,12 @@ export const SKEW_SECONDS = 60;
  * @returns {import("../index.d.ts").Payer}
  */
 export function createPayer(opts = {}) {
-  const { signer, agentId, pool, termSeconds, fitTerm, beforeBorrow, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = DEFAULT_TIMEOUT_MS, signal, maxValiditySeconds = MAX_VALIDITY_SECONDS, topUp, onSigned, reserve, v5, v5Root, baseProvider, baseReserve } = opts;
+  const { signer, agentId, pool, termSeconds, fitTerm, beforeBorrow, beforePay, maxFee, asset, fetchImpl = globalThis.fetch, pendingRetries = 6, sleep = defaultSleep, maxSleepMs = 30_000, timeoutMs = DEFAULT_TIMEOUT_MS, signal, maxValiditySeconds = MAX_VALIDITY_SECONDS, topUp, onSigned, reserve, v5, v5Root, baseProvider, baseReserve } = opts;
   if (!signer || typeof signer.getAddress !== "function" || typeof signer.signTypedData !== "function") {
     throw new PayError("NO_SIGNER", "createPayer: `signer` must be an ethers v6 Signer (a Wallet connected to a Robinhood Chain provider)");
   }
   if (typeof fetchImpl !== "function") throw new PayError("NO_FETCH", "createPayer: no fetch implementation");
+  if (beforePay != null && typeof beforePay !== "function") throw new PayError("BAD_BEFORE_PAY", "createPayer: `beforePay` must be a function (null or undefined: off)");
   // The networks it signs for (networks.mjs): Robinhood Chain only unless the caller names another. Every network but
   // Robinhood Chain is paid from what the wallet holds there, read through that network's provider: Base's is needed.
   let networks;
@@ -616,6 +623,26 @@ export function createPayer(opts = {}) {
       try { client.selectPaymentRequirements(2, [req]); } catch (_) {
         throw new PayError("NO_USDG_REQUIREMENT", "pay: x402 core would not sign the requirement this payer picked; nothing was read, borrowed or signed");
       }
+    }
+    // The caller's last word on the payment itself, once its requirement is picked and has passed the price cap, the
+    // gateway's pins and core's own selection, and before anything is read, topped up, borrowed or signed: a check of
+    // the payee, an allowlist, a budget. A throw refuses the payment. The hook is shown a frozen deep copy of the
+    // requirement (`extra` included): what is signed is always the payer's own `req`, so a hook that writes to what it
+    // was shown changes nothing that is signed, nor the result's `paid`. It is also given the caller's abort (`signal`:
+    // init.signal and the payer's) to stop its own reads. A PayError is passed on as the caller threw it; any other
+    // error becomes BEFORE_PAY_REFUSED with the caller's message and the error as `cause`: unlike beforeBorrow (whose
+    // caller already knows a loan was asked for), a pay() caller branches on PayError codes, and this one also says
+    // that nothing was read, borrowed or signed.
+    if (beforePay) {
+      stopIfAborted();
+      const signals = [base.signal, signal].filter(Boolean);
+      try {
+        await beforePay(Object.freeze({ requirement: deepFreeze(structuredClone(req)), x402Version: version, resource: base.url, price, payTo: req.payTo, network: n.network, asset: token, payer: me, signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] }));
+      } catch (e) {
+        if (e instanceof PayError) throw e;
+        throw new PayError("BEFORE_PAY_REFUSED", `pay: beforePay refused the payment; nothing was read, borrowed or signed${e?.message ? ` (${String(e.message).slice(0, 200)})` : ""}`, { cause: e });
+      }
+      stopIfAborted();
     }
     let savings;
     let loan = { borrowed: 0n, loanId: null, dueAt: null };
