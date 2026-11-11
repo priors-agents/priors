@@ -9,12 +9,12 @@
     "source": "github",
     "subfolder": "packages/mcp"
   },
-  "version": "0.19.1",
+  "version": "0.20.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@priors/mcp",
-      "version": "0.19.1",
+      "version": "0.20.0",
       "transport": {
         "type": "stdio"
       },
@@ -78,6 +78,41 @@
         {
           "name": "PRIORS_PAY_HOSTS",
           "description": "Comma-separated exact hosts pay_url may pay; any other URL is refused before a request",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "PRIORS_JOIN",
+          "description": "on: join (registers an ERC-8004 identity for this wallet when it owns none) and first_line (the treasury's first line for it, with PRIORS_BOT_URL); off by default",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "PRIORS_LINE_BOARD",
+          "description": "on: the line board, signed by this wallet: line_ask and line_take for an agent it owns, and line_offer, line_send and line_back_own for a root it owns; off by default",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "PRIORS_MAX_BACK_DAY_USD",
+          "description": "Most line line_send and line_back_own may send from this wallet per UTC day, across restarts (read only with PRIORS_LINE_BOARD=on; none by default; 0 sends none)",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "PRIORS_STRATEGIES",
+          "description": "on: strategies_list and strategy_read, read only: the trading strategies published on Priors' strategy board; off by default",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "PRIORS_STRATEGIES_URL",
+          "description": "The strategy board read with PRIORS_STRATEGIES=on (default https://test.priors.trade/api/strategies); https, or http for localhost only",
           "isRequired": false,
           "isSecret": false,
           "format": "string"

@@ -155,6 +155,54 @@ promises no line: a backer may offer, or not, and once a take is posted the root
 wallet, or not. Without the switch nothing changes: no tool, no sentence in the instructions, and
 `PRIORS_LINE_BOARD_URL` is not read.
 
+## Backing a line from the line board (off by default, from 0.20.0)
+
+A root is a backer of the pool: an ERC-8004 identity with USDG staked behind it, whose free backing becomes the lines it
+gives agents. With `PRIORS_LINE_BOARD=on`, when this server's wallet owns a root in the ERC-8004 registry, it can offer
+lines on the line board and send them from that wallet:
+
+| Tool | What it does |
+|---|---|
+| `line_offer(request_id, root_id, amount_usd, premium_bps?, days?, dry_run?)` | checks an offer from the root on an open request as the hosted `line_offer` does, and against the root's offers standing on the board; says what the offer can become under the pool's rules and what Score v2 would say of a line from that root, then signs the LineOffer and posts it |
+| `line_send(request_id, dry_run?)` | sends the line of an offer of the root that the agent's owner took: the pool's `vouchWithConsent` exactly as the board's acceptance prints it, checked byte for byte, simulated, then sent from this wallet |
+| `line_back_own(root_id, agent_id, amount_usd, premium_bps?, dry_run?)` | backs an agent this wallet owns from a root it owns, the agent's consent signed here |
+
+With `dry_run`, each checks and says what it would do, and nothing is posted or sent. A refusal says why and sends
+nothing: the hosted tool's reason, the pool's own (a loan open on the agent's line from another root, an ended consent,
+too little free backing), or a call that differs from the board's acceptance.
+
+Score v2 counts nothing on a line its own owner backs: `line_back_own`'s answer says so first. Such a line opens credit
+for the agent and builds it no record.
+
+A line moves the root's free backing into the agent's line. If the agent doesn't repay, its loan is paid from the root's
+stake, and the default stays on the agent's record. `line_send` and `line_back_own` say so before they send, and send at
+most `PRIORS_MAX_BACK_DAY_USD` of line a UTC day from this wallet (none by default; `0` sends none), counted across restarts
+in `PRIORS_STATE_DIR`.
+
+When a session starts, the instructions name each taken offer of this wallet's roots waiting to be sent: the agent, the
+root, the amount and the consent's end in UTC. The roots are `PRIORS_AGENT_ID` and the agents the board lists for this
+wallet, each checked on the chain. Nothing is said when none waits or the read fails. Without the switch nothing
+changes: no tool, no sentence in the instructions, and `PRIORS_MAX_BACK_DAY_USD` is not read.
+
+## Published trading strategies (off by default)
+
+Priors' strategy board lists the trading strategies accounts published for their agents from Go mode's Trade tab
+(the board's Trade tab): triggers, If branches and actions, each with its levels and amounts. With
+`PRIORS_STRATEGIES=on`, this server reads it (`PRIORS_STRATEGIES_URL`, the test site's
+`https://test.priors.trade/api/strategies` by default):
+
+| Tool | What it reads |
+|---|---|
+| `strategies_list(agent_id?, publisher?, limit?)` | the published strategies, newest first (10 by default, at most 20), or only one agent's or one publisher's: each one's name, the agent it is for, its nodes path by path with their levels and amounts, its limits, and its record read on chain (the trades its account's key made, the agent's loans paid to that account, repaid on time or late as Score v2 counts it) |
+| `strategy_read(id)` | one of them, with each trade and loan of its record |
+
+Both read only: nothing is signed or sent, and this server's key is not used. A Borrow node opens a loan of the agent
+that must be repaid. A strategy's name is its publisher's words, and a strategy listed is not an endorsement. The test
+site's board asks for the Priors team's password: elsewhere, set `PRIORS_STRATEGIES_URL` to a board this server can
+read. Priors' hosted test server also checks a strategy before it is built (`strategy_draft`: Go mode's own checks, what
+it compiles to, and a Go mode link that opens it as a draft). Without the switch nothing changes: no tool, no sentence in
+the instructions, nothing of it loaded, and `PRIORS_STRATEGIES_URL` is not read.
+
 ## Trading agents (off by default)
 
 With `PRIORS_MARKET=on`, the agent's own key trades agents on Priors' agent market: it reads an agent, lists one it
@@ -396,6 +444,9 @@ may spend. Rows marked (0.8.0) take effect from that version; 0.7.x ignores them
 | `PRIORS_LINE_KEY` | off | `on`: `line_key_status` and `line_key_spend` (the agent's spending key, above); any value other than on or off stops the start |
 | `PRIORS_LINE_BOARD` | off | (since 0.19.0) `on`: `line_ask` and `line_take` (the line board, above); any value other than on or off stops the start |
 | `PRIORS_LINE_BOARD_URL` | `https://priors.trade/api/line-requests` | (since 0.19.0) read only with `PRIORS_LINE_BOARD=on`: the line board; https, or http for localhost only, with no credentials, query or fragment; any other value stops the start |
+| `PRIORS_MAX_BACK_DAY_USD` | none | (from 0.20.0) read only with `PRIORS_LINE_BOARD=on`, which then also offers `line_offer`, `line_send` and `line_back_own` (above): the most line `line_send` and `line_back_own` may send from this wallet per UTC day, counted from the broadcast, across restarts and every process sharing `PRIORS_STATE_DIR` (with it off, for the process only); `0` sends none; a value that is not a dollar amount stops the start |
+| `PRIORS_STRATEGIES` | off | `on`: `strategies_list` and `strategy_read` (published trading strategies, above); any value other than on or off stops the start |
+| `PRIORS_STRATEGIES_URL` | `https://test.priors.trade/api/strategies` | read only with `PRIORS_STRATEGIES=on`: the strategy board; https, or http for localhost only, with no credentials, query or fragment; any other value stops the start |
 | `PRIORS_PAY_NETWORKS` | `eip155:4663` | networks `pay_url` pays on, comma-separated; add `eip155:8453` for USDC on Base (also needs `PRIORS_BRIDGE`). Robinhood Chain is always on |
 | `PRIORS_BRIDGE` | `off` | `across`: `fund_base` moves money out through Across (`relay`, the Relay route out, is not built yet); `return_to_robinhood` goes through Relay either way |
 | `PRIORS_BASE_RPC` | `https://mainnet.base.org` | Base JSON-RPC endpoint, read only (a private URL is redacted from every answer) |
@@ -425,7 +476,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.19.1"],
+      "args": ["-y", "@priors/mcp@0.20.0"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -447,7 +498,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.19.1"],
+      "args": ["-y", "@priors/mcp@0.20.0"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -460,7 +511,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 or, for your user only, from a macOS or Linux terminal:
 
 ```sh
- (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.19.1' priors-mcp ~/.config/priors/agent.key
+ (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.20.0' priors-mcp ~/.config/priors/agent.key
 ```
 
 It waits for the key without showing it (paste it, then Enter), saves it in a file only you can read, and gives Claude
@@ -541,7 +592,7 @@ to approve a borrow; this package, with the key, pays for APIs. With borrowing o
 approves each loan in Priors' Go mode. ElizaOS (`@elizaos/plugin-mcp`):
 
 ```ts
-"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.19.1"],
+"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.20.0"],
   env: { PRIORS_KEY_FILE: "/home/agent/.config/priors/agent-7311.key", PRIORS_AGENT_ID: "7311",
     PRIORS_MAX_BORROW_USD: "0", PRIORS_MAX_BORROW_DAY_USD: "0", PRIORS_MAX_SPEND_DAY_USD: "1", PRIORS_MAX_PRICE_USD: "0.10",
     PRIORS_PAY_HOSTS: "api.example.com" } }
@@ -553,7 +604,7 @@ OpenClaw (`mcp.servers`, JSON5) takes the same `command`, `args` and `env`; Herm
 mcp_servers:
   priors-wallet:
     command: npx
-    args: ["-y", "@priors/mcp@0.19.1"]
+    args: ["-y", "@priors/mcp@0.20.0"]
     env:
       PRIORS_KEY_FILE: /home/agent/.config/priors/agent-7311.key
       PRIORS_AGENT_ID: "7311"
@@ -580,7 +631,7 @@ key proves it is there: it signs the ERC-8004 identity registry's `AgentWalletSe
 agent's).
 
 ```sh
-PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.19.1 link-wallet --agent 7311
+PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.20.0 link-wallet --agent 7311
 ```
 
 It reads the registry's EIP-712 domain and refuses to sign for any other, takes the owner from the chain (`--owner`
