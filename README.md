@@ -507,6 +507,11 @@ on 2026-10-27: ERC-8458 to ERC-8467. Each is discussed on Ethereum Magicians; th
 | [Credit-Matched Liquidity](https://github.com/priors-agents/erc-credit-matched-liquidity) | A lender funds the quote side of a holder's pool position in an escrow, repaid from fees first (reference not audited) | ERC-8465, draft: [ethereum/ERCs#2109](https://github.com/ethereum/ERCs/pull/2109) |
 | [Agent Income Statements](https://github.com/priors-agents/erc-agent-income-statements) | Public, chained statements of what an agent's ERC-8004 wallet received, one leaf per transfer, rebuildable from the token's logs | ERC-8458, draft: [ethereum/ERCs#2102](https://github.com/ethereum/ERCs/pull/2102) |
 
+To try them, [lab.priors.trade](https://lab.priors.trade) puts the ten drafts to use by hand or with an agent on
+Robinhood Chain testnet, with test tokens of no value: a page per draft, an MCP server at `https://lab.priors.trade/mcp`
+and an HTTP API (`https://lab.priors.trade/openapi.json`). The drafts are under review, and their reference contracts
+are not audited.
+
 ## Repository
 
 ```
