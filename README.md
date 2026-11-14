@@ -504,14 +504,14 @@ on 2026-10-27: ERC-8458 to ERC-8467. Each is discussed on Ethereum Magicians; th
 | [Liquidity Locks](https://github.com/priors-agents/erc-liquidity-locks) | One interface for any contract that locks pool liquidity, read by scanners, launchpads and lenders | ERC-8463, draft: [ethereum/ERCs#2107](https://github.com/ethereum/ERCs/pull/2107) |
 | [Launch Declarations](https://github.com/priors-agents/erc-launch-declarations) | What a launchpad declares at launch (creator identity, allocations, liquidity lock, financing, fee recipient), on ERC-8376's launches | ERC-8462, draft: [ethereum/ERCs#2106](https://github.com/ethereum/ERCs/pull/2106) |
 | [Agent Credit Backers](https://github.com/priors-agents/erc-credit-backer-hooks) | Third parties that stand behind a lender's line to an agent and take its loss | ERC-8467, draft: [ethereum/ERCs#2111](https://github.com/ethereum/ERCs/pull/2111) |
-| [Credit-Matched Liquidity](https://github.com/priors-agents/erc-credit-matched-liquidity) | A lender funds the quote side of a holder's pool position in an escrow, repaid from fees first (reference not audited) | ERC-8465, draft: [ethereum/ERCs#2109](https://github.com/ethereum/ERCs/pull/2109) |
+| [Credit-Matched Liquidity](https://github.com/priors-agents/erc-credit-matched-liquidity) | A lender funds the quote side of a holder's pool position in an escrow, repaid from fees first | ERC-8465, draft: [ethereum/ERCs#2109](https://github.com/ethereum/ERCs/pull/2109) |
 | [Agent Income Statements](https://github.com/priors-agents/erc-agent-income-statements) | Public, chained statements of what an agent's ERC-8004 wallet received, one leaf per transfer, rebuildable from the token's logs | ERC-8458, draft: [ethereum/ERCs#2102](https://github.com/ethereum/ERCs/pull/2102) |
 
 To try them, [lab.priors.trade](https://lab.priors.trade) puts the ten drafts to use by hand or with an agent on
 Robinhood Chain mainnet: a page per draft, an MCP server at `https://lab.priors.trade/mcp` and an HTTP API
-(`https://lab.priors.trade/openapi.json`). Its lab dollar is a token of no value that anyone mints, and the lab prepares
-no call that puts USDG, or any token it did not make, into its contracts. Your agent registers as a real ERC-8004
-identity and pays its own gas. The drafts are under review, and their reference contracts are not audited.
+(`https://lab.priors.trade/openapi.json`). It runs on real USDG, your own money, like the ETH for gas: each step moves or
+approves at most 5 USDG, approvals are for the exact amount, and the lab puts no token into a contract but USDG or one it
+made for you. Your agent registers as a real ERC-8004 identity and pays its own gas. The drafts are under review.
 
 ## Repository
 
