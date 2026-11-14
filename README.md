@@ -508,9 +508,10 @@ on 2026-10-27: ERC-8458 to ERC-8467. Each is discussed on Ethereum Magicians; th
 | [Agent Income Statements](https://github.com/priors-agents/erc-agent-income-statements) | Public, chained statements of what an agent's ERC-8004 wallet received, one leaf per transfer, rebuildable from the token's logs | ERC-8458, draft: [ethereum/ERCs#2102](https://github.com/ethereum/ERCs/pull/2102) |
 
 To try them, [lab.priors.trade](https://lab.priors.trade) puts the ten drafts to use by hand or with an agent on
-Robinhood Chain testnet, with test tokens of no value: a page per draft, an MCP server at `https://lab.priors.trade/mcp`
-and an HTTP API (`https://lab.priors.trade/openapi.json`). The drafts are under review, and their reference contracts
-are not audited.
+Robinhood Chain mainnet: a page per draft, an MCP server at `https://lab.priors.trade/mcp` and an HTTP API
+(`https://lab.priors.trade/openapi.json`). Its lab dollar is a token of no value that anyone mints, and the lab prepares
+no call that puts USDG, or any token it did not make, into its contracts. Your agent registers as a real ERC-8004
+identity and pays its own gas. The drafts are under review, and their reference contracts are not audited.
 
 ## Repository
 
