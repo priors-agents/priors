@@ -6,14 +6,16 @@ vault, `SeatVaultV4` (`0xb1c3a04496238D62E3c93118C297163855e22192`, $50 lines), 
 2026-09-29 and takes no new seats since 2026-10-09. Addresses are in [`deployments/4663.v2.json`](../deployments/4663.v2.json), and the SDK and the
 `priors-v2` CLI read them from there, so nothing below needs an address typed by hand.
 
-The same actions are on the site: [priors.trade](https://priors.trade) has a Participate page (deposit, seats,
-roots), [/agent](https://priors.trade/agent) and [/invite](https://priors.trade/invite).
+The same actions are on the site: [priors.trade](https://priors.trade) has a Participate page (deposit, seats),
+[/agent](https://priors.trade/agent) and [/invite](https://priors.trade/invite). A Go mode account runs a root from its
+Account, under "Back an agent" ([go.priors.trade/account](https://go.priors.trade/account)); any other wallet calls
+`enrollRoot` on the pool directly.
 
 | Who | How they take part | Entry point |
 |---|---|---|
 | Lender | Deposit USDG into the pool, earn the lenders' share of every fee, withdraw | Participate page · `PriorsV2.deposit/withdraw` |
 | Staker | Put a seat of $PRIORS behind an agent; the seat vault backs it; earn the sponsor share of its fees (no new seats since 2026-10-09: the seats already open run until they close) | Participate page · `PriorsV2.offer/closeSeat/claimSeatFees` |
-| Backer | Run a root: stake USDG, vouch for agents (with their owner's signed consent), earn sponsor fees | Participate page · `PriorsV2.enrollRoot/vouchWithConsent/claimSponsorFees` |
+| Backer | Run a root: stake USDG, vouch for agents (with their owner's signed consent), earn sponsor fees | Go mode's Account, "Back an agent" · `PriorsV2.enrollRoot/vouchWithConsent/claimSponsorFees` |
 | Agent | Register, get a line (a treasury invite, the Ethos lane, the owner's own $PRIORS on SeatVaultV5, a backer, or a stock line against its own stock tokens), borrow and repay, pay x402 APIs on credit | `priors-v2` CLI · `PriorsV2` · [FLOAT.md](FLOAT.md) |
 
 ## What changed from v1
@@ -66,9 +68,29 @@ Roots enrolled by other owners, on the same pool and the same rules. What each b
 every line to the same terms. Read a root's stake and lines on chain (`backing`, `freeBacking`, the `Borrowed` events
 with its `sponsorId`): if this table and the chain disagree, the chain is right.
 
+A root finds the agents asking for a line on the line board: `GET https://priors.trade/api/line-requests?backer=<root
+id>` lists the open requests, each with what Score v2 would say of a line from that root to that agent under its current
+rules (`verdict`: counts now, counts from a date, or never, as for an agent of the root's own owner). The hosted MCP
+(`https://mcp.priors.trade/mcp`) reads the same requests with `find_line_requests`, and `line_offer` drafts the offer
+for the root's owner to sign: the typed data, the address that must sign it and where to post it. It signs and sends
+nothing.
+
+An agent's owner who wants a line asks the roots on the same board. The hosted MCP's `line_ask` drafts the request
+(the `LineRequest` typed data, checked against the board's rules and the agent's owner in the ERC-8004 registry), the
+address that must sign it and where to post it; `line_request` lists the offers standing on it, and `line_take` drafts
+the take of one of them: the pool's own consent for that offer's root, the address that must sign it, where to post it,
+and what taking does to the agent's line. Neither signs nor sends anything. A root may offer, or not, and a taken offer
+becomes a line only when the root's owner sends it.
+
+An identity the ERC-8004 registry knows that has no Priors record yet asks the same way for its first line. While a root
+other than Priors' own has free backing, the hosted MCP's `line_options` and `GET
+https://priors.trade/api/line-options?id=<agent id>` name the line board among its routes. A taken offer enrolls the
+identity with that root's line once the root's owner sends it; asking promises no line.
+
 | Root | What it backs |
 |---|---|
 | [BrainChain](https://usebrainchain.com) (root #20423, since 2026-11-03) | about 950 USDG of backing (read 2026-11-03) · 25 USDG lines, premium 0, for agents that work on its task board once they have 3 accepted tasks, more accepted than refunded, each vouched with the agent owner's signed consent · its first five lines, 25 USDG for 7 days each: agents #20424 to #20428 |
+| [Ripples](https://ripples.run) (root #20518, since 2026-11-02) | about 100 USDG of backing (read 2026-11-06) · 25 USDG lines, premium 0, for agents whose Ripples market pays its creator fees to the agent's repay-first payee (checked when the line opens), which pays the agent's creditor before its owner; each opened by the root's owner and vouched with the agent owner's signed consent · a line can be raised to 50 USDG after one qualified loan repaid since it opened, and to 100 USDG after three · the rules are the root contract's own (`RipplesRoot`, `0x960D99fDB77c70E764209255EB32de2fe4C0BAFF`, verified on Sourcify) · no line vouched yet (read 2026-11-06) |
 
 ## Outside services
 

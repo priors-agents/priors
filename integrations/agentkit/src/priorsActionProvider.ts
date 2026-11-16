@@ -48,9 +48,11 @@ const utcDay = () => new Date().toISOString().slice(0, 10);
 
 /**
  * Auto-borrow, set by the owner in code (never by the model): pay_x402_with_priors_credit borrows the gap on its own,
- * up to `perCall` USDG a call and `perDay` USDG a UTC day in this process (each read exactly, at most 6 decimals), for
- * the `hosts` listed only (exact host names), for 14 days whatever term the model names, and only while this wallet's
- * Autopay (AutoRepay v2) covers the new loan. The model's maxBorrow can only lower the amount.
+ * up to `perCall` USDG a call and `perDay` USDG a UTC day (each read exactly, at most 6 decimals), for the `hosts` listed
+ * only (exact host names), for 14 days whatever term the model names, and only while this wallet's Autopay (AutoRepay
+ * v2) covers the new loan. The model's maxBorrow can only lower the amount. The day counts what the pool lent the agent
+ * since 00:00 UTC, every loan of the agent whoever took it, as well as this process's own auto-borrows, so a restart
+ * does not start the day again (GHSA-j679).
  */
 export type AutoBorrowOptions = { perCall: string; perDay: string; hosts: string[] };
 export type PriorsOptions = { autoBorrow?: AutoBorrowOptions };
@@ -189,6 +191,8 @@ function settledTx(header: string | null): string | null {
  */
 export class PriorsActionProvider extends ActionProvider<EvmWalletProvider> {
   private readonly auto: { perCall: bigint; perDay: bigint; hosts: Set<string> } | null;
+  // what this process auto-borrowed today, sent or about to be: the borrows the pool does not list yet. The pool's own
+  // record of the agent's loans today is read before each auto-borrow too (dayRoom), so a restart starts from it.
   private borrowedToday = { day: "", amount: 0n };
   // One signature per purchase (GHSA-pr4v), @priors/x402's rule (createPayer's unsettled payments, @priors/mcp's
   // outstanding ones): a payment this provider signed for a wallet's purchase (the method, the URL as the seller reads
@@ -610,21 +614,29 @@ Inputs:
           // auto: the day's room is taken here, before any await, so two calls running at once never both pass the
           // limit; it is given back whenever the borrow stops before it is sent, refused or a read failing, the
           // controller check's included (GHSA-q4cg, GHSA-87h5), and when it is mined and reverts (it moved nothing:
-          // GHSA-mc89); a borrow whose sending began and whose answer is lost stays counted (the safe direction)
+          // GHSA-mc89); a borrow whose sending began and whose answer is lost stays counted (the safe direction).
+          // Before it is sent, what the pool lent the agent today is checked against the same limit (dayRoom), so a
+          // restart, which starts this count at 0, does not start the day again (GHSA-j679)
           let reserved: { day: string; amount: bigint } | null = null;
           let sending = false;
           if (auto) {
             const today = utcDay();
             if (this.borrowedToday.day !== today) this.borrowedToday = { day: today, amount: 0n };
             if (this.borrowedToday.amount + amount > auto.perDay)
-              return `Error: the wallet holds ${usdg(balance)} USDG, short of ${usdg(price)}, and auto-borrow's limit of ${usdg(auto.perDay)} USDG a day has ${usdg(auto.perDay - this.borrowedToday.amount)} left in this process, less than ${usdg(amount)}. Nothing was borrowed or paid.`;
+              return `Error: the wallet holds ${usdg(balance)} USDG, short of ${usdg(price)}, and auto-borrow's limit of ${usdg(auto.perDay)} USDG a day has ${usdg(auto.perDay - this.borrowedToday.amount)} left, after what this process borrowed today, less than ${usdg(amount)}. Nothing was borrowed or paid.`;
             this.borrowedToday.amount += amount;
             reserved = { day: today, amount };
           }
+          const day = reserved?.day ?? "";
           // auto: 14 days, brought down to the pool's maxTerm; otherwise the term asked, as before
           const termDays = auto && params.maxTerm !== undefined && BigInt(days) * 86400n > BigInt(params.maxTerm) ? Number(BigInt(params.maxTerm) / 86400n) : days;
           const loan = await this.borrowAmount(walletProvider, args.agentId, amount, termDays,
-            auto ? (fee: bigint) => this.autopayCovers(walletProvider, args.agentId, amount + fee) : undefined,
+            auto
+              ? async (fee: bigint) => {
+                await this.autopayCovers(walletProvider, args.agentId, amount + fee);
+                await this.dayRoom(walletProvider, args.agentId, amount, auto.perDay, day);
+              }
+              : undefined,
             "borrowed or paid",
             () => {
               sending = true; // right before the borrow's transaction is sent, every check passed
@@ -707,6 +719,43 @@ Inputs:
     }
     if (BigInt(allowance) < owed + due)
       throw no(`Autopay may pull ${usdg(BigInt(allowance))} USDG from this wallet, and its open loans already need ${usdg(owed)} USDG`);
+  }
+
+  /**
+   * Auto-borrow's day limit as the pool records the day (GHSA-j679): `amount` more on top of what the pool lent agent
+   * `agentId` since 00:00 UTC of `day` must stay within `perDay`. Every loan of the agent issued that day counts, whoever
+   * took it (the pool records the agent and its owner, not the key that borrowed), so a restart, or another process of
+   * this wallet, starts the day where the pool is; that can only lower auto-borrow's room. A read that fails, or a loan
+   * whose record does not read as one, refuses (nothing is sent). The pool lists an agent's loans oldest first
+   * (CreditPoolV2 appends each in borrow), so they are read from the newest back to the first one issued before the day.
+   *
+   * SHORTCUT: what the pool shows: a borrow another process sent and the chain has not mined yet is not seen, and after a
+   * restart a provider that auto-borrows for several agents counts each agent's own loans only (its count across agents
+   * starts again). Upgrade when the provider gets a place to keep state (@priors/mcp's daily ledger under
+   * PRIORS_STATE_DIR), or on a report of either.
+   *
+   * @param walletProvider - The wallet provider.
+   * @param agentId - The agent id.
+   * @param amount - The borrow about to be sent, atomic USDG.
+   * @param perDay - The owner's limit a UTC day, atomic USDG.
+   * @param day - The UTC day the borrow counts in (YYYY-MM-DD).
+   */
+  private async dayRoom(walletProvider: EvmWalletProvider, agentId: number, amount: bigint, perDay: bigint, day: string) {
+    const id = BigInt(agentId);
+    let lent = 0n;
+    try {
+      const start = BigInt(Date.parse(`${day}T00:00:00Z`) / 1000);
+      const ids = (await walletProvider.readContract({ address: PRIORS_POOL, abi: POOL_ABI, functionName: "loansOf", args: [id] })) as readonly bigint[];
+      for (let i = ids.length - 1; i >= 0; i--) {
+        const l = (await walletProvider.readContract({ address: PRIORS_POOL, abi: POOL_ABI, functionName: "getLoan", args: [ids[i]] })) as { principal: bigint; issuedAt: bigint };
+        if (BigInt(l.issuedAt) < start) break;
+        lent += BigInt(l.principal);
+      }
+    } catch (error) {
+      throw new Refusal(`auto-borrow's day limit could not be checked: agent #${agentId}'s loans of today could not be read from the pool (${unfenced(String(error))}). Nothing was borrowed or paid.`);
+    }
+    if (lent + amount > perDay)
+      throw new Refusal(`auto-borrow's limit of ${usdg(perDay)} USDG a day has ${usdg(lent < perDay ? perDay - lent : 0n)} left: the pool lent agent #${agentId} ${usdg(lent)} USDG since 00:00 UTC (every loan of the agent today counts, whoever took it, so a restart does not start the day again), less than ${usdg(amount)}. Nothing was borrowed or paid.`);
   }
 
   /**

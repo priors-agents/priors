@@ -20,6 +20,9 @@ that address owns, and every agent that declared it as its payment wallet in the
 curl -s "https://priors.trade/api/check?address=0x318aE0BDf31bCd3528c34Cb34063b9B537c432D9"
 ```
 
+An address no agent owns or declared can still be where an agent's x402 offer is paid. The answer then also says
+which identities' offers pay it: `payee`, below.
+
 No key, no account, CORS open, cached for 30 seconds. Send exactly one of `agent` or `address`.
 
 ## What you get back
@@ -71,6 +74,44 @@ No key, no account, CORS open, cached for 30 seconds. Send exactly one of `agent
   included), and `record.loansRepaidByOwner` the loans repaid since then. `loansRepaid` stays the agent's whole record,
   under every owner. Both are `null` while the owner history has not reached the current owner yet.
 - A default is permanent. An agent with `defaulted: true` never borrows on Priors again.
+
+## An address an agent's offer pays: `payee`
+
+When an `address` matches no agent (no owner, no declared wallet: `verdict` is `no record` and `agents` is empty) but
+the x402 offer of one or more ERC-8004 identities on Robinhood Chain pays it, the answer is the same, then one more
+field, last:
+
+```json
+"payee": {
+  "readAt": 1794400000,
+  "identities": [
+    { "agentId": 1201, "hasRecord": true, "offerReadAt": 1794392800 },
+    { "agentId": 1202, "hasRecord": false, "offerReadAt": 1794360000 }
+  ],
+  "note": "No agent declared this address its payment wallet: Score v2 counts x402 payments to it as no agent's income. Not an endorsement."
+}
+```
+
+- `identities`: each identity whose x402 offer pays this address, by agent id, as its endpoint last answered with a
+  402. Priors' Directory reads each x402 endpoint an identity's ERC-8004 registration file declares once a day (a GET,
+  never paid). An address an identity declared as its payment wallet in the registry is never listed here.
+- `hasRecord`: whether that identity has a Priors record (`/api/check?agent=<agentId>` gives it).
+- `offerReadAt`: when that identity's offer was last read; `readAt`: when the Directory last built the list. Both in
+  unix seconds.
+- `note`: Score v2 counts x402 income only into the payment wallet an agent declared in the ERC-8004 registry
+  ([SCORE-v2.md](SCORE-v2.md)), so payments to this address count as no agent's income. An agent's owner can declare
+  it as the agent's payment wallet (the registry asks that wallet's own signature); for an agent with a Priors record,
+  the address then matches it, as `declared wallet`, and `payee` is gone.
+
+`payee` says which identities' registration files and endpoints point their offers at an address. It is not a record
+or a score of that address. Not an endorsement.
+
+### What stays the same
+
+For readers that act on this answer, plugins included: `payee` never changes `verdict` or `agents`. An address listed
+in `payee` still reads `"verdict": "no record"` with `"agents": []`. The field is added last, and only to such an
+answer: an answer by `agent` or `x`, an address an agent owns or declared, and an address in no offer never carry it,
+and every other field is what it was. A reader that skips fields it does not know reads exactly what it read before.
 
 ## Who has held an agent
 

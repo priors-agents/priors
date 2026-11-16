@@ -78,9 +78,11 @@ export const payX402Action = {
   handler: async (runtime, message, _state, _options, callback) => {
     if (!fromOperator(runtime, message)) return answer(callback, "PRIORS_PAY_X402", false, notOperator(runtime), {});
     const text = textOf(message);
+    // the URL and the amounts are read with the body and every other object of the message taken out, wherever they
+    // stand (parse.js); a message whose body cannot be told apart pays nothing (GHSA-p87w, GHSA-8pvh)
     const b = bodyOf(text);
-    const rest = b ? text.replace(b.raw, " ") : text;
-    const url = urlOf(rest), maxPrice = maxPriceOf(rest), borrow = borrowOf(rest);
+    if (b && b.error) return answer(callback, "PRIORS_PAY_X402", false, `Nothing was paid: ${b.error}.`, {});
+    const url = urlOf(text), maxPrice = maxPriceOf(text), borrow = borrowOf(text);
     if (!url) return answer(callback, "PRIORS_PAY_X402", false, "Nothing was paid. Name the https URL to pay outside the request body.", {});
     if (maxPrice === null || maxPrice <= 0) {
       return answer(callback, "PRIORS_PAY_X402", false, `Nothing was paid. Say the most to pay for ${url}, for example "at most 0.10", and if the wallet may borrow, the most to borrow, for example "borrow up to 1".`, { url });

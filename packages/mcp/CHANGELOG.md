@@ -1,5 +1,107 @@
 # @priors/mcp changelog
 
+## 0.20.0 (2026-11-11)
+
+- **The backing side of the line board, signed and sent here** (only with `PRIORS_LINE_BOARD=on`, off by default; off,
+  the tool list and the instructions are 0.19.0's, word for word, and `PRIORS_MAX_BACK_DAY_USD` is not read). For a
+  root (a backer of the pool) whose owner's key runs this server, three tools beside `line_ask` and `line_take`, each
+  with `dry_run`:
+  - `line_offer(request_id, root_id, amount_usd, premium_bps?, days?)` checks the offer as the hosted `line_offer` does
+    (the request and the board's rules, the root's owner, that it is a root, its free backing) and against the root's
+    offers standing on the board, and refuses with the reason, nothing signed. Its answer says what the offer can become
+    under the pool's rules (the agent's loans open and their due dates against the offer's end, a line it would make
+    smaller, the root's free backing: `src/offer-becomes.mjs`, the same words as the site's) and what Score v2 would say
+    of a line from that root, before the signature; then it signs the board's LineOffer and posts it.
+  - `line_send(request_id)` sends the line of an offer of this wallet's root that the agent's owner took: the pool's
+    `vouchWithConsent`, rebuilt from the board's acceptance (the request, the offer, the agent owner's consent and its
+    signature) and refused if the call the board prints differs from it by one byte, or is not from this wallet, for
+    that agent, to the pool on chain 4663. The consent's end is checked against this clock, then the day's cap, then the
+    call is simulated from this wallet: a refusal gives the pool's own reason (`LoanOpen` with the loan and its due date,
+    `ConsentExpired`, `InsufficientBacking`, `BadConsent`...) and sends nothing. One transaction, its gas in this
+    wallet's ETH; the answer reads the receipt's `Vouched` and `SponsorChanged`.
+  - `line_back_own(root_id, agent_id, amount_usd, premium_bps?)` backs an agent this wallet owns from a root it owns,
+    as Builder mode does for one owner: its answer opens with the sentence that Score v2 counts nothing on a line its own
+    owner backs (the line opens credit for the agent and builds it no record). A root or an agent this wallet does not
+    own is refused before anything is signed; otherwise the agent's consent is signed here, simulated and sent.
+  - `line_send` and `line_back_own` say Go mode's words for a backer first: every line backed is the stake's USDG, and
+    a loan not repaid is paid from the stake, its default staying on the agent's record. They run one at a time with the
+    other money tools.
+- **`PRIORS_MAX_BACK_DAY_USD`**, read only with `PRIORS_LINE_BOARD=on`: the most line `line_send` and `line_back_own`
+  may send from this wallet per UTC day (none by default; `0` sends none), counted from the broadcast and kept in
+  `PRIORS_STATE_DIR` across restarts and every process of the wallet (with `PRIORS_STATE_DIR` off, for the process
+  only). A value that is not a dollar amount stops the start, and is never echoed.
+- **The taken offers of this wallet's roots, named when a session starts** (with `PRIORS_LINE_BOARD=on` and a key):
+  `initialize`'s instructions end with each one waiting to be sent, the soonest consent's end first: the agent, the
+  root, the amount, the request and the consent's end in UTC, and that `line_send` sends the line. The roots are
+  `PRIORS_AGENT_ID` and the agents the board's `/api/agents?owner=` lists for this wallet, each kept only when the chain
+  says it is a root this wallet owns; a taken offer waits while its consent's deadline is ahead and its nonce is still
+  the agent's. One bounded read beside the open loans' (5 s): nothing is said when none waits or any read fails.
+- **Published trading strategies, read-only, off by default.** With `PRIORS_STRATEGIES=on`, `strategies_list` and
+  `strategy_read` read the strategy board's GET routes (`PRIORS_STRATEGIES_URL`, the test site's
+  `https://test.priors.trade/api/strategies` by default): each strategy accounts published from Go mode's Trade tab,
+  its nodes path by path with their levels and amounts, the agent it is for, and its record read on chain (its
+  account's key's trades, the agent's loans paid to that account, repaid on time or late as Score v2 counts it), in the
+  board's own words. A Borrow node opens a loan of the agent that must be repaid; a list ends "Not an endorsement.".
+  Nothing is signed or sent. Off, `tools/list` and the instructions are 0.19.1's byte for byte, and nothing of it is
+  loaded. Ships the site's Trade core and the board's (`src/trade-core.cjs`, `src/board-trade-core.cjs`, byte for byte)
+  and `src/strategies.mjs`.
+
+## 0.19.1 (2026-11-10)
+
+- **`line_key_spend` pays only for an agent this wallet owns or is the declared ERC-8004 wallet of, and that wallet
+  repays under LineKey** (GHSA-45h8-v5q8-4j43, reported by @pa-khan). An agent's owner names its spending key's operator
+  with no word from it, as it names a pool delegate (GHSA-9pw7), and `line_key_spend` (0.18.0, with
+  `PRIORS_LINE_KEY=on`) took being the operator as enough: a stranger who named this wallet, and a model told to pass
+  that `agent_id`, had it pay from the stranger's line with its own gas and borrowing limits. It now refuses a wallet
+  that is neither the agent's owner nor its declared wallet before the key is read, and `line_key_status` says so. Once
+  LineKey is the agent's pool delegate, the agent's own key controls nothing at the pool, and `repay` and `autopay_on`
+  refused it, though `line_key_spend`'s answer sends it there: the declared wallet now repays and turns Autopay on
+  whether or not the pool names it the delegate; any other wallet is refused as before. With `@priors/x402` 0.8.9.
+
+## 0.19.0 (2026-11-09)
+
+- **The agent's open loans, named when a session starts.** `initialize`'s instructions end with each open loan of the
+  configured agent: its id, what is due (principal and fee), its due time in UTC and "repay before then" (one past due:
+  "repay it now"), the earliest due first; with a wallet, that `repay` pays it from there with the user's go-ahead. The
+  agent is `PRIORS_AGENT_ID`, else the identity `join` registered for this wallet (its record in `PRIORS_STATE_DIR`)
+  while the wallet still owns it; no search of the registry's logs, which takes far too long for a start. One bounded
+  read of the pool (5 s): nothing is said when no loan is open or the read fails, and with no agent configured the
+  instructions are 0.18.2's, byte for byte.
+- **`credit_status`'s next step for a registered identity with no Priors record**: after "no Priors record yet" and its
+  owner, the routes to a first line that `line_options` on Priors' hosted MCP reads (the treasury's first line by
+  invite, the Ethos lane, a stock line, a line from its owner's own $PRIORS) and the line board, where its owner may ask
+  the roots for a line with `line_ask`: a backer may offer, or not. An id with no owner in the registry is answered as
+  before.
+- **`line_ask` and `line_take`, signed here** (only with `PRIORS_LINE_BOARD=on`, off by default; off, the server is as
+  before, word for word, and `PRIORS_LINE_BOARD_URL` is not read). The hosted MCP's `line_ask` and `line_take` draft an
+  agent's owner's request for a line on Priors' line board and its take of one offer there, and sign nothing; here the
+  configured wallet, when it is the agent's owner in the ERC-8004 registry, signs each one and posts it to the board
+  (`PRIORS_LINE_BOARD_URL`, default `https://priors.trade/api/line-requests`; https, or http for localhost only).
+  `line_ask` signs the board's LineRequest (the line, the most premium its owner takes, the term, how long it stands);
+  `line_take` signs the pool's own consent for the offer's root alone, at the agent's nonce, the offer's premium as its
+  cap and a deadline six days on, and says what taking does (a line from another root handed over whole, a smaller
+  line, an open loan to repay first, the root's free backing, what Score v2 would say of a line from that root). Each is
+  checked first as the hosted tools check it and refused with their reasons, nothing signed: a key that does not own the
+  agent, the board's rules, an offer not on the request or ended, a request taken or unknown, a root no longer a root or
+  no longer its signer's. The messages are the board's own (`src/line-market.mjs`, `sdk/line-market.mjs` in the
+  repository, byte for byte), which the board checks again. Neither moves money: once a take is posted, the root's owner
+  sends the line from its own wallet, or not. Asking promises no line.
+
+## 0.18.2 (2026-11-06)
+
+- **The state file's lock is never taken from a running server by a clock** (GHSA-wqww-vjpx-w8mq, reported by
+  @JasmeJun). A lock was judged abandoned by its file time against this process's clock, so after a clock step (NTP, a
+  resumed VM), or on a file server whose clock is behind, a lock held for milliseconds was taken, two servers of one
+  wallet wrote at once, and an unsettled payment's entry could be lost; another session, or a restart, then signed that
+  purchase again. The lock now names its holder and is removed only by it, and is taken over only when that holder, on
+  this host, has ended, or once this server has seen it unchanged for 10 s. After 2 s the write still goes ahead
+  without it, as before.
+- **`pt_buy` and `pt_sell` hold the trade to the quote the user agreed to** (GHSA-3fwm-95gh-5xh4, reported by
+  @SanjilVinsmoke): `min_out_pt` and `min_out_usdg`, such as `pt_quote`'s "at least". A fresh quote under it is refused
+  before anything is signed; otherwise the router call names the larger of it and the fresh quote's own minimum, never a
+  lower one. Without it, the minimum came from the fresh quote alone, so a trade could fill below the quote the user
+  agreed to (never below the oracle's rate at its own block less the slippage).
+
 ## 0.18.1 (2026-11-05)
 
 On @priors/x402 0.8.8 (a plan whose AutoRepay epoch could not be read, below).

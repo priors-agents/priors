@@ -16,6 +16,8 @@
 // (tools.mjs) and the data Worker's GET /api/line-options?id=N (data-worker/line-options.mjs), which the agent page of an
 // identity with no Priors record reads (docs/growth/bring-your-agent.md). Each makes the same reads its own way (the MCP
 // through the data Worker's routes, the data Worker from its own store) and hands them to it.
+// Behind each server's LINE_OPTIONS_NEXT (growth loop batch 11's AN; docs/growth/line-options.md), routes 1 and 3 give an
+// identity with no Priors record next steps it can take itself (lineOptions' `next`); off, every word is what it was.
 import { encodeFunctionData, decodeFunctionResult, parseAbi } from "viem";
 import DEP from "../deployments/4663.v2.json" with { type: "json" };
 
@@ -150,7 +152,12 @@ const RECORD_UNREAD = "its Priors record could not be read just now; agent_recor
  *   chain (readLineFacts'); stocks (/api/stocks, null when not read); lane (/ethos/status, null when not read, { off:
  *     true } when the site answered 404); minLoan (the pool's, USDG units);
  *   links: { invite, builder, agentPage, start, seats, stocks }; asOf: { snapshot, stocks, directoryBlock }; now
- *     (seconds: the snapshot's time when it was read, the clock for days and dates).
+ *     (seconds: the snapshot's time when it was read, the clock for days and dates);
+ *   next (growth loop batch 11's AN, the hosted LINE_OPTIONS_NEXT and the data Worker's): null or absent, the words as
+ *     before; { firstLine }, for an identity with no Priors record, route 3's next step names the two paths open to it
+ *     (Go mode's Stocks for its account's agents with a record or a new one; the stock vault's own open from its owner's
+ *     key) and, with firstLine (LOCAL_FIRST_LINE), route 1's names the local @priors/mcp's first_line. The data is the
+ *     same either way.
  */
 export function lineOptions(o) {
   const id = o.agentId, rec = o.recordRead ? o.record : null, ch = o.chain && o.chain.read ? o.chain : { read: false }, L = o.links, now = o.now;
@@ -198,7 +205,10 @@ export function lineOptions(o) {
         close(r, `this week's first lines are taken (${r.room} USDG of room left, a first line is ${r.line} USDG); the room fills again ${refill && refill > now ? `after ${r.refillsAt}` : "with the next week"}`);
       } else {
         r.open = true; r.bond = ch.bond != null ? usd(ch.bond) : null; r.next = { url: L.invite, builder: L.builder };
-        body = `A ${r.line} USDG line, for ${r.bond ? `a ${r.bond} USDG bond` : "a bond (its amount could not be read just now)"} its owner posts first: it comes back once the line is closed with no loan open, or 4 days after it was posted if the agent never takes a line, and a default forfeits it. This week's room: ${r.room} USDG, ${plural(r.firstLines, "first line")}. The invite service applies its own limits too (first lines per owner, a daily cap). Next: the wallet that owns agent #${id} asks at ${L.invite} (it proves it owns it, posts the bond and gets an invite), then takes the line in Builder mode with its pool consent: ${L.builder}`;
+        // AN: from a runtime, the local @priors/mcp's first_line takes it from the owner's key (an identity with no record:
+        // first_line refuses one with a record)
+        const runtime = o.next && o.next.firstLine && !rec ? `from a runtime that holds the key of the wallet that owns agent #${id}, the local @priors/mcp's first_line (PRIORS_JOIN=on in its env) takes this line with no clone (it posts the bond, proves the key owns the identity to Priors' invite bot and signs the pool consent); or that wallet` : null;
+        body = `A ${r.line} USDG line, for ${r.bond ? `a ${r.bond} USDG bond` : "a bond (its amount could not be read just now)"} its owner posts first: it comes back once the line is closed with no loan open, or 4 days after it was posted if the agent never takes a line, and a default forfeits it. This week's room: ${r.room} USDG, ${plural(r.firstLines, "first line")}. The invite service applies its own limits too (first lines per owner, a daily cap). Next: ${runtime || `the wallet that owns agent #${id}`} asks at ${L.invite} (it proves it owns it, posts the bond and gets an invite), then takes the line in Builder mode with its pool consent: ${L.builder}`;
       }
     }
     say(1, "The treasury's first line, by invite", r, body);
@@ -254,7 +264,11 @@ export function lineOptions(o) {
       else {
         r.open = true; r.upTo = usd(upTo); r.next = { tool: "stock_line_request", arguments: rec ? { agent_id: id } : {} };
         const facts = [maxLine != null ? `the vault's cap is ${r.maxLine} USDG a line` : "", week != null ? `${r.weekLeft} USDG of new lines are left this week` : "", `${lending.length} of its ${S.assets.length} stock tokens take a new line now (stock_assets lists them)`].filter(Boolean);
-        body = `Up to ${r.upTo} USDG, backed by stock tokens its owner deposits: ${facts.slice(0, -1).join(", ")}${facts.length > 1 ? ", and " : ""}${facts[facts.length - 1]}.${rec && backer && rec.line > 0n ? ` Its current ${usd(rec.line)} USDG line moves to the stock vault when this one opens.` : ""} Next: stock_line_request (${rec ? `agent_id ${id}, a symbol and line_usd` : "a symbol and line_usd, and no agent_id: it has no Priors record yet"}) sizes the deposit for the line wanted and gives the Go mode link where its owner deposits${rec ? "" : `, choosing agent #${id} on the sheet`}.`;
+        // AN: for an identity with no record, the two paths open to it. Go mode's Stocks lists only the signed-in account's
+        // agents with a record, and a new one it registers (web/account-stocks.js); the vault itself takes the identity
+        // from its owner's (or delegate's) key (src/StockVault.sol open: isController)
+        const paths = o.next && !rec ? `gives the link to Go mode's Stocks, which opens a stock line for an agent with a Priors record that the account signed in there owns, or for a new agent it registers there; for agent #${id} itself, the wallet that owns it calls the stock vault's own open with its own key (the public SDK's openStockLine, sdk/priors-v2.mjs: the pool consent for the vault's root, then the deposit): https://github.com/priors-agents/priors` : null;
+        body = `Up to ${r.upTo} USDG, backed by stock tokens its owner deposits: ${facts.slice(0, -1).join(", ")}${facts.length > 1 ? ", and " : ""}${facts[facts.length - 1]}.${rec && backer && rec.line > 0n ? ` Its current ${usd(rec.line)} USDG line moves to the stock vault when this one opens.` : ""} Next: stock_line_request (${rec ? `agent_id ${id}, a symbol and line_usd` : "a symbol and line_usd, and no agent_id: it has no Priors record yet"}) sizes the deposit for the line wanted and ${paths || `gives the Go mode link where its owner deposits${rec ? "" : `, choosing agent #${id} on the sheet`}.`}`;
       }
     }
     say(3, "A stock line", r, body);
@@ -413,9 +427,10 @@ const isoOrNull = (t) => (t ? iso(t) : null);
  *     off); snap: the snapshot (its meta's takenAt and timestamp, its params' minLoan), null when it could not be read;
  *   agent: the snapshot's agent with this id (or its lineFields), null without one; stocks: /api/stocks, null when not
  *   read; lane: the Ethos lane's status (null when not read, { off: true } when its site answered 404); client: the
- *   chain (an EIP-1193 `request`; null: none); builderUrl, appUrl (linksOf).
+ *   chain (an EIP-1193 `request`; null: none); builderUrl, appUrl (linksOf); next: lineOptions' (AN's next steps; null
+ *   or absent, the words as before).
  */
-export async function lineOptionsAnswer({ agentId, reg, snap, agent, stocks, lane, client, builderUrl, appUrl }) {
+export async function lineOptionsAnswer({ agentId, reg, snap, agent, stocks, lane, client, builderUrl, appUrl, next = null }) {
   const regRead = !!(reg && typeof reg === "object" && !reg.__status);
   if (regRead && !reg.item && !agent) return { status: 404, error: `No identity #${agentId} in the ERC-8004 registry on Robinhood Chain (the Directory knows ${Number(reg.n) || 0}, ids 0 to ${Math.max(0, (Number(reg.n) || 0) - 1)}).` };
   if (!regRead && !agent) return { status: 503, error: `Agent #${agentId}: the ERC-8004 registry (the Priors Directory) could not be read just now${snap ? "" : ", nor the Priors snapshot"}, so whether this identity exists is not known: try again in a minute.` };
@@ -427,7 +442,7 @@ export async function lineOptionsAnswer({ agentId, reg, snap, agent, stocks, lan
       agentId, owner, record: recordOf(agent), recordRead: !!snap, chain, stocks, lane, minLoan: snap && snap.params && snap.params.minLoan != null ? Number(snap.params.minLoan) : null,
       links: linksOf(builderUrl, appUrl, agentId),
       asOf: { snapshot: snap ? isoOrNull(meta.takenAt ?? meta.timestamp) : null, stocks: stocks ? isoOrNull(stocks.updatedAt) : null, directoryBlock: regRead ? Number(reg.block) || null : null },
-      now: Number(meta.timestamp) || Math.floor(Date.now() / 1000),
+      now: Number(meta.timestamp) || Math.floor(Date.now() / 1000), next,
     }),
   };
 }

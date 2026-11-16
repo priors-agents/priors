@@ -202,13 +202,28 @@ export async function needOwnerOrAgentWallet(agentId, holder, me, agentWallet, d
     + `(the registry's setAgentWallet, signed by this key: \`priors-mcp link-wallet\`), or use the owner's key.`);
 }
 
-/** The agent's owner and declared wallet, from injectors when given, else the pool's own registry. */
+/** The agent's owner and declared wallet (read once, when first asked), from injectors when given, else the pool's own
+ *  registry. */
 async function agentParties(poolC, signer, id, ownerOf, agentWalletOf) {
   const reg = ownerOf && agentWalletOf ? null : new ethers.Contract(await poolC.registry(), REGISTRY_ABI, signer);
+  let w = null;
   return {
     holder: String(ownerOf ? await ownerOf(id) : await reg.ownerOf(id)),
-    agentWallet: () => (agentWalletOf ? agentWalletOf(id) : reg.getAgentWallet(id)),
+    agentWallet: () => (w ??= Promise.resolve(agentWalletOf ? agentWalletOf(id) : reg.getAgentWallet(id))),
   };
+}
+
+/**
+ * Whether the signer `me` may repay agent `agentId`'s loans from its USDG, first half (P-7): it controls the agent at
+ * the pool (its owner or its pool delegate), or it is the agent's declared ERC-8004 wallet. The pool has one delegate
+ * per agent, and once the owner names LineKey (the spending key) its delegate, the agent's own key controls nothing
+ * there, while repaying stays its job, as AutoRepayV2's wallet plan has it (GHSA-45h8-v5q8-4j43). The second half,
+ * needOwnerOrAgentWallet, still refuses a delegate that is neither. Throws NOT_CONTROLLER otherwise.
+ */
+async function needRepayer(controls, agentWallet, me, refusal) {
+  if (await controls()) return;
+  if (String(await agentWallet()).toLowerCase() === String(me).toLowerCase()) return;
+  throw new PayError("NOT_CONTROLLER", refusal);
 }
 
 /**
@@ -321,11 +336,15 @@ export async function borrowGap({ signer, pool, agentId, price, balance, maxBorr
 export async function settleLoans({ signer, pool, agentId, topUp, onlyInWindow = false, now = () => Math.floor(Date.now() / 1000), ownerOf, agentWalletOf }) {
   const poolC = poolContract(pool, signer);
   const me = await signer.getAddress();
-  // Only the signer's own agent: a wrong or stale agentId would otherwise pay a stranger's loans (P-7).
-  if (!(await poolC.isController(agentId, me))) throw new PayError("NOT_CONTROLLER", `agent #${agentId} is not controlled by ${me} (neither its owner nor its pool delegate)`);
+  // Only the signer's own agent: a wrong or stale agentId would otherwise pay a stranger's loans (P-7). Its declared
+  // ERC-8004 wallet is its own key whether or not the pool names it the delegate (a LineKey agent's is the key: needRepayer).
+  let parties = null;
+  const partiesOf = async () => (parties ??= await agentParties(poolC, signer, agentId, ownerOf, agentWalletOf));
+  await needRepayer(() => poolC.isController(agentId, me), async () => (await partiesOf()).agentWallet(), me,
+    `agent #${agentId} is not controlled by ${me} (neither its owner nor its pool delegate), and ${me} is not its declared ERC-8004 wallet`);
   // ...and control alone is not proof: the pool lets the owner name any address its delegate, with no word from it, so
   // a signer that is not the owner must be the agent's declared ERC-8004 wallet (GHSA-9pw7)
-  const parties = await agentParties(poolC, signer, agentId, ownerOf, agentWalletOf);
+  await partiesOf();
   const holder = parties.holder.toLowerCase();
   await needOwnerOrAgentWallet(agentId, holder, me, parties.agentWallet, "repaid");
   const usdg = new ethers.Contract(await poolC.usdg(), ERC20_ABI, signer);
@@ -551,12 +570,16 @@ export async function repayLoan(c, signer, loanId) {
   if (l.status !== LOAN_ACTIVE) throw new PayError("LOAN_NOT_ACTIVE", `loan #${loanId} is not active (${LOAN_STATUS[Number(l.status)] || "unknown"})`);
   const due = l.principal + l.fee;
   const me = await signer.getAddress();
-  // The pool lets anyone repay any loan; this helper spends the signer's USDG only on an agent the signer controls.
-  if (!(await pool.isController(l.agentId, me))) throw new PayError("NOT_CONTROLLER", `loan #${loanId} belongs to agent #${l.agentId}, which ${me} does not control (neither its owner nor its pool delegate)`);
+  // The pool lets anyone repay any loan; this helper spends the signer's USDG only on an agent the signer controls, or
+  // whose declared ERC-8004 wallet it is (a LineKey agent's pool delegate is the key: needRepayer).
+  let w = null;
+  const agentWallet = () => (w ??= Promise.resolve(c.registry.getAgentWallet(l.agentId)));
+  await needRepayer(() => pool.isController(l.agentId, me), agentWallet, me,
+    `loan #${loanId} belongs to agent #${l.agentId}, which ${me} does not control (neither its owner nor its pool delegate); nor is ${me} its declared ERC-8004 wallet`);
   // ...and only a loan its owner now took: one opened while someone else held the agent is theirs (GHSA-mmp8)
   const holder = String(await c.registry.ownerOf(l.agentId));
   if (String(l.owner).toLowerCase() !== holder.toLowerCase()) throw new PayError("NOT_OWNERS_LOAN", `loan #${loanId} was opened by ${l.owner}, which held agent #${l.agentId} then; its owner now (${holder}) did not take it: not repaid`);
-  await needOwnerOrAgentWallet(l.agentId, holder, me, () => c.registry.getAgentWallet(l.agentId), "repaid");
+  await needOwnerOrAgentWallet(l.agentId, holder, me, agentWallet, "repaid");
   const bal = await usdg.balanceOf(me);
   if (bal < due) throw new PayError("INSUFFICIENT_USDG", `repaying loan #${loanId} needs ${due} atomic USDG but the wallet holds ${bal}`, { due, balance: bal });
   const target = await pool.getAddress();

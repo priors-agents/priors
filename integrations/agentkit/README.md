@@ -43,8 +43,11 @@ priorsActionProvider(undefined, { autoBorrow: { perCall: "5", perDay: "10", host
 
 With it, `pay_x402_with_priors_credit` borrows the gap on its own when the wallet is short, for the listed hosts only.
 There is no default host: `hosts` names each one, exactly (here `models.example` stands for the model API you choose).
-The limits are `perCall` USDG a call and `perDay` USDG a UTC day in the process (each read exactly, at most 6 decimals),
-for 14 days whatever term the model names (or the pool's maximum term). It borrows only while this wallet's Autopay
+The limits are `perCall` USDG a call and `perDay` USDG a UTC day (each read exactly, at most 6 decimals), for 14 days
+whatever term the model names (or the pool's maximum term). The day counts what the pool lent the agent since 00:00 UTC,
+every loan of the agent whoever took it, as well as this process's own auto-borrows, so a restart does not start the
+day again (0.2.5); if those loans cannot be read, nothing is borrowed. A borrow another process sent that is not mined
+yet is not seen, and after a restart a provider that auto-borrows for several agents counts each agent's loans only. It borrows only while this wallet's Autopay
 (AutoRepay v2) covers the new loan: the wallet is the agent's
 declared wallet, the plan is on under the agent's current owner, not held or paused, its limit per loan and its USDG
 approval cover the loan's due. Otherwise nothing is borrowed or paid, and the answer says to turn Autopay on. The

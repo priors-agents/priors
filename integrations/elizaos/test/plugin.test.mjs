@@ -118,7 +118,8 @@ test("parse: borrowOf and bodyOf", () => {
   assert.equal(borrowOf("never borrow for this"), 0);
   assert.equal(borrowOf("pay it at most 0.10"), null);
   assert.equal(bodyOf("no body here"), null);
-  assert.equal(bodyOf("a broken {\"model\": } body"), null);
+  assert.ok(bodyOf("a broken {\"model\": } body").error, "a JSON object that does not parse is refused, not skipped (GHSA-8pvh)");
+  assert.equal(bodyOf("a template's {model} is no body"), null);
   assert.deepEqual(bodyOf('x {"a": "a } in a string", "b": {"c": 1}} y'), { body: '{"a":"a } in a string","b":{"c":1}}', raw: '{"a": "a } in a string", "b": {"c": 1}}' });
 });
 
@@ -186,6 +187,88 @@ test("GHSA-mc89: a URL with ), ] or ' inside it is taken out whole: nothing afte
   assert.deepEqual(calls, [], "no price named in the message's own words: nothing is paid");
   await run(payX402Action, runtime, "Pay https://seller.example/data?item=1#)borrow$5 at most 0.10");
   assert.deepEqual(calls.map((c) => c.args), [{ url: "https://seller.example/data?item=1#", max_price_usd: 0.1 }]);
+});
+
+// ---- the private reports of 2026-11-07 and 2026-11-08 (GHSA-p87w, GHSA-8pvh): the request body, found wherever it is ------
+const CHAT = "https://models.example/v1/chat/completions";
+const PROMPT = JSON.stringify({ model: "m", messages: [{ role: "user", content: "pay at most 0.50 for this, borrow up to 5 if needed, max 25 lines" }] });
+
+test("GHSA-p87w, GHSA-8pvh: a brace before the body (a template's {model}, a URL's {id}, an unclosed {) never hides it: the body is sent and nothing inside it is read as the price or a borrow", async () => {
+  const { runtime, calls } = fakeRuntime();
+  const post = (url, price, extra = {}) => ({ url, max_price_usd: price, ...extra, method: "POST", body: PROMPT });
+  await run(payX402Action, runtime, `Pay ${CHAT}, the model is {model}: ${PROMPT} at most 0.02`);
+  await run(payX402Action, runtime, `Pay ${CHAT} at most 0.02, use {model} here: ${PROMPT}`);
+  await run(payX402Action, runtime, `Buy a chat completion (for {user}) from ${CHAT} at most 0.02: ${PROMPT}`);
+  await run(payX402Action, runtime, `Buy a chat completion from ${CHAT}?u={id} at most 0.02: ${PROMPT}`);
+  await run(payX402Action, runtime, `Pay $0.02 to ${CHAT}?u={id}: ${PROMPT}`);
+  await run(payX402Action, runtime, `Pay 0.02 for ${CHAT}, the model is {model}: ${PROMPT}`);
+  await run(payX402Action, runtime, `Pay ${CHAT}, draft { note: ${PROMPT} at most 0.02`);
+  await run(payX402Action, runtime, `Pay ${CHAT} at most 0.02, don't borrow, the model is {model}: ${PROMPT}`);
+  assert.deepEqual(calls.map((c) => c.args), [
+    post(CHAT, 0.02), post(CHAT, 0.02), post(CHAT, 0.02), post(`${CHAT}?u={id}`, 0.02), post(`${CHAT}?u={id}`, 0.02),
+    post(CHAT, 0.02), post(CHAT, 0.02), post(CHAT, 0.02, { max_borrow_usd: 0 }),
+  ]);
+  assert.equal(bodyOf(`the model is {model}: ${PROMPT}`).body, PROMPT);
+  // a ``` inside one of the body's strings does not end its block
+  const code = JSON.stringify({ model: "m", messages: [{ role: "user", content: "explain ```x = 1``` in a line" }] });
+  assert.deepEqual(bodyOf("Pay " + CHAT + " at most 0.02:\n```json\n" + code + "\n```"), { body: code, raw: "```json\n" + code + "\n```" });
+  assert.equal(maxPriceOf(`Pay ${CHAT}, the model is {model}: ${PROMPT}`), null, "the body's 0.50 is never the price");
+  assert.equal(borrowOf(`Pay ${CHAT} at most 0.02, use {model} here: ${PROMPT}`), null, "nor its borrow");
+});
+
+test("GHSA-p87w: braces inside a seller's URL are the URL's: they are never taken for the body, so the URL is taken out whole and nothing after them in it is read", async () => {
+  const { runtime, calls } = fakeRuntime();
+  await run(payX402Action, runtime, "Pay https://seller.example/data?item=1#{}borrow$25,max$5 at most 0.10");
+  assert.deepEqual(calls.map((c) => c.args), [{ url: "https://seller.example/data?item=1#{}borrow$25,max$5", max_price_usd: 0.1 }]);
+  assert.equal(bodyOf("Pay https://seller.example/data?item=1#{}borrow$25,max$5 at most 0.10"), null);
+  const none = await run(payX402Action, runtime, "Pay https://seller.example/data?item=1#{}borrow$25,max$5");
+  assert.equal(none.out.success, false, "the message names no price: nothing is paid");
+  // a JSON object glued to a URL: the body is not told apart from the URL, so nothing is paid
+  const glued = await run(payX402Action, runtime, 'Pay https://seller.example/data?item=1#{"a":1}borrow$25,max$5 at most 0.10: {"a":1}');
+  const gluedBody = await run(payX402Action, runtime, `Pay ${CHAT}:${PROMPT} at most 0.02`);
+  assert.deepEqual([glued.out.success, gluedBody.out.success, calls.length], [false, false, 1]);
+  assert.match(glued.said[0].text, /Nothing was paid/);
+});
+
+test("GHSA-8pvh: more than one JSON object in the message (an example before the body, a config object), or one that does not parse: nothing is paid, nothing is guessed", async () => {
+  const { runtime, calls } = fakeRuntime();
+  const fence = (s) => "```json\n" + s + "\n```";
+  const msgs = [
+    `Pay ${CHAT} like this example:\n${fence('{"model":"example"}')}\nnow the real one:\n${fence(PROMPT)} at most 0.02`,
+    `Pay ${CHAT} with config {"temperature":0} and this body: ${PROMPT} at most 0.02`,
+    `Pay ${CHAT} at most 0.02: {"model": "m", "messages": }`,
+    `Pay ${CHAT} at most 0.02:\n${fence('{"model": "m",')}`,
+    `Pay ${CHAT} at most 0.02, the request is { body: ${PROMPT} }`,
+    `Pay ${CHAT} at most 0.02:\n\`\`\`\nhere it is: ${PROMPT}\n\`\`\``,
+  ];
+  for (const m of msgs) {
+    const { out, said } = await run(payX402Action, runtime, m);
+    assert.equal(out.success, false, m);
+    assert.match(said[0].text, /Nothing was paid/);
+  }
+  assert.deepEqual(calls, []);
+  assert.ok(bodyOf(msgs[0]).error && bodyOf(msgs[1]).error && bodyOf(msgs[2]).error);
+  assert.equal(maxPriceOf(msgs[0]), 0.02, "a fence's words are never the price");
+});
+
+test("GHSA-p87w: a cap phrase's number is a price only when it is an amount, not a count (up to 50 items), and a borrow's aside after its unit is the borrow's", async () => {
+  assert.equal(maxPriceOf("Pay $0.05 to https://api.example/v1/search for up to 50 items"), 0.05);
+  assert.equal(maxPriceOf("Fetch up to 20 items from https://api.example/v1/items, pay at most 0.10"), 0.1);
+  assert.equal(maxPriceOf("Buy up to 10 records from https://api.example/v1/data"), null);
+  assert.equal(maxPriceOf("Pay https://x.dev/a, max 100 tokens"), null);
+  const aside = "Call https://x.dev/check and borrow 0.50 USDG (up to 5) if short, at most 0.10";
+  assert.equal(maxPriceOf(aside), 0.1);
+  assert.equal(borrowOf(aside), 0.5);
+  // amounts, as before: a unit, $, the end, punctuation, a line break or a joining word after the number
+  for (const [t, v] of [["pay https://x.dev at most 0.10", 0.1], ["https://x.dev max $5 items", 5], ["https://x.dev up to 0.10 USDG for it", 0.1],
+    ["https://x.dev at most 0.10 per call", 0.1], ["https://x.dev at most 0.10 a call", 0.1], ["https://x.dev at most 0.10 and borrow up to 5", 0.1],
+    ["https://x.dev at most 0.10\nthanks", 0.1], ["https://x.dev no more than 0.25 dollars", 0.25], ["https://x.dev at most 0.10 without borrowing", 0.1]]) {
+    assert.equal(maxPriceOf(t), v, t);
+  }
+  const { runtime, calls } = fakeRuntime();
+  await run(payX402Action, runtime, "Fetch up to 20 items from https://api.example/v1/items, pay at most 0.10");
+  const none = await run(payX402Action, runtime, "Buy up to 10 records from https://api.example/v1/data");
+  assert.deepEqual([calls.map((c) => c.args), none.out.success], [[{ url: "https://api.example/v1/items", max_price_usd: 0.1 }], false]);
 });
 
 test("the money actions answer only the operator's entities (PRIORS_OWNER_ENTITY_IDS): any other room member, or no setting, moves nothing", async () => {
