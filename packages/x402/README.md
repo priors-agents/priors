@@ -324,8 +324,10 @@ const payer = createPayer({
 });
 ```
 
-It is given `{ requirement, x402Version, resource, price, payTo, network, asset, payer, signal }`. `requirement` is a
-frozen deep copy (`extra` included): the payer always signs its own copy, so a hook cannot change what is signed.
+It is given `{ requirement, extensions, x402Version, resource, price, payTo, network, asset, payer, signal }`.
+`requirement` is a frozen deep copy (`extra` included): the payer always signs its own copy, so a hook cannot change
+what is signed. `extensions` is the 402's top-level `extensions` (x402 v2, e.g. a `payee-name` claim), also a frozen
+deep copy, or `null` when the 402 sent none.
 `signal` fires on the caller's `init.signal` or the payer's `signal`, for a hook that reads something. `null` or
 `undefined` is off.
 

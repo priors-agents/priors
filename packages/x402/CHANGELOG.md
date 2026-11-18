@@ -8,6 +8,8 @@
   selection, and before anything is read, topped up, borrowed or signed. A throw refuses the payment: a `PayError` as
   thrown, anything else `BEFORE_PAY_REFUSED`; a `beforePay` that is not a function is `BAD_BEFORE_PAY` (`null` is off).
   What is signed is always the payer's own requirement, so a hook that writes to its copy changes nothing signed.
+  The hook also gets the 402's top-level `extensions` (frozen deep copy, `null` when absent), for checks such as a
+  `payee-name` claim.
   Off unless given. `scripts/test-x402-before-pay.mjs` (network-free).
 
 ## 0.8.9 (2026-11-10)

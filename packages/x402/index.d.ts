@@ -258,6 +258,8 @@ export interface Payer {
  *  and asset as the payer will pay them). */
 export interface BeforePayInput {
   readonly requirement: Readonly<Record<string, unknown>>;
+  /** the 402's top-level `extensions` (x402 v2; e.g. `payee-name`), a frozen deep copy; `null` when it sent none */
+  readonly extensions: Readonly<Record<string, unknown>> | null;
   x402Version: 1 | 2;
   /** the URL being bought */
   resource: string;

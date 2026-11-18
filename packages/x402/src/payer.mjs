@@ -637,7 +637,7 @@ export function createPayer(opts = {}) {
       stopIfAborted();
       const signals = [base.signal, signal].filter(Boolean);
       try {
-        await beforePay(Object.freeze({ requirement: deepFreeze(structuredClone(req)), x402Version: version, resource: base.url, price, payTo: req.payTo, network: n.network, asset: token, payer: me, signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] }));
+        await beforePay(Object.freeze({ requirement: deepFreeze(structuredClone(req)), extensions: deepFreeze(structuredClone(paymentRequired?.extensions ?? null)), x402Version: version, resource: base.url, price, payTo: req.payTo, network: n.network, asset: token, payer: me, signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] }));
       } catch (e) {
         if (e instanceof PayError) throw e;
         throw new PayError("BEFORE_PAY_REFUSED", `pay: beforePay refused the payment; nothing was read, borrowed or signed${e?.message ? ` (${String(e.message).slice(0, 200)})` : ""}`, { cause: e });

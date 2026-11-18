@@ -8,6 +8,7 @@
 //   - a 402 above maxPrice never reaches beforePay; null and undefined are off; anything else not a function is
 //     BAD_BEFORE_PAY;
 //   - the requirement it is shown is a frozen deep copy (extra included), and it is given the caller's abort (`signal`);
+//   - the 402's top-level extensions are shown as a frozen deep copy too (null when absent);
 //   - a hook that tries to write payTo or the amount changes nothing that is signed nor the result's `paid` (a mock
 //     chain on 127.0.0.1 answers the balance read, so the payment is signed and sent: v2 and v1).
 //   node scripts/test-x402-before-pay.mjs
@@ -160,6 +161,45 @@ for (const version of [2, 1]) {
     } finally { await c.close(); }
   });
 }
+
+await check("v2: the 402's top-level extensions are shown frozen, and a hook writing to them changes nothing signed", async () => {
+  const c = await chain();
+  try {
+    const got = [];
+    const ext = { "payee-name": { name: "merchant.example", proof: { deep: 1 } } };
+    const f = async (input, init) => {
+      const h = new Headers(input instanceof Request ? input.headers : init?.headers);
+      if (init?.headers) for (const [k, v] of new Headers(init.headers)) h.set(k, v);
+      const sent = h.get("payment-signature") ?? h.get("x-payment");
+      if (sent) { got.push(JSON.parse(Buffer.from(sent, "base64").toString("utf8"))); return new Response("{}", { status: 200 }); }
+      const body = { x402Version: 2, resource: { url: URL_BOUGHT }, accepts: [{ ...REQ, extra: { name: "Global Dollar", version: "1" } }], extensions: ext };
+      return new Response(JSON.stringify(body), { status: 402, headers: { "content-type": "application/json" } });
+    };
+    const seen = [], wrote = [];
+    const payer = createPayer({ signer: signer.connect(c.provider), fetchImpl: f, beforePay: (p) => {
+      seen.push(p.extensions);
+      try { p.extensions["payee-name"].name = "EVIL"; wrote.push("name"); } catch (_) { /* frozen */ }
+      try { p.extensions["payee-name"].proof.deep = 2; wrote.push("deep"); } catch (_) { /* frozen */ }
+      try { p.extensions.injected = 1; wrote.push("add"); } catch (_) { /* frozen */ }
+    } });
+    const r = await payer.pay(URL_BOUGHT);
+    assert.equal(r.response.status, 200);
+    assert.deepEqual(seen[0], ext, "the hook sees the 402's extensions");
+    assert.ok(Object.isFrozen(seen[0]) && Object.isFrozen(seen[0]["payee-name"]) && Object.isFrozen(seen[0]["payee-name"].proof));
+    assert.deepEqual(wrote, [], "every write to the extensions it was shown throws");
+    assert.equal(ext["payee-name"].name, "merchant.example", "the merchant's own object is untouched");
+    assert.equal(got.length, 1);
+    assert.equal(ethers.getAddress(got[0].payload.authorization.to), ethers.getAddress(PAY_TO));
+    assert.equal(BigInt(got[0].payload.authorization.value), 50000n);
+  } finally { await c.close(); }
+});
+
+await check("no extensions in the 402: the hook is given null", async () => {
+  const seen = [];
+  const payer = createPayer({ signer, fetchImpl: merchant(), beforePay: (p) => { seen.push(p.extensions); throw new Error("stop here"); } });
+  await assert.rejects(payer.pay(URL_BOUGHT), (e) => e.code === "BEFORE_PAY_REFUSED");
+  assert.equal(seen[0], null);
+});
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
